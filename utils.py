@@ -30,3 +30,10 @@ def find_galil_com_ports():
         if "Galil" in port.description or "USB Serial" in port.description:
             galil_ports.append(port.device)
     return galil_ports
+
+def validate_axis(axis):
+    """Validate that the axis is one of A, B, C, or D."""
+    valid_axes = ["A", "B", "C", "D"]
+    if axis.upper() not in valid_axes:
+        raise ValueError(f"Invalid axis '{axis}'. Must be one of {valid_axes}")
+    return axis.upper()
