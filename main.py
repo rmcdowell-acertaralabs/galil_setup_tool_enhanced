@@ -518,7 +518,7 @@ class GalilSetupApp:
             self.visualizer.update_from_controller()
         except Exception:
             pass
-        self.root.after(200, self.update_3d_position)
+        self.root.after(100, self.update_3d_position)  # Increased frequency for more responsive updates
 
     def _append_diagnostic(self, line: str):
         """Insert a single line into the diagnostics box and scroll."""
@@ -616,6 +616,14 @@ class GalilSetupApp:
             # Update 3D display with actual position
             self.update_position_from_controller(axis)
             
+            # Schedule additional updates for smooth visual feedback
+            def delayed_update():
+                self.update_position_from_controller(axis)
+                self.visualizer.update_from_controller()
+            
+            # Update after a short delay to show movement
+            self.root.after(50, delayed_update)
+            
         except Exception as e:
             messagebox.showerror("Jog Error", f"Error: {str(e)}")
 
@@ -654,6 +662,14 @@ class GalilSetupApp:
             
             # Update 3D display with actual position
             self.update_position_from_controller(axis)
+            
+            # Schedule additional updates for smooth visual feedback
+            def delayed_update():
+                self.update_position_from_controller(axis)
+                self.visualizer.update_from_controller()
+            
+            # Update after a short delay to show movement
+            self.root.after(50, delayed_update)
             
         except Exception as e:
             messagebox.showerror("Jog Error", f"Error: {str(e)}")
@@ -1069,20 +1085,22 @@ class GalilSetupApp:
                 messagebox.showerror("Invalid Axis", f"Axis {axis} is not valid. Use A, B, C, or D.")
                 return
                 
-            # Try different reset commands
-            reset_commands = [
-                f"RZ{axis}",      # Reset zero position
-                f"RZ {axis}",      # Reset zero position with space
-                f"ZP{axis}=0",     # Zero position
-                f"ZP {axis}=0",    # Zero position with space
+            # First, stop any current motion
+            try:
+                self.controller.send_command("ST")
+            except Exception:
+                pass
+                
+            # Try to move the axis to position 0
+            move_commands = [
+                f"PA{axis}=0",     # Position absolute
+                f"PA {axis}=0",    # Position absolute with space
                 f"DP{axis}=0",     # Define position
                 f"DP {axis}=0",    # Define position with space
-                f"PA{axis}=0",     # Position absolute
-                f"PA {axis}=0"     # Position absolute with space
             ]
             
             success = False
-            for cmd in reset_commands:
+            for cmd in move_commands:
                 try:
                     self.controller.send_command(cmd)
                     success = True
@@ -1091,13 +1109,47 @@ class GalilSetupApp:
                     continue
             
             if success:
-                messagebox.showinfo("Position Reset", f"Position of axis {axis} reset to 0.")
-            else:
-                messagebox.showwarning("Position Reset", f"Could not reset position for axis {axis}.\nTry stopping motion first.")
+                # Reset the encoder count to zero
+                encoder_reset_commands = [
+                    f"RZ{axis}",      # Reset zero position
+                    f"RZ {axis}",      # Reset zero position with space
+                    f"ZP{axis}=0",     # Zero position
+                    f"ZP {axis}=0",    # Zero position with space
+                    f"DP{axis}=0",     # Define position to 0
+                    f"DP {axis}=0",    # Define position to 0 with space
+                    f"CN{axis}=0",     # Clear encoder count
+                    f"CN {axis}=0",    # Clear encoder count with space
+                    f"CE{axis}",       # Clear encoder
+                    f"CE {axis}",      # Clear encoder with space
+                ]
                 
-            # Update 3D display
-            self.update_position_from_controller(axis)
-            
+                encoder_reset_success = False
+                for cmd in encoder_reset_commands:
+                    try:
+                        self.controller.send_command(cmd)
+                        encoder_reset_success = True
+                        break
+                    except Exception:
+                        continue
+                
+                if encoder_reset_success:
+                    messagebox.showinfo("Position Reset", f"Position and encoder count of axis {axis} reset to 0.")
+                else:
+                    messagebox.showinfo("Position Reset", f"Position of axis {axis} reset to 0. (Encoder reset may have failed)")
+                
+                # Update the visual marker to center position (0) immediately
+                self.visualizer.update_position(axis, 0)
+                
+                # Schedule additional updates to ensure the display is current
+                def delayed_update():
+                    self.update_position_from_controller(axis)
+                    self.visualizer.update_from_controller()
+                
+                # Update after a short delay to allow the controller to process
+                self.root.after(100, delayed_update)
+            else:
+                messagebox.showwarning("Position Reset", f"Could not move axis {axis} to position 0.\nTry stopping motion first.")
+                
         except Exception as e:
             messagebox.showerror("Reset Error", f"Error resetting position for axis {axis}: {str(e)}")
 
