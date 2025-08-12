@@ -1,5 +1,5 @@
 {
-    "ip_address": "192.168.0.100",
+    "ip_address": "10.1.0.21",
     "jog_speed": 128000,
     "axis_presets": {
         "A": {
