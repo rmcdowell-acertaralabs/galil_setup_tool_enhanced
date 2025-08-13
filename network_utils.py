@@ -18,39 +18,7 @@ def discover_galil_controllers() -> Dict[str, str]:
         print(f"Error discovering controllers: {e}")
         return {}
 
-def find_controllers_requesting_ip() -> Dict[str, str]:
-    """
-    Find controllers that are requesting IP addresses via BOOT-P or DHCP.
-    
-    Returns:
-        Dictionary mapping 'model-serial' to 'mac address'
-    """
-    try:
-        g = gclib.py()
-        ip_requests = g.GIpRequests()
-        return ip_requests
-    except Exception as e:
-        print(f"Error finding IP requests: {e}")
-        return {}
 
-def assign_ip_to_controller(ip_address: str, mac_address: str) -> bool:
-    """
-    Assign an IP address to a controller using its MAC address.
-    
-    Args:
-        ip_address: The IP address to assign
-        mac_address: The MAC address of the controller
-        
-    Returns:
-        True if successful, False otherwise
-    """
-    try:
-        g = gclib.py()
-        g.GAssign(ip_address, mac_address)
-        return True
-    except Exception as e:
-        print(f"Error assigning IP address: {e}")
-        return False
 
 def ping_controller(ip_address: str, timeout: float = 1.0) -> bool:
     """
@@ -73,26 +41,7 @@ def ping_controller(ip_address: str, timeout: float = 1.0) -> bool:
     except Exception:
         return False
 
-def scan_network_range(base_ip: str, start: int = 1, end: int = 254) -> List[str]:
-    """
-    Scan a network range for Galil controllers.
-    
-    Args:
-        base_ip: Base IP address (e.g., "192.168.0")
-        start: Start of range (default: 1)
-        end: End of range (default: 254)
-        
-    Returns:
-        List of responding IP addresses
-    """
-    responding_ips = []
-    
-    for i in range(start, end + 1):
-        ip = f"{base_ip}.{i}"
-        if ping_controller(ip):
-            responding_ips.append(ip)
-    
-    return responding_ips
+
 
 def validate_ip_address(ip_address: str) -> bool:
     """
@@ -120,29 +69,7 @@ def validate_ip_address(ip_address: str) -> bool:
     except Exception:
         return False
 
-def validate_mac_address(mac_address: str) -> bool:
-    """
-    Validate a MAC address format.
-    
-    Args:
-        mac_address: MAC address to validate
-        
-    Returns:
-        True if valid, False otherwise
-    """
-    try:
-        # Remove common separators
-        mac = mac_address.replace(':', '').replace('-', '').replace('.', '')
-        
-        # Check length
-        if len(mac) != 12:
-            return False
-        
-        # Check if all characters are hexadecimal
-        int(mac, 16)
-        return True
-    except Exception:
-        return False
+
 
 def get_network_info(ip_address: str, subnet_mask: str = "255.255.255.0") -> Dict[str, str]:
     """
@@ -306,3 +233,4 @@ def set_controller_network_settings(controller, settings: Dict[str, str]) -> Dic
             results[setting] = success
     
     return results
+

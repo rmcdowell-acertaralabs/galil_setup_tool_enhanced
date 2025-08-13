@@ -7,8 +7,7 @@ from motor_setup import tune_axis, configure_axis
 from encoder_overlay import EncoderOverlay
 from config_manager import load_config, save_config
 from network_utils import (
-    discover_galil_controllers, find_controllers_requesting_ip, assign_ip_to_controller,
-    ping_controller, scan_network_range, validate_ip_address, validate_mac_address,
+    discover_galil_controllers, ping_controller, validate_ip_address,
     test_controller_connection, get_controller_network_settings, set_controller_network_settings
 )
 import os
@@ -69,7 +68,7 @@ class GaugeVisualizer:
         )
         
         # Gauge scale marks
-        for i in range(11):  # 0 to 10 marks
+        for i in range(11):  # -5 to +5 marks (11 total, centered at 0)
             angle = start_angle + (i * extent / 10)
             angle_rad = math.radians(angle)
             
@@ -85,12 +84,13 @@ class GaugeVisualizer:
             self.canvas.create_line(x1, y1, x2, y2, fill='#ffffff', width=2,
                                   tags=f"mark_{axis}_{i}")
             
-            # Add scale numbers
+            # Add scale numbers (-5 to +5)
             if i % 2 == 0:
                 text_radius = radius - 25
                 text_x = center_x + text_radius * math.cos(angle_rad)
                 text_y = center_y - text_radius * math.sin(angle_rad)
-                self.canvas.create_text(text_x, text_y, text=str(i), 
+                scale_value = i - 5  # Convert 0-10 to -5 to +5
+                self.canvas.create_text(text_x, text_y, text=str(scale_value), 
                                       fill='#ffffff', font=("Arial", 8, "bold"),
                                       tags=f"scale_{axis}_{i}")
         
@@ -102,9 +102,9 @@ class GaugeVisualizer:
             tags=f"hub_{axis}"
         )
         
-        # Needle (initially at 0)
+        # Needle (initially at center/zero)
         needle_length = radius - 20
-        needle_angle = start_angle + (0 * extent / 10)  # Start at 0
+        needle_angle = start_angle + (5 * extent / 10)  # Start at center (5th mark = 0)
         needle_rad = math.radians(needle_angle)
         needle_x = center_x + needle_length * math.cos(needle_rad)
         needle_y = center_y - needle_length * math.sin(needle_rad)
@@ -133,14 +133,15 @@ class GaugeVisualizer:
         center_x, center_y = self.gauge_centers[axis]
         radius = self.gauge_radius
         
-        # Normalize position to 0-10 scale (adjust range as needed)
-        max_position = 100000  # Adjust based on your controller's range
-        normalized_pos = max(0, min(10, abs(position) / max_position * 10))
+        # Normalize position to -10 to +10 scale (centered at zero)
+        max_position = 50000  # Adjust based on your controller's range
+        normalized_pos = max(-1, min(1, position / max_position))
         
-        # Calculate needle angle (180 to 360 degrees)
+        # Calculate needle angle (180 to 360 degrees, with 270 as center/zero)
         start_angle = 180
         extent = 180
-        needle_angle = start_angle + (normalized_pos * extent / 10)
+        # Map -1 to 180 degrees (left), 0 to 270 degrees (center), +1 to 360 degrees (right)
+        needle_angle = start_angle + ((normalized_pos + 1) * extent / 2)
         needle_rad = math.radians(needle_angle)
         
         # Update needle position
@@ -501,13 +502,25 @@ class GalilSetupApp:
         tk.Button(test_frame, text="RUN DIAGNOSTICS", command=self.run_diagnostics,
                  bg='#0066cc', fg='#ffffff', font=("Arial", 9, "bold"),
                  relief='raised', bd=3).pack(pady=2)
-        tk.Button(test_frame, text="TEST CONNECTION", command=self.test_connection,
+        tk.Button(test_frame, text="COMPREHENSIVE TEST", command=self.run_comprehensive_test,
                  bg='#0066cc', fg='#ffffff', font=("Arial", 9, "bold"),
                  relief='raised', bd=3).pack(pady=2)
-        tk.Button(test_frame, text="TEST COMMANDS", command=self.test_jog_commands,
+        
+        # Automated test section
+        auto_test_frame = tk.LabelFrame(scrollable_frame, text="AUTOMATED TESTING", 
+                                      bg='#2a2a2a', fg='#ffffff', font=("Arial", 10, "bold"))
+        auto_test_frame.pack(fill="x", padx=10, pady=5)
+        
+        tk.Button(auto_test_frame, text="RUN AUTOMATED TEST", command=self.run_automated_test,
+                 bg='#cc6600', fg='#ffffff', font=("Arial", 9, "bold"),
+                 relief='raised', bd=3).pack(pady=2)
+        tk.Button(auto_test_frame, text="STOP AUTOMATED TEST", command=self.stop_automated_test,
+                 bg='#cc0000', fg='#ffffff', font=("Arial", 9, "bold"),
+                 relief='raised', bd=3).pack(pady=2)
+        tk.Button(auto_test_frame, text="TEST SIMPLE MOVEMENT", command=self.test_simple_movement,
                  bg='#0066cc', fg='#ffffff', font=("Arial", 9, "bold"),
                  relief='raised', bd=3).pack(pady=2)
-        tk.Button(test_frame, text="TEST SERVO", command=self.test_servo_commands,
+        tk.Button(auto_test_frame, text="TEST COMMAND FORMATS", command=self.test_command_formats,
                  bg='#0066cc', fg='#ffffff', font=("Arial", 9, "bold"),
                  relief='raised', bd=3).pack(pady=2)
         
@@ -534,22 +547,13 @@ class GalilSetupApp:
         tk.Button(network_frame, text="SET IP (ADVANCED)", command=self.set_controller_ip_advanced,
                  bg='#0066cc', fg='#ffffff', font=("Arial", 9, "bold"),
                  relief='raised', bd=3).pack(pady=2)
-        tk.Button(network_frame, text="GET IP", command=self.get_controller_ip,
-                 bg='#0066cc', fg='#ffffff', font=("Arial", 9, "bold"),
-                 relief='raised', bd=3).pack(pady=2)
         tk.Button(network_frame, text="DISCOVER CONTROLLERS", command=self.discover_network_controllers,
                  bg='#0066cc', fg='#ffffff', font=("Arial", 9, "bold"),
                  relief='raised', bd=3).pack(pady=2)
-        tk.Button(network_frame, text="FIND IP REQUESTS", command=self.find_ip_requests,
-                 bg='#0066cc', fg='#ffffff', font=("Arial", 9, "bold"),
-                 relief='raised', bd=3).pack(pady=2)
-        tk.Button(network_frame, text="ASSIGN IP BY MAC", command=self.assign_ip_to_controller,
-                 bg='#0066cc', fg='#ffffff', font=("Arial", 9, "bold"),
-                 relief='raised', bd=3).pack(pady=2)
-        tk.Button(network_frame, text="SCAN NETWORK", command=self.scan_network_for_controllers,
-                 bg='#0066cc', fg='#ffffff', font=("Arial", 9, "bold"),
-                 relief='raised', bd=3).pack(pady=2)
         tk.Button(network_frame, text="TEST CONNECTION", command=self.test_network_connection,
+                 bg='#0066cc', fg='#ffffff', font=("Arial", 9, "bold"),
+                 relief='raised', bd=3).pack(pady=2)
+        tk.Button(network_frame, text="WINDOWS PING TEST", command=self.test_windows_ping,
                  bg='#0066cc', fg='#ffffff', font=("Arial", 9, "bold"),
                  relief='raised', bd=3).pack(pady=2)
         
@@ -559,6 +563,9 @@ class GalilSetupApp:
         pos_frame.pack(fill="x", padx=10, pady=5)
         
         tk.Button(pos_frame, text="RESET POSITION", command=self.reset_axis_position,
+                 bg='#404040', fg='#ffffff', font=("Arial", 9, "bold"),
+                 relief='raised', bd=3).pack(pady=2)
+        tk.Button(pos_frame, text="TEST RESET COMMANDS", command=self.test_reset_commands,
                  bg='#404040', fg='#ffffff', font=("Arial", 9, "bold"),
                  relief='raised', bd=3).pack(pady=2)
         
@@ -895,6 +902,89 @@ class GalilSetupApp:
         
         messagebox.showinfo("Command Test Results", "\n".join(results))
 
+    def run_comprehensive_test(self):
+        """Run comprehensive test including connection, commands, and servo."""
+        if not getattr(self.controller, "g", None):
+            messagebox.showerror("Connection Error", "Controller not connected. Please click Connect first.")
+            return
+        
+        # Create results list
+        results = []
+        results.append("=== COMPREHENSIVE CONTROLLER TEST ===")
+        results.append("")
+        
+        # Test 1: Connection and basic info
+        results.append("1. CONNECTION TEST:")
+        try:
+            # Test basic commands
+            commands = ["TP", "MG _FW", "MG _BN", "MG _ID"]
+            for cmd in commands:
+                try:
+                    response = self.controller.send_command(cmd)
+                    results.append(f"  ✓ {cmd}: {response}")
+                except Exception as e:
+                    results.append(f"  ✗ {cmd}: {str(e)}")
+        except Exception as e:
+            results.append(f"  ✗ Connection failed: {str(e)}")
+        
+        results.append("")
+        
+        # Test 2: Servo commands
+        results.append("2. SERVO COMMAND TEST:")
+        axis = self.selected_axis.get()
+        servo_commands = [
+            f"SH {SERVO_BITS[axis]}",  # Bitmask with space
+            f"SH{SERVO_BITS[axis]}",    # Bitmask without space
+            f"SH {axis}",                # Axis letter with space
+            f"SH{axis}",                 # Axis letter without space
+            f"SH {axis}1",              # Axis letter with 1
+            f"SH{axis}1",               # Axis letter with 1
+            f"SH {axis}ON",             # Axis letter with ON
+            f"SH{axis}ON",              # Axis letter with ON
+            "SH",                       # Just SH
+            "SH1",                      # Just SH1
+            "SHA",                      # Just SHA
+        ]
+        
+        for cmd in servo_commands:
+            try:
+                response = self.controller.send_command(cmd)
+                results.append(f"  ✓ {cmd}: {response}")
+            except Exception as e:
+                results.append(f"  ✗ {cmd}: {str(e)}")
+        
+        results.append("")
+        
+        # Test 3: Jog commands (without actually moving)
+        results.append("3. JOG COMMAND TEST:")
+        speed = self.jog_speed_entry.get()
+        jog_commands = [
+            f"SH {SERVO_BITS[axis]}",
+            f"JG {axis}={speed}",
+            f"ST {axis}",
+            f"SH{SERVO_BITS[axis]}",
+            f"JG{axis}={speed}",
+            f"ST{axis}",
+            f"SH{axis}",
+            f"JG{axis} {speed}",
+            f"JG {axis} {speed}",
+            f"SP {axis}={speed}",
+            f"SP{axis}={speed}",
+        ]
+        
+        for cmd in jog_commands:
+            try:
+                response = self.controller.send_command(cmd)
+                results.append(f"  ✓ {cmd}: {response}")
+            except Exception as e:
+                results.append(f"  ✗ {cmd}: {str(e)}")
+        
+        results.append("")
+        results.append("=== TEST COMPLETE ===")
+        
+        # Show results
+        messagebox.showinfo("Comprehensive Test Results", "\n".join(results))
+    
     def test_servo_commands(self):
         """Test different servo-on command formats."""
         if not getattr(self.controller, "g", None):
@@ -1179,63 +1269,7 @@ class GalilSetupApp:
         except Exception as e:
             messagebox.showerror("Discovery Error", f"Error discovering controllers: {str(e)}")
 
-    def find_ip_requests(self):
-        """Find controllers requesting IP addresses."""
-        try:
-            ip_requests = find_controllers_requesting_ip()
-            
-            if ip_requests:
-                # Format the results
-                result = "Controllers Requesting IP Addresses:\n\n"
-                for model_serial, mac in ip_requests.items():
-                    result += f"Model-Serial: {model_serial}\n"
-                    result += f"MAC Address: {mac}\n"
-                    result += "-" * 40 + "\n"
-                
-                messagebox.showinfo("IP Requests", result)
-            else:
-                messagebox.showinfo("IP Requests", "No controllers requesting IP addresses found.")
-                
-        except Exception as e:
-            messagebox.showerror("IP Request Error", f"Error finding IP requests: {str(e)}")
 
-    def assign_ip_to_controller(self):
-        """Assign IP address to a controller by MAC address."""
-        # Get MAC address from user
-        mac_address = simpledialog.askstring("Assign IP", "Enter the MAC address of the controller (e.g., 00:50:4c:20:03:0f):")
-        if not mac_address:
-            return
-            
-        # Validate MAC address
-        if not validate_mac_address(mac_address):
-            messagebox.showerror("Invalid MAC", "Please enter a valid MAC address (e.g., 00:50:4c:20:03:0f)")
-            return
-            
-        # Get IP address from user
-        ip_address = simpledialog.askstring("Assign IP", "Enter the IP address to assign:", initialvalue=self.ip_entry.get())
-        if not ip_address:
-            return
-            
-        # Validate IP address
-        if not validate_ip_address(ip_address):
-            messagebox.showerror("Invalid IP", "Please enter a valid IP address (e.g., 192.168.0.100)")
-            return
-            
-        try:
-            # Assign IP address
-            if assign_ip_to_controller(ip_address, mac_address):
-                messagebox.showinfo("IP Assignment", f"IP address {ip_address} assigned to controller with MAC {mac_address}")
-                
-                # Update the entry field
-                self.ip_entry.delete(0, tk.END)
-                self.ip_entry.insert(0, ip_address)
-                self.config["ip_address"] = ip_address
-                save_config(self.config)
-            else:
-                messagebox.showerror("Assignment Error", "Failed to assign IP address. Check network permissions.")
-            
-        except Exception as e:
-            messagebox.showerror("Assignment Error", f"Error assigning IP address: {str(e)}")
 
     def set_controller_ip_advanced(self):
         """Advanced IP setting with multiple options."""
@@ -1327,78 +1361,7 @@ class GalilSetupApp:
                  bg='#330000', fg='#ff0000', font=("Courier", 10, "bold"),
                  relief='raised', bd=3).pack(side="left", padx=5)
 
-    def get_controller_ip(self):
-        """Get the current IP address from the controller."""
-        if not getattr(self.controller, "g", None):
-            messagebox.showerror("Connection Error", "Controller not connected. Please click Connect first.")
-            return
-            
-        try:
-            # Get network settings from controller
-            settings = get_controller_network_settings(self.controller)
-            
-            if settings:
-                result = "Current Network Settings:\n\n"
-                for setting, value in settings.items():
-                    result += f"{setting.upper()}: {value}\n"
-                messagebox.showinfo("Network Settings", result)
-            else:
-                messagebox.showinfo("Network Settings", "Could not retrieve network settings from controller.")
-                
-        except Exception as e:
-            messagebox.showerror("Network Error", f"Error getting network settings: {str(e)}")
 
-    def scan_network_for_controllers(self):
-        """Scan the network for Galil controllers."""
-        # Get base IP from current IP
-        current_ip = self.ip_entry.get().strip()
-        if not current_ip:
-            messagebox.showerror("Error", "Please enter an IP address first.")
-            return
-            
-        # Extract base IP (first three octets)
-        try:
-            base_ip = '.'.join(current_ip.split('.')[:3])
-        except:
-            messagebox.showerror("Error", "Invalid IP address format.")
-            return
-            
-        # Ask user for scan range
-        start = simpledialog.askinteger("Scan Range", f"Start IP (last octet):", initialvalue=1)
-        if start is None:
-            return
-            
-        end = simpledialog.askinteger("Scan Range", f"End IP (last octet):", initialvalue=254)
-        if end is None:
-            return
-            
-        try:
-            # Scan the network
-            responding_ips = scan_network_range(base_ip, start, end)
-            
-            if responding_ips:
-                result = f"Controllers found on {base_ip}.{start}-{end}:\n\n"
-                for ip in responding_ips:
-                    # Test each IP for Galil controller
-                    test_result = test_controller_connection(ip)
-                    if test_result['connection_success']:
-                        result += f"✓ {ip} - Galil Controller"
-                        if test_result['model']:
-                            result += f" ({test_result['model']})"
-                        if test_result['firmware']:
-                            result += f" - FW: {test_result['firmware']}"
-                        result += "\n"
-                    elif test_result['ping_success']:
-                        result += f"○ {ip} - Responding (not Galil)\n"
-                    else:
-                        result += f"✗ {ip} - No response\n"
-            else:
-                result = f"No responding devices found on {base_ip}.{start}-{end}"
-                
-            messagebox.showinfo("Network Scan Results", result)
-            
-        except Exception as e:
-            messagebox.showerror("Scan Error", f"Error scanning network: {str(e)}")
 
     def test_network_connection(self):
         """Test connection to the current IP address."""
@@ -1423,6 +1386,18 @@ class GalilSetupApp:
                 status += f"Firmware: {result['firmware']}\n"
             if result['error']:
                 status += f"Error: {result['error']}\n"
+            
+            # Add troubleshooting suggestions
+            if not result['ping_success']:
+                status += "\n" + "="*50 + "\n"
+                status += "TROUBLESHOOTING SUGGESTIONS:\n\n"
+                status += "1. Check if controller is powered on\n"
+                status += "2. Verify network cable is connected\n"
+                status += "3. Check if IP address is correct\n"
+                status += "4. Try 'DISCOVER CONTROLLERS' to find controllers\n"
+                status += "5. Check Windows Firewall settings\n"
+                status += "6. Verify you're on the same network subnet\n"
+                status += "7. Try pinging the IP from Command Prompt\n"
                 
             messagebox.showinfo("Connection Test", status)
             
@@ -1430,7 +1405,7 @@ class GalilSetupApp:
             messagebox.showerror("Test Error", f"Error testing connection: {str(e)}")
 
     def reset_axis_position(self):
-        """Reset the position of the selected axis to 0."""
+        """Reset the position and encoder count of the selected axis to 0."""
         axis = self.selected_axis.get()
         
         # Check if controller is connected
@@ -1447,70 +1422,805 @@ class GalilSetupApp:
             # First, stop any current motion
             try:
                 self.controller.send_command("ST")
+                # Wait a moment for motion to stop
+                self.root.after(100)
             except Exception:
                 pass
                 
-            # Try to move the axis to position 0
-            move_commands = [
-                f"PA{axis}=0",     # Position absolute
-                f"PA {axis}=0",    # Position absolute with space
-                f"DP{axis}=0",     # Define position
-                f"DP {axis}=0",    # Define position with space
+            # Step 1: Servo off the axis to allow encoder reset
+            try:
+                self.controller.send_command(f"MO{axis}")
+                # Wait a moment
+                self.root.after(100)
+            except Exception:
+                pass
+                
+            # Step 2: Reset the encoder count to zero (this is the key step)
+            encoder_reset_success = False
+            encoder_reset_commands = [
+                f"DP{axis}=0",     # Define position to 0 (most reliable)
+                f"DP {axis}=0",    # Define position to 0 with space
+                f"RZ{axis}",       # Reset zero position
+                f"RZ {axis}",      # Reset zero position with space
+                f"ZP{axis}=0",     # Zero position
+                f"ZP {axis}=0",    # Zero position with space
             ]
             
-            success = False
-            for cmd in move_commands:
+            for cmd in encoder_reset_commands:
                 try:
                     self.controller.send_command(cmd)
-                    success = True
+                    encoder_reset_success = True
                     break
                 except Exception:
                     continue
             
-            if success:
-                # Reset the encoder count to zero
-                encoder_reset_commands = [
-                    f"RZ{axis}",      # Reset zero position
-                    f"RZ {axis}",      # Reset zero position with space
-                    f"ZP{axis}=0",     # Zero position
-                    f"ZP {axis}=0",    # Zero position with space
-                    f"DP{axis}=0",     # Define position to 0
-                    f"DP {axis}=0",    # Define position to 0 with space
-                    f"CN{axis}=0",     # Clear encoder count
-                    f"CN {axis}=0",    # Clear encoder count with space
-                    f"CE{axis}",       # Clear encoder
-                    f"CE {axis}",      # Clear encoder with space
-                ]
+            if not encoder_reset_success:
+                messagebox.showerror("Reset Error", f"Could not reset encoder count for axis {axis}")
+                return
                 
-                encoder_reset_success = False
-                for cmd in encoder_reset_commands:
-                    try:
-                        self.controller.send_command(cmd)
-                        encoder_reset_success = True
-                        break
-                    except Exception:
-                        continue
+            # Step 3: Servo on the axis
+            try:
+                self.controller.send_command(f"SH{axis}")
+                # Wait a moment for servo to engage
+                self.root.after(100)
+            except Exception:
+                pass
                 
-                if encoder_reset_success:
-                    messagebox.showinfo("Position Reset", f"Position and encoder count of axis {axis} reset to 0.")
+            # Step 4: Verify the reset by reading position
+            try:
+                response = self.controller.send_command("TP")
+                if response:
+                    positions = response.split(',')
+                    if len(positions) >= 4:
+                        axis_index = {"A": 0, "B": 1, "C": 2, "D": 3}.get(axis, 0)
+                        try:
+                            current_pos = int(positions[axis_index])
+                            if abs(current_pos) <= 10:  # Allow small tolerance
+                                messagebox.showinfo("Position Reset", f"Position and encoder count of axis {axis} successfully reset to 0.\nCurrent position: {current_pos}")
+                            else:
+                                messagebox.showwarning("Position Reset", f"Position reset may not have worked completely.\nCurrent position: {current_pos}")
+                        except (ValueError, IndexError):
+                            messagebox.showinfo("Position Reset", f"Position and encoder count of axis {axis} reset to 0.")
+                    else:
+                        messagebox.showinfo("Position Reset", f"Position and encoder count of axis {axis} reset to 0.")
                 else:
-                    messagebox.showinfo("Position Reset", f"Position of axis {axis} reset to 0. (Encoder reset may have failed)")
-                
-                # Update the gauge needle to center position (0) immediately
-                self.visualizer.update_position(axis, 0)
-                
-                # Schedule additional updates to ensure the display is current
-                def delayed_update():
-                    self.update_position_from_controller(axis)
-                    self.visualizer.update_from_controller()
-                
-                # Update after a short delay to allow the controller to process
-                self.root.after(100, delayed_update)
-            else:
-                messagebox.showwarning("Position Reset", f"Could not move axis {axis} to position 0.\nTry stopping motion first.")
+                    messagebox.showinfo("Position Reset", f"Position and encoder count of axis {axis} reset to 0.")
+            except Exception:
+                messagebox.showinfo("Position Reset", f"Position and encoder count of axis {axis} reset to 0.")
+            
+            # Update the gauge needle to center position (0) immediately
+            self.visualizer.update_position(axis, 0)
+            
+            # Schedule additional updates to ensure the display is current
+            def delayed_update():
+                self.update_position_from_controller(axis)
+                self.visualizer.update_from_controller()
+            
+            # Update after a short delay to allow the controller to process
+            self.root.after(200, delayed_update)
                 
         except Exception as e:
             messagebox.showerror("Reset Error", f"Error resetting position for axis {axis}: {str(e)}")
+    
+    def test_reset_commands(self):
+        """Test different reset commands to see which ones work."""
+        axis = self.selected_axis.get()
+        
+        # Check if controller is connected
+        if not getattr(self.controller, "g", None):
+            messagebox.showerror("Connection Error", "Controller not connected. Please click Connect first.")
+            return
+            
+        try:
+            # Get current position before reset
+            try:
+                response = self.controller.send_command("TP")
+                if response:
+                    positions = response.split(',')
+                    if len(positions) >= 4:
+                        axis_index = {"A": 0, "B": 1, "C": 2, "D": 3}.get(axis, 0)
+                        try:
+                            initial_pos = int(positions[axis_index])
+                        except (ValueError, IndexError):
+                            initial_pos = "Unknown"
+                    else:
+                        initial_pos = "Unknown"
+                else:
+                    initial_pos = "Unknown"
+            except Exception:
+                initial_pos = "Unknown"
+            
+            # Stop motion first
+            try:
+                self.controller.send_command("ST")
+            except Exception:
+                pass
+            
+            # Test various reset commands
+            test_commands = [
+                f"DP{axis}=0",     # Define position
+                f"DP {axis}=0",    # Define position with space
+                f"RZ{axis}",       # Reset zero
+                f"RZ {axis}",      # Reset zero with space
+                f"ZP{axis}=0",     # Zero position
+                f"ZP {axis}=0",    # Zero position with space
+                f"CN{axis}=0",     # Clear encoder count
+                f"CN {axis}=0",    # Clear encoder count with space
+                f"CE{axis}",       # Clear encoder
+                f"CE {axis}",      # Clear encoder with space
+                f"PA{axis}=0",     # Position absolute
+                f"PA {axis}=0",    # Position absolute with space
+            ]
+            
+            results = []
+            results.append(f"Initial position: {initial_pos}")
+            results.append("Testing reset commands:")
+            results.append("-" * 40)
+            
+            for cmd in test_commands:
+                try:
+                    self.controller.send_command(cmd)
+                    results.append(f"✓ {cmd}: Success")
+                except Exception as e:
+                    results.append(f"✗ {cmd}: {str(e)}")
+            
+            # Check final position
+            try:
+                response = self.controller.send_command("TP")
+                if response:
+                    positions = response.split(',')
+                    if len(positions) >= 4:
+                        axis_index = {"A": 0, "B": 1, "C": 2, "D": 3}.get(axis, 0)
+                        try:
+                            final_pos = int(positions[axis_index])
+                            results.append("-" * 40)
+                            results.append(f"Final position: {final_pos}")
+                        except (ValueError, IndexError):
+                            results.append("-" * 40)
+                            results.append("Final position: Unknown")
+                    else:
+                        results.append("-" * 40)
+                        results.append("Final position: Unknown")
+                else:
+                    results.append("-" * 40)
+                    results.append("Final position: Unknown")
+            except Exception:
+                results.append("-" * 40)
+                results.append("Final position: Unknown")
+            
+            messagebox.showinfo("Reset Command Test", "\n".join(results))
+            
+        except Exception as e:
+            messagebox.showerror("Test Error", f"Error testing reset commands: {str(e)}")
+    
+    def run_automated_test(self):
+        """Run automated test on all connected axes with 10cm movement pattern."""
+        # Check if controller is connected
+        if not getattr(self.controller, "g", None):
+            messagebox.showerror("Connection Error", "Controller not connected. Please click Connect first.")
+            return
+        
+        # Show test configuration dialog
+        test_config = self.show_test_config_dialog()
+        if not test_config:
+            return
+        
+        # Start the test in a separate thread
+        import threading
+        test_thread = threading.Thread(target=self._run_automated_test_thread, daemon=True, args=(test_config,))
+        test_thread.start()
+    
+    def show_test_config_dialog(self):
+        """Show dialog to configure automated test parameters."""
+        # Create a custom dialog for test configuration
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Automated Test Configuration")
+        dialog.geometry("500x600")
+        dialog.configure(bg='#1a1a1a')
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        # Center the dialog
+        dialog.geometry("+%d+%d" % (self.root.winfo_rootx() + 50, self.root.winfo_rooty() + 50))
+        
+        # Test parameters
+        tk.Label(dialog, text="Test Configuration", bg='#1a1a1a', fg='#ffffff', 
+                font=("Arial", 14, "bold")).pack(pady=10)
+        
+        # Total distance
+        tk.Label(dialog, text="Total Movement Distance (cm):", bg='#1a1a1a', fg='#ffffff', 
+                font=("Arial", 10)).pack(pady=5)
+        distance_entry = tk.Entry(dialog, width=10, bg='#1a1a1a', fg='#ffffff', insertbackground='#ffffff')
+        distance_entry.insert(0, "10")
+        distance_entry.pack(pady=5)
+        
+        # Step size
+        tk.Label(dialog, text="Step Size (mm):", bg='#1a1a1a', fg='#ffffff', 
+                font=("Arial", 10)).pack(pady=5)
+        step_entry = tk.Entry(dialog, width=10, bg='#1a1a1a', fg='#ffffff', insertbackground='#ffffff')
+        step_entry.insert(0, "1")
+        step_entry.pack(pady=5)
+        
+        # Delay between movements
+        tk.Label(dialog, text="Delay Between Movements (seconds):", bg='#1a1a1a', fg='#ffffff', 
+                font=("Arial", 10)).pack(pady=5)
+        delay_entry = tk.Entry(dialog, width=10, bg='#1a1a1a', fg='#ffffff', insertbackground='#ffffff')
+        delay_entry.insert(0, "0.1")
+        delay_entry.pack(pady=5)
+        
+        # Movement speed
+        tk.Label(dialog, text="Movement Speed (encoder units):", bg='#1a1a1a', fg='#ffffff', 
+                font=("Arial", 10)).pack(pady=5)
+        speed_entry = tk.Entry(dialog, width=10, bg='#1a1a1a', fg='#ffffff', insertbackground='#ffffff')
+        speed_entry.insert(0, "5000")
+        speed_entry.pack(pady=5)
+        
+        # Axis selection
+        tk.Label(dialog, text="Axes to Test:", bg='#1a1a1a', fg='#ffffff', 
+                font=("Arial", 10)).pack(pady=5)
+        
+        axis_frame = tk.Frame(dialog, bg='#1a1a1a')
+        axis_frame.pack(pady=5)
+        
+        axis_vars = {}
+        for axis in ["A", "B", "C", "D"]:
+            var = tk.BooleanVar(value=True)
+            axis_vars[axis] = var
+            tk.Checkbutton(axis_frame, text=f"Axis {axis}", variable=var,
+                          bg='#1a1a1a', fg='#ffffff', selectcolor='#1a1a1a',
+                          font=("Arial", 9)).pack(side="left", padx=5)
+        
+        result = {}
+        
+        def apply_config():
+            try:
+                result['distance'] = float(distance_entry.get())
+                result['step_size'] = float(step_entry.get())
+                result['delay'] = float(delay_entry.get())
+                result['speed'] = int(speed_entry.get())
+                result['axes'] = [axis for axis, var in axis_vars.items() if var.get()]
+                
+                if not result['axes']:
+                    messagebox.showerror("Error", "Please select at least one axis to test.")
+                    return
+                
+                dialog.destroy()
+            except ValueError as e:
+                messagebox.showerror("Error", f"Invalid input: {str(e)}")
+        
+        def cancel():
+            result.clear()
+            dialog.destroy()
+        
+        # Buttons
+        button_frame = tk.Frame(dialog, bg='#1a1a1a')
+        button_frame.pack(pady=20)
+        
+        tk.Button(button_frame, text="Start Test", command=apply_config,
+                 bg='#0066cc', fg='#ffffff', font=("Arial", 10, "bold"),
+                 relief='raised', bd=3).pack(side="left", padx=5)
+        
+        tk.Button(button_frame, text="Cancel", command=cancel,
+                 bg='#404040', fg='#ffffff', font=("Arial", 10, "bold"),
+                 relief='raised', bd=3).pack(side="left", padx=5)
+        
+        # Wait for dialog to close
+        dialog.wait_window()
+        
+        return result if result else None
+    
+    def _run_automated_test_thread(self, test_config):
+        """Run the automated test in a separate thread."""
+        try:
+            # Extract test parameters from config
+            distance_cm = test_config['distance']
+            step_size_mm = test_config['step_size']
+            delay_seconds = test_config['delay']
+            speed = test_config['speed']
+            axes_to_test = test_config['axes']
+            
+            # Convert to encoder units (assuming 1000 units = 1mm)
+            total_distance = int(distance_cm * 10000)  # Convert cm to encoder units
+            step_size = int(step_size_mm * 1000)       # Convert mm to encoder units
+            delay_ms = int(delay_seconds * 1000)       # Convert seconds to milliseconds
+            
+            # Reset stop flag
+            self._stop_test = False
+            
+            # Get current positions
+            current_positions = {}
+            try:
+                response = self.controller.send_command("TP")
+                if response:
+                    positions = response.split(',')
+                    if len(positions) >= 4:
+                        for i, axis in enumerate(["A", "B", "C", "D"]):
+                            try:
+                                current_positions[axis] = int(positions[i])
+                            except (ValueError, IndexError):
+                                current_positions[axis] = 0
+            except Exception:
+                for axis in ["A", "B", "C", "D"]:
+                    current_positions[axis] = 0
+            
+            # Test each selected axis
+            for axis in axes_to_test:
+                if self._stop_test:
+                    break
+                self._test_single_axis(axis, current_positions[axis], total_distance, step_size, delay_ms, speed)
+            
+            # Show completion message
+            if not self._stop_test:
+                self.root.after(0, lambda: messagebox.showinfo("Test Complete", 
+                                                              f"Automated test completed for axes: {', '.join(axes_to_test)}!"))
+            
+        except Exception as e:
+            error_msg = str(e)
+            self.root.after(0, lambda: messagebox.showerror("Test Error", f"Error during automated test: {error_msg}"))
+    
+    def _test_single_axis(self, axis, start_position, total_distance, step_size, delay_ms, speed):
+        """Test a single axis with the movement pattern."""
+        error_count = 0
+        max_errors = 10  # Maximum consecutive errors before stopping
+        
+        try:
+            # Stop any current motion
+            self.controller.send_command("ST")
+            self.root.after(delay_ms)
+            
+            # Servo on the axis
+            self.controller.send_command(f"SH{axis}")
+            self.root.after(delay_ms)
+            
+            # Set speed for precise movements
+            self.controller.send_command(f"SP{axis}={speed}")
+            
+            # Movement pattern: 0 → +5cm → -5cm → 0
+            movements = [
+                (start_position, start_position + total_distance//2),    # 0 → +5cm
+                (start_position + total_distance//2, start_position - total_distance//2),  # +5cm → -5cm
+                (start_position - total_distance//2, start_position)     # -5cm → 0
+            ]
+            
+            for start_pos, end_pos in movements:
+                # Move in 1mm increments
+                current_pos = start_pos
+                direction = 1 if end_pos > start_pos else -1
+                
+                while (direction > 0 and current_pos < end_pos) or (direction < 0 and current_pos > end_pos):
+                    # Check if user wants to stop at the beginning of each iteration
+                    if hasattr(self, '_stop_test') and self._stop_test:
+                        return
+                    
+                    # Calculate next position
+                    next_pos = current_pos + (direction * step_size)
+                    
+                    # Ensure we don't overshoot
+                    if direction > 0 and next_pos > end_pos:
+                        next_pos = end_pos
+                    elif direction < 0 and next_pos < end_pos:
+                        next_pos = end_pos
+                    
+                    # Move to next position - use absolute positioning
+                    try:
+                        # Stop any current motion first
+                        self.controller.send_command("ST")
+                        self.root.after(100)
+                        
+                        # Ensure servo is on
+                        self.controller.send_command(f"SH{axis}")
+                        self.root.after(100)
+                        
+                        # Set speed for this movement
+                        self.controller.send_command(f"SP{axis}={speed}")
+                        self.root.after(50)
+                        
+                        # Send position command with proper spacing - try different formats
+                        movement_success = False
+                        
+                        # Try format 1: PA {axis}={pos}
+                        try:
+                            self.controller.send_command(f"PA {axis}={next_pos}")
+                            self.root.after(50)
+                            self.controller.send_command(f"BG {axis}")
+                            movement_success = True
+                        except Exception as e1:
+                            if "question mark" in str(e1).lower():
+                                # Try format 2: PA{axis}={pos}
+                                try:
+                                    self.controller.send_command(f"PA{axis}={next_pos}")
+                                    self.root.after(50)
+                                    self.controller.send_command(f"BG{axis}")
+                                    movement_success = True
+                                except Exception as e2:
+                                    if "question mark" in str(e2).lower():
+                                        # Try format 3: PA {axis} {pos}
+                                        try:
+                                            self.controller.send_command(f"PA {axis} {next_pos}")
+                                            self.root.after(50)
+                                            self.controller.send_command(f"BG {axis}")
+                                            movement_success = True
+                                        except Exception as e3:
+                                            raise e3  # Re-raise the last error
+                                    else:
+                                        raise e2
+                            else:
+                                raise e1
+                        
+                        if not movement_success:
+                            raise Exception("All command formats failed")
+                        
+                        # Wait for movement to complete by checking if axis is still moving
+                        max_wait_time = 5000  # 5 seconds max wait
+                        wait_count = 0
+                        while wait_count < max_wait_time:
+                            # Check if user wants to stop during wait
+                            if hasattr(self, '_stop_test') and self._stop_test:
+                                return
+                            
+                            try:
+                                # Check if axis is still moving
+                                response = self.controller.send_command("MG _BG")
+                                if response and axis not in response:
+                                    break  # Axis has stopped moving
+                            except:
+                                break
+                            
+                            # Small delay while checking
+                            self.root.after(50)
+                            wait_count += 50
+                        
+                        # Verify position was reached
+                        try:
+                            actual_response = self.controller.send_command("TP")
+                            if actual_response:
+                                positions = actual_response.split(',')
+                                if len(positions) >= 4:
+                                    axis_index = {"A": 0, "B": 1, "C": 2, "D": 3}.get(axis, 0)
+                                    try:
+                                        actual_pos = int(positions[axis_index])
+                                        # Update display with actual position
+                                        self.visualizer.update_position(axis, actual_pos)
+                                        self.update_position_display()
+                                    except (ValueError, IndexError):
+                                        # If we can't read actual position, use expected
+                                        self.visualizer.update_position(axis, next_pos)
+                                        self.update_position_display()
+                                else:
+                                    self.visualizer.update_position(axis, next_pos)
+                                    self.update_position_display()
+                            else:
+                                self.visualizer.update_position(axis, next_pos)
+                                self.update_position_display()
+                        except:
+                            self.visualizer.update_position(axis, next_pos)
+                            self.update_position_display()
+                        
+                    except Exception as e:
+                        # If movement fails, log error and continue with next position
+                        error_count += 1
+                        print(f"Movement failed for axis {axis} to position {next_pos}: {str(e)} (Error #{error_count})")
+                        
+                        # Stop if too many consecutive errors
+                        if error_count >= max_errors:
+                            print(f"Too many consecutive errors ({error_count}), stopping test for axis {axis}")
+                            return
+                        
+                        # Don't continue the loop if there's a persistent error
+                        if "question mark" in str(e).lower():
+                            print(f"Skipping position {next_pos} due to command error")
+                            current_pos = next_pos  # Move to next position anyway
+                        continue
+                    
+                    # Wait specified delay
+                    self.root.after(delay_ms)
+                    
+                    current_pos = next_pos
+            
+            # Return to original position
+            try:
+                # Stop any current motion
+                self.controller.send_command("ST")
+                self.root.after(100)
+                
+                # Ensure servo is on
+                self.controller.send_command(f"SH{axis}")
+                self.root.after(100)
+                
+                # Set speed
+                self.controller.send_command(f"SP{axis}={speed}")
+                self.root.after(50)
+                
+                # Send position command with proper spacing - try different formats
+                movement_success = False
+                
+                # Try format 1: PA {axis}={pos}
+                try:
+                    self.controller.send_command(f"PA {axis}={start_position}")
+                    self.root.after(50)
+                    self.controller.send_command(f"BG {axis}")
+                    movement_success = True
+                except Exception as e1:
+                    if "question mark" in str(e1).lower():
+                        # Try format 2: PA{axis}={pos}
+                        try:
+                            self.controller.send_command(f"PA{axis}={start_position}")
+                            self.root.after(50)
+                            self.controller.send_command(f"BG{axis}")
+                            movement_success = True
+                        except Exception as e2:
+                            if "question mark" in str(e2).lower():
+                                # Try format 3: PA {axis} {pos}
+                                try:
+                                    self.controller.send_command(f"PA {axis} {start_position}")
+                                    self.root.after(50)
+                                    self.controller.send_command(f"BG {axis}")
+                                    movement_success = True
+                                except Exception as e3:
+                                    raise e3  # Re-raise the last error
+                            else:
+                                raise e2
+                    else:
+                        raise e1
+                
+                if not movement_success:
+                    raise Exception("All command formats failed")
+                
+                # Wait for final movement to complete
+                max_wait_time = 5000
+                wait_count = 0
+                while wait_count < max_wait_time:
+                    try:
+                        response = self.controller.send_command("MG _BG")
+                        if response and axis not in response:
+                            break
+                    except:
+                        break
+                    self.root.after(50)
+                    wait_count += 50
+                
+                # Update final position
+                self.visualizer.update_position(axis, start_position)
+                self.update_position_display()
+                
+            except Exception as e:
+                print(f"Error returning to start position: {str(e)}")
+            
+        except Exception as e:
+            # Stop motion on error
+            try:
+                self.controller.send_command("ST")
+            except:
+                pass
+            raise e
+    
+    def stop_automated_test(self):
+        """Stop the automated test."""
+        self._stop_test = True
+        try:
+            # Stop all motion
+            self.controller.send_command("ST")
+            # Wait a moment for stop to take effect
+            self.root.after(100)
+            # Stop again to ensure all axes are stopped
+            self.controller.send_command("ST")
+        except Exception as e:
+            print(f"Error stopping motion: {str(e)}")
+        
+        messagebox.showinfo("Test Stopped", "Automated test has been stopped.")
+    
+    def test_windows_ping(self):
+        """Test ping using Windows ping command for better diagnostics."""
+        ip_address = self.ip_entry.get().strip()
+        if not ip_address:
+            messagebox.showerror("Error", "Please enter an IP address first.")
+            return
+        
+        try:
+            import subprocess
+            import platform
+            
+            # Use Windows ping command
+            if platform.system().lower() == "windows":
+                cmd = ["ping", "-n", "4", ip_address]  # 4 pings
+            else:
+                cmd = ["ping", "-c", "4", ip_address]  # 4 pings for Unix
+            
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            
+            # Format the results
+            status = f"Windows Ping Test Results:\n\n"
+            status += f"IP Address: {ip_address}\n"
+            status += f"Command: {' '.join(cmd)}\n\n"
+            status += f"Exit Code: {result.returncode}\n"
+            status += f"Success: {'✓ YES' if result.returncode == 0 else '✗ NO'}\n\n"
+            status += "Output:\n"
+            status += result.stdout
+            
+            if result.stderr:
+                status += "\nErrors:\n"
+                status += result.stderr
+            
+            messagebox.showinfo("Windows Ping Test", status)
+            
+        except subprocess.TimeoutExpired:
+            messagebox.showerror("Ping Timeout", "Ping command timed out after 10 seconds.")
+        except Exception as e:
+            messagebox.showerror("Ping Error", f"Error running ping command: {str(e)}")
+    
+    def test_command_formats(self):
+        """Test different command formats to see which ones work."""
+        axis = self.selected_axis.get()
+        
+        # Check if controller is connected
+        if not getattr(self.controller, "g", None):
+            messagebox.showerror("Connection Error", "Controller not connected. Please click Connect first.")
+            return
+        
+        results = []
+        results.append("=== COMMAND FORMAT TEST ===")
+        results.append("")
+        
+        # First, ensure servo is on
+        results.append("1. SERVO SETUP:")
+        try:
+            self.controller.send_command("ST")  # Stop any motion
+            self.root.after(100)
+            self.controller.send_command(f"SH{axis}")  # Servo on
+            self.root.after(100)
+            results.append(f"  ✓ Servo on for axis {axis}")
+        except Exception as e:
+            results.append(f"  ✗ Servo setup failed: {str(e)}")
+        
+        results.append("")
+        
+        # Test different PA command formats
+        pa_commands = [
+            f"PA {axis}=1000",
+            f"PA{axis}=1000", 
+            f"PA {axis} 1000",
+            f"PA{axis} 1000",
+            f"PA {axis}=1000",
+            f"PA{axis}=1000",
+            f"PA {axis}1000",
+            f"PA{axis} 1000",
+            f"PA {axis}=1000",
+            f"PA{axis}=1000"
+        ]
+        
+        results.append("2. PA Command Tests:")
+        for cmd in pa_commands:
+            try:
+                response = self.controller.send_command(cmd)
+                results.append(f"  ✓ {cmd}: {response}")
+            except Exception as e:
+                results.append(f"  ✗ {cmd}: {str(e)}")
+        
+        results.append("")
+        
+        # Test different BG command formats
+        bg_commands = [
+            f"BG {axis}",
+            f"BG{axis}",
+            f"BG {axis}",
+            f"BG{axis}"
+        ]
+        
+        results.append("3. BG Command Tests:")
+        for cmd in bg_commands:
+            try:
+                response = self.controller.send_command(cmd)
+                results.append(f"  ✓ {cmd}: {response}")
+            except Exception as e:
+                results.append(f"  ✗ {cmd}: {str(e)}")
+        
+        results.append("")
+        results.append("=== TEST COMPLETE ===")
+        
+        # Show results
+        messagebox.showinfo("Command Format Test Results", "\n".join(results))
+    
+    def test_simple_movement(self):
+        """Test a simple movement to verify motors are working."""
+        axis = self.selected_axis.get()
+        
+        # Check if controller is connected
+        if not getattr(self.controller, "g", None):
+            messagebox.showerror("Connection Error", "Controller not connected. Please click Connect first.")
+            return
+        
+        try:
+            # Stop any current motion
+            self.controller.send_command("ST")
+            self.root.after(100)
+            
+            # Servo on the axis
+            self.controller.send_command(f"SH{axis}")
+            self.root.after(100)
+            
+            # Set speed
+            speed = 5000
+            self.controller.send_command(f"SP{axis}={speed}")
+            
+            # Get current position
+            try:
+                response = self.controller.send_command("TP")
+                if response:
+                    positions = response.split(',')
+                    if len(positions) >= 4:
+                        axis_index = {"A": 0, "B": 1, "C": 2, "D": 3}.get(axis, 0)
+                        try:
+                            current_pos = int(positions[axis_index])
+                        except (ValueError, IndexError):
+                            current_pos = 0
+                    else:
+                        current_pos = 0
+                else:
+                    current_pos = 0
+            except:
+                current_pos = 0
+            
+            # Move 1mm in positive direction
+            target_pos = current_pos + 1000  # 1mm = 1000 encoder units
+            
+            # Send movement command with proper spacing - try different formats
+            try:
+                # Try PA command first
+                self.controller.send_command(f"PA {axis}={target_pos}")
+                self.root.after(50)
+                self.controller.send_command(f"BG {axis}")
+            except Exception as e:
+                if "question mark" in str(e).lower():
+                    # Try alternative command format
+                    try:
+                        self.controller.send_command(f"PA{axis}={target_pos}")
+                        self.root.after(50)
+                        self.controller.send_command(f"BG{axis}")
+                    except Exception as e2:
+                        if "question mark" in str(e2).lower():
+                            # Try with different spacing
+                            try:
+                                self.controller.send_command(f"PA {axis} {target_pos}")
+                                self.root.after(50)
+                                self.controller.send_command(f"BG {axis}")
+                            except Exception as e3:
+                                raise e3  # Re-raise the last error
+                        else:
+                            raise e2
+                else:
+                    raise e
+            
+            # Wait for movement
+            self.root.after(1000)
+            
+            # Check if movement occurred
+            try:
+                response = self.controller.send_command("TP")
+                if response:
+                    positions = response.split(',')
+                    if len(positions) >= 4:
+                        axis_index = {"A": 0, "B": 1, "C": 2, "D": 3}.get(axis, 0)
+                        try:
+                            new_pos = int(positions[axis_index])
+                            if abs(new_pos - current_pos) > 100:  # Allow some tolerance
+                                messagebox.showinfo("Movement Test", f"Movement successful!\nAxis {axis} moved from {current_pos} to {new_pos}")
+                            else:
+                                messagebox.showwarning("Movement Test", f"Movement may not have occurred.\nPosition changed from {current_pos} to {new_pos}")
+                        except (ValueError, IndexError):
+                            messagebox.showwarning("Movement Test", "Could not verify movement - position reading failed")
+                    else:
+                        messagebox.showwarning("Movement Test", "Could not verify movement - position reading failed")
+                else:
+                    messagebox.showwarning("Movement Test", "Could not verify movement - position reading failed")
+            except:
+                messagebox.showwarning("Movement Test", "Could not verify movement - position reading failed")
+            
+            # Update display
+            self.visualizer.update_position(axis, target_pos)
+            self.update_position_display()
+            
+        except Exception as e:
+            messagebox.showerror("Movement Test Error", f"Error during movement test: {str(e)}")
 
 if __name__ == "__main__":
     root = tk.Tk()
