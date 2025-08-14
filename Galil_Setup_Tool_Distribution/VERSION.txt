@@ -1,0 +1,5 @@
+Galil Setup Tool v1.0 
+Build Date: Thu 08/14/2025  7:34:10.81 
+Python Version: 3.8 (embedded) 
+PyInstaller: 6.15.0 
+Executable Size: 10.0 MB 

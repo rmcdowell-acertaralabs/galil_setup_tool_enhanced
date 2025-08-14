@@ -1,0 +1,8 @@
+# Galil Setup Tool - Quick Start 
+ 
+1. Right-click Galil_Setup_Tool.exe and select "Run as Administrator" 
+2. Click "INSTALL DLL FILES" to install required DLLs 
+3. Use "READ NETWORK SETTINGS" to check current configuration 
+4. Connect to your Galil controller 
+ 
+For detailed instructions, see README.md 
