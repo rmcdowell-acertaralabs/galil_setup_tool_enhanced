@@ -1,7 +1,7 @@
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
 from galil_interface import GalilController
-from utils import find_galil_com_ports
+from utils import find_galil_com_ports, install_all_gclib_dlls, check_dll_installation
 from diagnostics import get_controller_info, get_diagnostics
 from motor_setup import tune_axis, configure_axis
 from encoder_overlay import EncoderOverlay
@@ -10,7 +10,9 @@ from network_utils import (
     discover_galil_controllers, ping_controller, validate_ip_address,
     test_controller_connection, get_controller_network_settings, set_controller_network_settings
 )
+from network_config import NetworkConfigurator, check_network_configuration_permissions
 import os
+import time
 from ctypes import cdll
 from constants import (
     CONFIG_PATH, WINDOW_WIDTH, WINDOW_HEIGHT, STATUS_DISCONNECTED,
@@ -218,6 +220,9 @@ class GalilSetupApp:
         self.controller = GalilController()
         self.config = load_config()
         
+        # Initialize network configurator
+        self.network_configurator = NetworkConfigurator()
+        
         # Create main container with futuristic styling
         self.create_futuristic_layout()
         
@@ -238,6 +243,9 @@ class GalilSetupApp:
         
         # Update position display for the selected axis
         self.update_position_display()
+        
+        # Load PID values for the selected axis into the tuning block
+        self.load_pid_values_for_axis(axis)
     
     def highlight_selected_axis(self, selected_axis):
         """Highlight the selected axis button and unhighlight others"""
@@ -524,6 +532,18 @@ class GalilSetupApp:
                  bg='#0066cc', fg='#ffffff', font=("Arial", 9, "bold"),
                  relief='raised', bd=3).pack(pady=2)
         
+        # DLL Installation buttons
+        dll_frame = tk.LabelFrame(scrollable_frame, text="DLL INSTALLATION", 
+                                bg='#2a2a2a', fg='#ffffff', font=("Arial", 10, "bold"))
+        dll_frame.pack(fill="x", padx=10, pady=5)
+        
+        tk.Button(dll_frame, text="INSTALL DLL FILES", command=self.install_dll_files,
+                 bg='#00cc00', fg='#ffffff', font=("Arial", 9, "bold"),
+                 relief='raised', bd=3).pack(pady=2)
+        tk.Button(dll_frame, text="CHECK DLL STATUS", command=self.check_dll_status,
+                 bg='#404040', fg='#ffffff', font=("Arial", 9, "bold"),
+                 relief='raised', bd=3).pack(pady=2)
+        
         # Configuration buttons
         config_frame = tk.LabelFrame(scrollable_frame, text="CONFIGURATION", 
                                    bg='#2a2a2a', fg='#ffffff', font=("Arial", 10, "bold"))
@@ -557,6 +577,24 @@ class GalilSetupApp:
                  bg='#0066cc', fg='#ffffff', font=("Arial", 9, "bold"),
                  relief='raised', bd=3).pack(pady=2)
         
+        # Computer Network Configuration buttons
+        computer_network_frame = tk.LabelFrame(scrollable_frame, text="COMPUTER NETWORK CONFIG", 
+                                             bg='#2a2a2a', fg='#ffffff', font=("Arial", 10, "bold"))
+        computer_network_frame.pack(fill="x", padx=10, pady=5)
+        
+        tk.Button(computer_network_frame, text="READ NETWORK SETTINGS", command=self.read_network_settings,
+                 bg='#00cc00', fg='#ffffff', font=("Arial", 9, "bold"),
+                 relief='raised', bd=3).pack(pady=2)
+        tk.Button(computer_network_frame, text="APPLY TARGET SETTINGS", command=self.apply_target_network_settings,
+                 bg='#cc6600', fg='#ffffff', font=("Arial", 9, "bold"),
+                 relief='raised', bd=3).pack(pady=2)
+        tk.Button(computer_network_frame, text="RESET TO DHCP", command=self.reset_network_to_dhcp,
+                 bg='#404040', fg='#ffffff', font=("Arial", 9, "bold"),
+                 relief='raised', bd=3).pack(pady=2)
+        tk.Button(computer_network_frame, text="TEST CONNECTIVITY", command=self.test_network_connectivity,
+                 bg='#0066cc', fg='#ffffff', font=("Arial", 9, "bold"),
+                 relief='raised', bd=3).pack(pady=2)
+        
         # Position control
         pos_frame = tk.LabelFrame(scrollable_frame, text="POSITION CONTROL", 
                                 bg='#2a2a2a', fg='#ffffff', font=("Arial", 10, "bold"))
@@ -584,7 +622,11 @@ class GalilSetupApp:
         
         tk.Button(pid_frame, text="TUNE AXIS", command=self.tune_motor,
                  bg='#0066cc', fg='#ffffff', font=("Arial", 9, "bold"),
-                 relief='raised', bd=3).pack(pady=5)
+                 relief='raised', bd=3).pack(pady=2)
+        
+        tk.Button(pid_frame, text="LOAD PID VALUES", command=self.load_current_axis_pid,
+                 bg='#404040', fg='#ffffff', font=("Arial", 9, "bold"),
+                 relief='raised', bd=3).pack(pady=2)
 
     def create_visualization_panel(self, parent):
         """Create the gauge visualization panel"""
@@ -612,28 +654,63 @@ class GalilSetupApp:
         self.canvas.pack(pady=10)
 
     def create_diagnostics_panel(self):
-        """Create the diagnostics panel"""
+        """Create the diagnostics panel with enhanced logging capabilities"""
         diag_frame = tk.LabelFrame(self.main_container, text="SYSTEM DIAGNOSTICS", 
                                  bg='#1a1a1a', fg='#ffffff', font=("Arial", 12, "bold"))
         diag_frame.pack(fill="x", pady=10)
         
-        # Diagnostics text area
+        # Create a frame for the text area and scrollbar
+        text_frame = tk.Frame(diag_frame, bg='#1a1a1a')
+        text_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        # Diagnostics text area with scrollbar
         self.diagnostics_text = tk.Text(
-            diag_frame,
-            height=8,
+            text_frame,
+            height=12,  # Increased height for better visibility
             width=80,
             wrap="word",
             bg='#0a0a0a',
             fg='#ffffff',
             insertbackground='#ffffff',
-            font=("Arial", 9)
+            font=("Consolas", 9),  # Monospace font for better alignment
+            state="normal"
         )
-        self.diagnostics_text.pack(padx=10, pady=10)
         
-        # Refresh button
-        tk.Button(diag_frame, text="REFRESH DIAGNOSTICS", command=self.refresh_diagnostics,
-                 bg='#0066cc', fg='#ffffff', font=("Arial", 10, "bold"),
-                 relief='raised', bd=3).pack(pady=5)
+        # Scrollbar for the diagnostics text
+        diagnostics_scrollbar = tk.Scrollbar(text_frame, orient="vertical", command=self.diagnostics_text.yview)
+        self.diagnostics_text.configure(yscrollcommand=diagnostics_scrollbar.set)
+        
+        # Pack text area and scrollbar
+        self.diagnostics_text.pack(side="left", fill="both", expand=True)
+        diagnostics_scrollbar.pack(side="right", fill="y")
+        
+        # Control buttons frame
+        button_frame = tk.Frame(diag_frame, bg='#1a1a1a')
+        button_frame.pack(fill="x", padx=10, pady=5)
+        
+        # Control buttons
+        tk.Button(button_frame, text="CLEAR LOG", command=self.clear_diagnostics,
+                 bg='#cc0000', fg='#ffffff', font=("Arial", 9, "bold"),
+                 relief='raised', bd=2).pack(side="left", padx=5)
+        
+        tk.Button(button_frame, text="REFRESH DIAGNOSTICS", command=self.refresh_diagnostics,
+                 bg='#0066cc', fg='#ffffff', font=("Arial", 9, "bold"),
+                 relief='raised', bd=2).pack(side="left", padx=5)
+        
+        tk.Button(button_frame, text="AUTO-SCROLL ON", command=self.toggle_auto_scroll,
+                 bg='#00cc00', fg='#ffffff', font=("Arial", 9, "bold"),
+                 relief='raised', bd=2).pack(side="left", padx=5)
+        
+        # Initialize logging system
+        self.auto_scroll_enabled = True
+        self.log_timestamp_enabled = True
+        self.max_log_lines = 1000  # Maximum lines to keep in log
+        
+        # Start the logging system
+        self.start_logging_system()
+        
+        # Start periodic status updates
+        self.start_periodic_status_updates()
 
     def update_gauge_position(self):
         """Update gauge position display"""
@@ -655,10 +732,136 @@ class GalilSetupApp:
         except Exception:
             pass
 
-    def _append_diagnostic(self, line: str):
-        """Insert a single line into the diagnostics box and scroll."""
-        self.diagnostics_text.insert(tk.END, line + "\n")
-        self.diagnostics_text.see(tk.END)
+    def _append_diagnostic(self, line: str, level: str = "INFO"):
+        """Insert a single line into the diagnostics box with timestamp and level."""
+        import datetime
+        
+        # Create timestamp
+        timestamp = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]  # HH:MM:SS.mmm
+        
+        # Create formatted log entry
+        if self.log_timestamp_enabled:
+            log_entry = f"[{timestamp}] [{level}] {line}\n"
+        else:
+            log_entry = f"[{level}] {line}\n"
+        
+        # Insert the log entry
+        self.diagnostics_text.insert(tk.END, log_entry)
+        
+        # Auto-scroll if enabled
+        if self.auto_scroll_enabled:
+            self.diagnostics_text.see(tk.END)
+        
+        # Limit the number of lines to prevent memory issues
+        self._limit_log_lines()
+        
+        # Force update the display
+        self.diagnostics_text.update_idletasks()
+
+    def _limit_log_lines(self):
+        """Limit the number of lines in the log to prevent memory issues."""
+        try:
+            lines = self.diagnostics_text.get("1.0", tk.END).split('\n')
+            if len(lines) > self.max_log_lines:
+                # Remove oldest lines (keep the last max_log_lines)
+                excess_lines = len(lines) - self.max_log_lines
+                self.diagnostics_text.delete("1.0", f"{excess_lines + 1}.0")
+        except Exception:
+            pass
+
+    def log_info(self, message: str):
+        """Log an informational message."""
+        self._append_diagnostic(message, "INFO")
+
+    def log_warning(self, message: str):
+        """Log a warning message."""
+        self._append_diagnostic(message, "WARN")
+
+    def log_error(self, message: str):
+        """Log an error message."""
+        self._append_diagnostic(message, "ERROR")
+
+    def log_success(self, message: str):
+        """Log a success message."""
+        self._append_diagnostic(message, "SUCCESS")
+
+    def log_command(self, message: str):
+        """Log a command message."""
+        self._append_diagnostic(message, "CMD")
+
+    def log_status(self, message: str):
+        """Log a status message."""
+        self._append_diagnostic(message, "STATUS")
+
+    def clear_diagnostics(self):
+        """Clear the diagnostics log."""
+        self.diagnostics_text.delete("1.0", tk.END)
+        self.log_info("Diagnostics log cleared")
+
+    def toggle_auto_scroll(self):
+        """Toggle auto-scroll functionality."""
+        self.auto_scroll_enabled = not self.auto_scroll_enabled
+        status = "ON" if self.auto_scroll_enabled else "OFF"
+        self.log_info(f"Auto-scroll toggled {status}")
+        
+        # Update button text
+        for widget in self.root.winfo_children():
+            if isinstance(widget, tk.Button) and "AUTO-SCROLL" in widget.cget("text"):
+                widget.config(text=f"AUTO-SCROLL {status}")
+
+    def start_logging_system(self):
+        """Start the logging system with initial messages."""
+        self.log_info("=== GALIL DMC-4143 CONTROL INTERFACE STARTED ===")
+        self.log_info("Logging system initialized")
+        self.log_info("Auto-scroll enabled")
+        self.log_info("Ready for operations")
+
+    def start_periodic_status_updates(self):
+        """Start periodic status updates to the log."""
+        self.log_info("Starting periodic status updates")
+        self._periodic_status_update()
+
+    def _periodic_status_update(self):
+        """Periodic status update function."""
+        try:
+            # Log connection status
+            if hasattr(self.controller, 'g') and self.controller.g:
+                self.log_status("Controller: Connected")
+            else:
+                self.log_status("Controller: Disconnected")
+            
+            # Log current axis selection
+            current_axis = self.selected_axis.get()
+            self.log_status(f"Selected Axis: {current_axis}")
+            
+            # Log current speed setting
+            try:
+                speed = self.jog_speed_entry.get()
+                self.log_status(f"Jog Speed: {speed}")
+            except:
+                pass
+            
+            # Log position if controller is connected
+            if hasattr(self.controller, 'g') and self.controller.g:
+                try:
+                    response = self.controller.send_command("TP")
+                    if response:
+                        positions = response.split(',')
+                        if len(positions) >= 4:
+                            for i, axis in enumerate(["A", "B", "C", "D"]):
+                                try:
+                                    pos = int(positions[i])
+                                    self.log_status(f"Axis {axis} Position: {pos}")
+                                except (ValueError, IndexError):
+                                    pass
+                except:
+                    pass
+            
+        except Exception as e:
+            self.log_error(f"Error in periodic status update: {str(e)}")
+        
+        # Schedule next update (every 30 seconds)
+        self.root.after(30000, self._periodic_status_update)
 
     def _finish_diagnostics(self):
         """Re-enable diagnostics buttons when done."""
@@ -666,13 +869,23 @@ class GalilSetupApp:
 
     def refresh_diagnostics(self):
         """Fetch a one‐off diagnostics snapshot."""
+        self.log_info("=== REFRESHING DIAGNOSTICS ===")
+        
         if getattr(self.controller, "g", None):
-            diag = get_diagnostics(self.controller)
-            self.diagnostics_text.delete("1.0", tk.END)
-            self.diagnostics_text.insert("1.0", diag)
+            try:
+                diag = get_diagnostics(self.controller)
+                self.log_info("Controller diagnostics retrieved successfully")
+                self.log_info("=== CONTROLLER DIAGNOSTICS ===")
+                
+                # Log each line of diagnostics
+                for line in diag.split('\n'):
+                    if line.strip():
+                        self.log_status(line.strip())
+                        
+            except Exception as e:
+                self.log_error(f"Error retrieving diagnostics: {str(e)}")
         else:
-            self.diagnostics_text.delete("1.0", tk.END)
-            self.diagnostics_text.insert("1.0", "Controller not connected.")
+            self.log_warning("Controller not connected - cannot retrieve diagnostics")
 
     def check_gclib_dll(self):
         try:
@@ -685,21 +898,32 @@ class GalilSetupApp:
         """Connect to controller via USB or Network"""
         conn_type = self.conn_type.get()
         
+        self.log_info("=== ATTEMPTING CONNECTION ===")
+        self.log_info(f"Connection type: {conn_type}")
+        
         if conn_type == "USB":
+            self.log_info("Searching for USB Galil controllers...")
             ports = find_galil_com_ports()
             if not ports:
+                self.log_error("No Galil controller detected over USB")
                 messagebox.showerror("Connection Error", "No Galil controller detected over USB.")
                 return
             address = ports[0]
+            self.log_info(f"Found USB controller on port: {address}")
         else:  # Network
             address = self.ip_entry.get().strip()
             if not address:
+                self.log_error("No IP address provided")
                 messagebox.showerror("Connection Error", "Please enter an IP address.")
                 return
+            self.log_info(f"Attempting network connection to: {address}")
         
         try:
+            self.log_info("Establishing connection...")
             self.controller.connect(address)
             self.status_var.set(f"Connected: {address}")
+            
+            self.log_success(f"Successfully connected to controller at {address}")
             
             # Update status color
             for widget in self.root.winfo_children():
@@ -708,6 +932,7 @@ class GalilSetupApp:
                     break
 
         except Exception as e:
+            self.log_error(f"Connection failed: {str(e)}")
             messagebox.showerror("Connection Error", str(e))
             self.status_var.set(STATUS_DISCONNECTED)
 
@@ -715,14 +940,19 @@ class GalilSetupApp:
         axis = self.selected_axis.get()
         speed = self.jog_speed_entry.get()
         
+        self.log_info(f"=== JOG POSITIVE - AXIS {axis} ===")
+        self.log_info(f"Speed: {speed}")
+        
         # Check if controller is connected
         if not getattr(self.controller, "g", None):
+            self.log_error("Controller not connected - cannot jog")
             messagebox.showerror("Connection Error", "Controller not connected. Please click Connect first.")
             return
             
         try:
             # Validate axis
             if axis not in SERVO_BITS:
+                self.log_error(f"Invalid axis: {axis}")
                 messagebox.showerror("Invalid Axis", f"Axis {axis} is not valid. Use A, B, C, or D.")
                 return
                 
@@ -730,23 +960,32 @@ class GalilSetupApp:
             try:
                 speed_val = int(speed)
                 if speed_val <= 0:
+                    self.log_error(f"Invalid speed: {speed} (must be positive)")
                     messagebox.showerror("Invalid Speed", "Speed must be a positive number.")
                     return
+                self.log_info(f"Speed validated: {speed_val}")
             except ValueError:
+                self.log_error(f"Invalid speed format: {speed}")
                 messagebox.showerror("Invalid Speed", "Speed must be a valid number.")
                 return
 
-            # apply preset if any
+            # Apply preset if any
             preset = self.config.get("axis_presets", {}).get(axis, {})
             if preset:
+                self.log_info("Applying axis preset configuration")
                 configure_axis(self.controller, axis, preset)
 
-            # Servo-on using axis letter (no space)
+            # Execute jog commands
+            self.log_command(f"Servo-on command: SH{axis}")
             self.controller.send_command(f"SH{axis}")
-            # Jog forward (no space after JG)
+            
+            self.log_command(f"Jog command: JG{axis}={speed}")
             self.controller.send_command(f"JG{axis}={speed}")
-            # Begin (no space after BG)
+            
+            self.log_command(f"Begin command: BG{axis}")
             self.controller.send_command(f"BG{axis}")
+            
+            self.log_success(f"Axis {axis} jogging positive at speed {speed}")
             
             # Update gauge display with actual position
             self.update_position_from_controller(axis)
@@ -760,20 +999,26 @@ class GalilSetupApp:
             self.root.after(50, delayed_update)
             
         except Exception as e:
+            self.log_error(f"Jog positive failed: {str(e)}")
             messagebox.showerror("Jog Error", f"Error: {str(e)}")
 
     def jog_negative(self):
         axis = self.selected_axis.get()
         speed = self.jog_speed_entry.get()
         
+        self.log_info(f"=== JOG NEGATIVE - AXIS {axis} ===")
+        self.log_info(f"Speed: {speed}")
+        
         # Check if controller is connected
         if not getattr(self.controller, "g", None):
+            self.log_error("Controller not connected - cannot jog")
             messagebox.showerror("Connection Error", "Controller not connected. Please click Connect first.")
             return
             
         try:
             # Validate axis
             if axis not in SERVO_BITS:
+                self.log_error(f"Invalid axis: {axis}")
                 messagebox.showerror("Invalid Axis", f"Axis {axis} is not valid. Use A, B, C, or D.")
                 return
                 
@@ -781,19 +1026,31 @@ class GalilSetupApp:
             try:
                 speed_val = int(speed)
                 if speed_val <= 0:
+                    self.log_error(f"Invalid speed: {speed} (must be positive)")
                     messagebox.showerror("Invalid Speed", "Speed must be a positive number.")
                     return
+                self.log_info(f"Speed validated: {speed_val}")
             except ValueError:
+                self.log_error(f"Invalid speed format: {speed}")
                 messagebox.showerror("Invalid Speed", "Speed must be a valid number.")
                 return
 
             preset = self.config.get("axis_presets", {}).get(axis, {})
             if preset:
+                self.log_info("Applying axis preset configuration")
                 configure_axis(self.controller, axis, preset)
 
+            # Execute jog commands
+            self.log_command(f"Servo-on command: SH{axis}")
             self.controller.send_command(f"SH{axis}")
+            
+            self.log_command(f"Jog command: JG{axis}=-{speed}")
             self.controller.send_command(f"JG{axis}=-{speed}")
+            
+            self.log_command(f"Begin command: BG{axis}")
             self.controller.send_command(f"BG{axis}")
+            
+            self.log_success(f"Axis {axis} jogging negative at speed {speed}")
             
             # Update gauge display with actual position
             self.update_position_from_controller(axis)
@@ -807,29 +1064,38 @@ class GalilSetupApp:
             self.root.after(50, delayed_update)
             
         except Exception as e:
+            self.log_error(f"Jog negative failed: {str(e)}")
             messagebox.showerror("Jog Error", f"Error: {str(e)}")
 
     def stop_motion(self):
         axis = self.selected_axis.get()
         
+        self.log_info(f"=== STOP MOTION - AXIS {axis} ===")
+        
         # Check if controller is connected
         if not getattr(self.controller, "g", None):
+            self.log_error("Controller not connected - cannot stop motion")
             messagebox.showerror("Connection Error", "Controller not connected. Please click Connect first.")
             return
             
         try:
             # Validate axis
             if axis not in SERVO_BITS:
+                self.log_error(f"Invalid axis: {axis}")
                 messagebox.showerror("Invalid Axis", f"Axis {axis} is not valid. Use A, B, C, or D.")
                 return
                 
             # Stop command
+            self.log_command(f"Stop command: ST{axis}")
             self.controller.send_command(f"ST{axis}")
+            
+            self.log_success(f"Axis {axis} motion stopped")
             
             # Update gauge display with actual position
             self.update_position_from_controller(axis)
             
         except Exception as e:
+            self.log_error(f"Stop motion failed: {str(e)}")
             messagebox.showerror("Stop Error", str(e))
 
     def update_position_from_controller(self, axis):
@@ -844,6 +1110,12 @@ class GalilSetupApp:
                         try:
                             pos = int(positions[axis_index])
                             self.visualizer.update_position(axis, pos)
+                            # Log position updates periodically (not every time to avoid spam)
+                            if hasattr(self, '_last_position_log') and time.time() - self._last_position_log.get(axis, 0) > 5:
+                                self.log_status(f"Axis {axis} position: {pos}")
+                                self._last_position_log[axis] = time.time()
+                            elif not hasattr(self, '_last_position_log'):
+                                self._last_position_log = {axis: time.time()}
                         except (ValueError, IndexError):
                             pass
         except Exception:
@@ -1019,32 +1291,123 @@ class GalilSetupApp:
         messagebox.showinfo("Servo Test Results", "\n".join(results))
 
     def configure_selected_axis(self):
-        """Configure the selected axis with preset settings."""
+        """Configure the selected axis with preset settings and load PID values."""
         axis = self.selected_axis.get()
+        
+        self.log_info(f"=== CONFIGURE AXIS {axis} ===")
         
         # Check if controller is connected
         if not getattr(self.controller, "g", None):
+            self.log_error("Controller not connected - cannot configure axis")
             messagebox.showerror("Connection Error", "Controller not connected. Please click Connect first.")
             return
             
         try:
             # Validate axis
             if axis not in SERVO_BITS:
+                self.log_error(f"Invalid axis: {axis}")
                 messagebox.showerror("Invalid Axis", f"Axis {axis} is not valid. Use A, B, C, or D.")
                 return
             
             # Get preset for this axis
             preset = self.config.get("axis_presets", {}).get(axis, {})
             if not preset:
+                self.log_error(f"No preset found for axis {axis}")
                 messagebox.showerror("Configuration Error", f"No preset found for axis {axis}")
                 return
             
-            # Apply configuration
+            self.log_info(f"Applying preset configuration for axis {axis}")
+            self.log_info(f"Preset settings: {preset}")
+            
+            # Apply configuration to controller
             configure_axis(self.controller, axis, preset)
-            messagebox.showinfo("Configuration Success", f"Axis {axis} configured with preset settings.")
+            self.log_success(f"Axis {axis} configuration applied to controller")
+            
+            # Load PID values into the tuning block
+            self.load_pid_values_to_tuning_block(axis, preset)
+            self.log_success(f"PID values loaded into tuning block")
+            
+            # Log the PID values
+            kp = preset.get('kp', 'N/A')
+            ki = preset.get('ki', 'N/A')
+            kd = preset.get('kd', 'N/A')
+            self.log_info(f"PID values - KP: {kp}, KI: {ki}, KD: {kd}")
+            
+            messagebox.showinfo("Configuration Success", 
+                              f"Axis {axis} configured with preset settings.\n\n"
+                              f"PID values loaded into tuning block:\n"
+                              f"KP: {kp}\n"
+                              f"KI: {ki}\n"
+                              f"KD: {kd}")
             
         except Exception as e:
+            self.log_error(f"Error configuring axis {axis}: {str(e)}")
             messagebox.showerror("Configuration Error", f"Error configuring axis {axis}: {str(e)}")
+
+    def load_pid_values_to_tuning_block(self, axis, preset):
+        """Load PID values from preset into the tuning block entry fields."""
+        try:
+            self.log_info(f"Loading PID values for axis {axis} into tuning block")
+            
+            # Clear existing values
+            self.kp_entry.delete(0, tk.END)
+            self.ki_entry.delete(0, tk.END)
+            self.kd_entry.delete(0, tk.END)
+            
+            # Load PID values from preset
+            kp_value = preset.get('kp', 10.0)  # Default fallback
+            ki_value = preset.get('ki', 0.1)   # Default fallback
+            kd_value = preset.get('kd', 50.0)  # Default fallback
+            
+            # Insert values into entry fields
+            self.kp_entry.insert(0, str(kp_value))
+            self.ki_entry.insert(0, str(ki_value))
+            self.kd_entry.insert(0, str(kd_value))
+            
+            self.log_success(f"PID values loaded - KP: {kp_value}, KI: {ki_value}, KD: {kd_value}")
+            
+        except Exception as e:
+            self.log_error(f"Error loading PID values to tuning block: {str(e)}")
+            print(f"Error loading PID values to tuning block: {str(e)}")
+
+    def load_pid_values_for_axis(self, axis):
+        """Load PID values for the selected axis into the tuning block."""
+        try:
+            # Get preset for this axis
+            preset = self.config.get("axis_presets", {}).get(axis, {})
+            
+            # Load PID values into the tuning block
+            self.load_pid_values_to_tuning_block(axis, preset)
+            
+        except Exception as e:
+            print(f"Error loading PID values for axis {axis}: {str(e)}")
+
+    def load_current_axis_pid(self):
+        """Load PID values for the currently selected axis into the tuning block."""
+        try:
+            axis = self.selected_axis.get()
+            self.log_info(f"=== LOAD PID VALUES - AXIS {axis} ===")
+            
+            self.load_pid_values_for_axis(axis)
+            
+            # Get the preset values for display
+            preset = self.config.get("axis_presets", {}).get(axis, {})
+            kp_value = preset.get('kp', 'N/A')
+            ki_value = preset.get('ki', 'N/A')
+            kd_value = preset.get('kd', 'N/A')
+            
+            self.log_success(f"PID values loaded for axis {axis}")
+            self.log_info(f"PID values - KP: {kp_value}, KI: {ki_value}, KD: {kd_value}")
+            
+            messagebox.showinfo("PID Values Loaded", 
+                              f"PID values for Axis {axis} loaded into tuning block:\n\n"
+                              f"KP: {kp_value}\n"
+                              f"KI: {ki_value}\n"
+                              f"KD: {kd_value}")
+            
+        except Exception as e:
+            self.log_error(f"Error loading PID values: {str(e)}")
+            messagebox.showerror("Error", f"Error loading PID values: {str(e)}")
 
     def save_current_config(self):
         """Save current configuration to file."""
@@ -1167,8 +1530,11 @@ class GalilSetupApp:
     def tune_motor(self):
         axis = self.selected_axis.get()
         
+        self.log_info(f"=== TUNE MOTOR - AXIS {axis} ===")
+        
         # Check if controller is connected
         if not getattr(self.controller, "g", None):
+            self.log_error("Controller not connected - cannot tune motor")
             messagebox.showerror("Connection Error", "Controller not connected. Please click Connect first.")
             return
             
@@ -1176,13 +1542,25 @@ class GalilSetupApp:
             kp = float(self.kp_entry.get())
             ki = float(self.ki_entry.get())
             kd = float(self.kd_entry.get())
+            
+            self.log_info(f"PID values from tuning block - KP: {kp}, KI: {ki}, KD: {kd}")
+            
         except ValueError:
+            self.log_error("Invalid PID values - KP, KI, and KD must be numbers")
             messagebox.showerror("Input Error", "KP, KI, and KD must be numbers.")
             return
+            
         try:
+            self.log_info("Applying PID tuning to controller")
             tune_axis(self.controller, axis, kp, ki, kd)
+            
+            self.log_success(f"Axis {axis} tuned successfully")
+            self.log_info(f"Final PID values - KP: {kp}, KI: {ki}, KD: {kd}")
+            
             messagebox.showinfo("Tuned", f"Axis {axis} tuned.")
+            
         except Exception as e:
+            self.log_error(f"Tune motor failed: {str(e)}")
             messagebox.showerror("Tune Error", str(e))
 
     def test_connection(self):
@@ -2221,6 +2599,311 @@ class GalilSetupApp:
             
         except Exception as e:
             messagebox.showerror("Movement Test Error", f"Error during movement test: {str(e)}")
+
+    def install_dll_files(self):
+        """Install gclib.dll and gclibo.dll to System32 directory."""
+        try:
+            self.log_info("=== DLL INSTALLATION ===")
+            
+            # Show confirmation dialog
+            result = messagebox.askyesno(
+                "Install DLL Files",
+                "This will install gclib.dll and gclibo.dll to the Windows System32 directory.\n\n"
+                "This operation requires Administrator privileges.\n\n"
+                "Do you want to continue?"
+            )
+            
+            if result:
+                self.log_info("User confirmed DLL installation")
+                # Attempt to install the DLL files
+                success = install_all_gclib_dlls()
+                
+                if success:
+                    self.log_success("DLL files installed successfully")
+                    # Update the DLL check status
+                    self.check_gclib_dll()
+                else:
+                    self.log_error("DLL installation failed")
+            else:
+                self.log_info("DLL installation cancelled by user")
+                    
+        except Exception as e:
+            self.log_error(f"Error during DLL installation: {str(e)}")
+            messagebox.showerror("Installation Error", f"Error during DLL installation: {str(e)}")
+
+    def check_dll_status(self):
+        """Check the status of DLL files in System32 and application directory."""
+        try:
+            self.log_info("=== DLL STATUS CHECK ===")
+            
+            # Check System32 installation
+            system32_status = check_dll_installation()
+            self.log_info("System32 DLL status checked")
+            
+            # Check application directory
+            app_dir_status = []
+            dll_files = ["gclib.dll", "gclibo.dll"]
+            for dll_name in dll_files:
+                app_path = os.path.join(os.getcwd(), dll_name)
+                if os.path.exists(app_path):
+                    app_dir_status.append(f"✓ {dll_name}: Found in application directory")
+                    self.log_success(f"{dll_name} found in application directory")
+                else:
+                    app_dir_status.append(f"✗ {dll_name}: Not found in application directory")
+                    self.log_error(f"{dll_name} not found in application directory")
+            
+            # Log System32 status
+            for status in system32_status:
+                if "✓" in status:
+                    self.log_success(status)
+                else:
+                    self.log_error(status)
+            
+            # Create status report
+            status_report = "DLL FILE STATUS REPORT\n"
+            status_report += "=" * 50 + "\n\n"
+            
+            status_report += "SYSTEM32 DIRECTORY:\n"
+            status_report += "-" * 20 + "\n"
+            status_report += "\n".join(system32_status)
+            status_report += "\n\n"
+            
+            status_report += "APPLICATION DIRECTORY:\n"
+            status_report += "-" * 25 + "\n"
+            status_report += "\n".join(app_dir_status)
+            status_report += "\n\n"
+            
+            # Add recommendations
+            status_report += "RECOMMENDATIONS:\n"
+            status_report += "-" * 15 + "\n"
+            
+            system32_ok = all("✓" in status for status in system32_status)
+            app_dir_ok = all("✓" in status for status in app_dir_status)
+            
+            if system32_ok and app_dir_ok:
+                status_report += "✓ All DLL files are properly installed and available.\n"
+                status_report += "✓ The application should work correctly.\n"
+                self.log_success("All DLL files are properly installed and available")
+            elif system32_ok and not app_dir_ok:
+                status_report += "✓ DLL files are installed in System32.\n"
+                status_report += "⚠ Some DLL files missing from application directory.\n"
+                status_report += "  The application should still work.\n"
+                self.log_warning("DLL files installed in System32 but some missing from app directory")
+            elif not system32_ok and app_dir_ok:
+                status_report += "✗ DLL files are not installed in System32.\n"
+                status_report += "✓ DLL files are available in application directory.\n"
+                status_report += "  Click 'INSTALL DLL FILES' to install to System32.\n"
+                self.log_warning("DLL files available in app directory but not in System32")
+            else:
+                status_report += "✗ DLL files are missing from both locations.\n"
+                status_report += "  Please ensure DLL files are in the application directory.\n"
+                self.log_error("DLL files missing from both locations")
+            
+            # Show the status report
+            messagebox.showinfo("DLL Status Report", status_report)
+            
+        except Exception as e:
+            self.log_error(f"Error checking DLL status: {str(e)}")
+            messagebox.showerror("Status Check Error", f"Error checking DLL status: {str(e)}")
+
+    def read_network_settings(self):
+        """Read and display current network settings."""
+        try:
+            self.log_info("=== READ NETWORK SETTINGS ===")
+            
+            # Check permissions first
+            if not check_network_configuration_permissions():
+                self.log_error("Insufficient permissions - Administrator privileges required")
+                messagebox.showerror(
+                    "Permission Error",
+                    "This operation requires Administrator privileges.\n\n"
+                    "Please run the application as Administrator."
+                )
+                return
+            
+            self.log_info("Permissions check passed")
+            
+            # Get current network adapter
+            self.log_info("Detecting active network adapter...")
+            adapter = self.network_configurator.get_active_network_adapter()
+            
+            if not adapter:
+                self.log_error("No active network adapter found")
+                messagebox.showwarning(
+                    "No Active Adapter",
+                    "No active network adapter found.\n\n"
+                    "Please ensure you have a network connection."
+                )
+                return
+            
+            self.log_success(f"Active adapter found: {adapter['name']}")
+            self.log_info(f"Current IP: {adapter['ip_address']}")
+            self.log_info(f"Current Gateway: {adapter['gateway']}")
+            self.log_info(f"DHCP Enabled: {adapter['dhcp_enabled']}")
+            
+            # Format and display the status
+            status_text = self.network_configurator.format_network_status(adapter)
+            
+            # Add target settings for comparison
+            status_text += "\nTARGET SETTINGS:\n"
+            status_text += "=" * 50 + "\n"
+            status_text += f"IP Address: {self.network_configurator.target_settings['ip_address']}\n"
+            status_text += f"Subnet Mask: {self.network_configurator.target_settings['subnet_mask']}\n"
+            status_text += f"Gateway: {self.network_configurator.target_settings['gateway']}\n"
+            status_text += f"Preferred DNS: {self.network_configurator.target_settings['preferred_dns']}\n"
+            status_text += f"Alternate DNS: {self.network_configurator.target_settings['alternate_dns']}\n"
+            
+            # Log target settings
+            self.log_info("Target network settings:")
+            self.log_info(f"  IP: {self.network_configurator.target_settings['ip_address']}")
+            self.log_info(f"  Gateway: {self.network_configurator.target_settings['gateway']}")
+            self.log_info(f"  DNS: {self.network_configurator.target_settings['preferred_dns']}")
+            
+            # Show the status in a dialog
+            messagebox.showinfo("Current Network Settings", status_text)
+            
+        except Exception as e:
+            self.log_error(f"Error reading network settings: {str(e)}")
+            messagebox.showerror("Error", f"Error reading network settings: {str(e)}")
+
+    def apply_target_network_settings(self):
+        """Apply the target network settings to the computer."""
+        try:
+            # Check permissions first
+            if not check_network_configuration_permissions():
+                messagebox.showerror(
+                    "Permission Error",
+                    "This operation requires Administrator privileges.\n\n"
+                    "Please run the application as Administrator."
+                )
+                return
+            
+            # Get current network adapter
+            adapter = self.network_configurator.get_active_network_adapter()
+            
+            if not adapter:
+                messagebox.showwarning(
+                    "No Active Adapter",
+                    "No active network adapter found.\n\n"
+                    "Please ensure you have a network connection."
+                )
+                return
+            
+            # Show confirmation dialog with current and target settings
+            current_status = self.network_configurator.format_network_status(adapter)
+            
+            confirmation_text = "NETWORK CONFIGURATION CHANGE\n"
+            confirmation_text += "=" * 50 + "\n\n"
+            confirmation_text += "CURRENT SETTINGS:\n"
+            confirmation_text += current_status + "\n"
+            confirmation_text += "TARGET SETTINGS:\n"
+            confirmation_text += f"IP Address: {self.network_configurator.target_settings['ip_address']}\n"
+            confirmation_text += f"Subnet Mask: {self.network_configurator.target_settings['subnet_mask']}\n"
+            confirmation_text += f"Gateway: {self.network_configurator.target_settings['gateway']}\n"
+            confirmation_text += f"Preferred DNS: {self.network_configurator.target_settings['preferred_dns']}\n"
+            confirmation_text += f"Alternate DNS: {self.network_configurator.target_settings['alternate_dns']}\n\n"
+            confirmation_text += "WARNING: This will change your computer's network settings.\n"
+            confirmation_text += "You may lose internet connectivity temporarily.\n\n"
+            confirmation_text += "Do you want to continue?"
+            
+            result = messagebox.askyesno("Confirm Network Configuration", confirmation_text)
+            
+            if result:
+                # Apply the settings
+                success = self.network_configurator.apply_network_settings(adapter['name'])
+                
+                if success:
+                    messagebox.showinfo(
+                        "Configuration Applied",
+                        "Network settings have been applied successfully!\n\n"
+                        "Your computer is now configured with the target settings.\n\n"
+                        "You may need to wait a moment for the network to stabilize."
+                    )
+                    
+                    # Optionally test connectivity
+                    self.test_network_connectivity()
+                else:
+                    messagebox.showerror("Configuration Failed", "Failed to apply network settings.")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Error applying network settings: {str(e)}")
+
+    def reset_network_to_dhcp(self):
+        """Reset the network adapter to use DHCP."""
+        try:
+            # Check permissions first
+            if not check_network_configuration_permissions():
+                messagebox.showerror(
+                    "Permission Error",
+                    "This operation requires Administrator privileges.\n\n"
+                    "Please run the application as Administrator."
+                )
+                return
+            
+            # Get current network adapter
+            adapter = self.network_configurator.get_active_network_adapter()
+            
+            if not adapter:
+                messagebox.showwarning(
+                    "No Active Adapter",
+                    "No active network adapter found.\n\n"
+                    "Please ensure you have a network connection."
+                )
+                return
+            
+            # Show confirmation dialog
+            confirmation_text = "RESET TO DHCP\n"
+            confirmation_text += "=" * 50 + "\n\n"
+            confirmation_text += "This will reset your network adapter to use DHCP.\n"
+            confirmation_text += "Your computer will obtain network settings automatically.\n\n"
+            confirmation_text += "Current adapter: " + adapter['name'] + "\n\n"
+            confirmation_text += "Do you want to continue?"
+            
+            result = messagebox.askyesno("Confirm DHCP Reset", confirmation_text)
+            
+            if result:
+                # Reset to DHCP
+                success = self.network_configurator.reset_to_dhcp(adapter['name'])
+                
+                if success:
+                    messagebox.showinfo(
+                        "DHCP Reset Complete",
+                        "Network adapter has been reset to use DHCP.\n\n"
+                        "Your computer will now obtain network settings automatically."
+                    )
+                else:
+                    messagebox.showerror("Reset Failed", "Failed to reset network adapter to DHCP.")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Error resetting to DHCP: {str(e)}")
+
+    def test_network_connectivity(self):
+        """Test network connectivity after configuration."""
+        try:
+            # Test connectivity
+            results = self.network_configurator.test_network_connectivity()
+            
+            # Format results
+            status_text = "NETWORK CONNECTIVITY TEST\n"
+            status_text += "=" * 50 + "\n\n"
+            
+            for detail in results['details']:
+                status_text += detail + "\n"
+            
+            status_text += "\n" + "=" * 50 + "\n"
+            
+            # Overall status
+            if results['gateway_ping'] and results['dns_ping']:
+                status_text += "✓ Network configuration appears to be working correctly.\n"
+            elif results['gateway_ping']:
+                status_text += "⚠ Gateway is reachable but DNS may have issues.\n"
+            else:
+                status_text += "✗ Network connectivity issues detected.\n"
+            
+            messagebox.showinfo("Connectivity Test Results", status_text)
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Error testing connectivity: {str(e)}")
 
 if __name__ == "__main__":
     root = tk.Tk()
