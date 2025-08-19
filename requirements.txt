@@ -1,0 +1,10 @@
+# Galil Setup Tool Requirements
+# Python 3.7+ required
+
+# Core dependencies
+# Note: gclib is provided as gclib.py in the repository
+# tkinter is included with Python installation
+
+# Optional dependencies for development
+# pyinstaller>=4.0  # For building executables
+# pytest>=6.0      # For testing (optional)

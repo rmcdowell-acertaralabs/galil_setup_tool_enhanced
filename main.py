@@ -1,2911 +1,2936 @@
 import tkinter as tk
-from tkinter import ttk, messagebox, simpledialog
-from galil_interface import GalilController
-from utils import find_galil_com_ports, install_all_gclib_dlls, check_dll_installation
-from diagnostics import get_controller_info, get_diagnostics
-from motor_setup import tune_axis, configure_axis
-from encoder_overlay import EncoderOverlay
-from config_manager import load_config, save_config
+from tkinter import ttk, messagebox, filedialog, scrolledtext
+import threading
+import time
+import os
+import sys
+import math
+from datetime import datetime
+import json
+import subprocess
+import socket
+import re
+from typing import Dict, List, Optional, Tuple, Any
+
+# Import our custom modules
 from network_utils import (
     discover_galil_controllers, ping_controller, validate_ip_address,
-    test_controller_connection, get_controller_network_settings, set_controller_network_settings
+    test_controller_connection, configure_controller_network_complete, configure_controller_network_dmc4143, 
+    reset_controller_network_to_dhcp, get_controller_network_status, comprehensive_network_test,
+    force_save_network_settings_dmc4143
 )
-from network_config import NetworkConfigurator, check_network_configuration_permissions
-import os
-import time
-from ctypes import cdll
-from constants import (
-    CONFIG_PATH, WINDOW_WIDTH, WINDOW_HEIGHT, STATUS_DISCONNECTED,
-    CANVAS_WIDTH, CANVAS_HEIGHT, ENCODER_CENTER, ENCODER_RADIUS,
-    DEFAULT_JOG_SPEED, DEFAULT_AXIS, DEFAULT_CLICKS_PER_TURN,
-    SERVO_BITS, VALID_AXES
-)
-from gclib import GclibError
-import math
-
-class GaugeVisualizer:
-    def __init__(self, canvas, controller):
-        self.canvas = canvas
-        self.controller = controller
-        self.axis_positions = {"A": 0, "B": 0, "C": 0, "D": 0}
-        self.axis_colors = {"A": "#0066cc", "B": "#00cc66", "C": "#cc6600", "D": "#cc00cc"}
-        self.highlighted_colors = {"A": "#3399ff", "B": "#33ff99", "C": "#ff9933", "D": "#ff33ff"}
-        self.gauge_centers = {
-            "A": (150, 150),
-            "B": (450, 150), 
-            "C": (150, 350),
-            "D": (450, 350)
-        }
-        self.gauge_radius = 80
-        self.selected_axis = "A"
-        
-        # Create gauges
-        self.create_gauges()
-        
-    def create_gauges(self):
-        """Create RPM-style gauges for each axis"""
-        # Clear canvas
-        self.canvas.delete("all")
-        
-        for axis in ["A", "B", "C", "D"]:
-            self.create_gauge(axis)
-    
-    def create_gauge(self, axis):
-        """Create a single gauge for an axis"""
-        center_x, center_y = self.gauge_centers[axis]
-        radius = self.gauge_radius
-        color = self.axis_colors[axis]
-        
-        # Draw gauge background (semi-circle)
-        start_angle = 180
-        extent = 180
-        
-        # Gauge background
-        self.canvas.create_arc(
-            center_x - radius, center_y - radius,
-            center_x + radius, center_y + radius,
-            start=start_angle, extent=extent,
-            fill='#2a2a2a', outline='#404040', width=3,
-            tags=f"gauge_bg_{axis}"
-        )
-        
-        # Gauge scale marks
-        for i in range(11):  # -5 to +5 marks (11 total, centered at 0)
-            angle = start_angle + (i * extent / 10)
-            angle_rad = math.radians(angle)
-            
-            # Calculate mark position
-            inner_radius = radius - 15
-            outer_radius = radius - 5 if i % 2 == 0 else radius - 10
-            
-            x1 = center_x + inner_radius * math.cos(angle_rad)
-            y1 = center_y - inner_radius * math.sin(angle_rad)
-            x2 = center_x + outer_radius * math.cos(angle_rad)
-            y2 = center_y - outer_radius * math.sin(angle_rad)
-            
-            self.canvas.create_line(x1, y1, x2, y2, fill='#ffffff', width=2,
-                                  tags=f"mark_{axis}_{i}")
-            
-            # Add scale numbers (-5 to +5)
-            if i % 2 == 0:
-                text_radius = radius - 25
-                text_x = center_x + text_radius * math.cos(angle_rad)
-                text_y = center_y - text_radius * math.sin(angle_rad)
-                scale_value = i - 5  # Convert 0-10 to -5 to +5
-                self.canvas.create_text(text_x, text_y, text=str(scale_value), 
-                                      fill='#ffffff', font=("Arial", 8, "bold"),
-                                      tags=f"scale_{axis}_{i}")
-        
-        # Center hub
-        self.canvas.create_oval(
-            center_x - 8, center_y - 8,
-            center_x + 8, center_y + 8,
-            fill=color, outline='#ffffff', width=2,
-            tags=f"hub_{axis}"
-        )
-        
-        # Needle (initially at center/zero)
-        needle_length = radius - 20
-        needle_angle = start_angle + (5 * extent / 10)  # Start at center (5th mark = 0)
-        needle_rad = math.radians(needle_angle)
-        needle_x = center_x + needle_length * math.cos(needle_rad)
-        needle_y = center_y - needle_length * math.sin(needle_rad)
-        
-        self.canvas.create_line(
-            center_x, center_y, needle_x, needle_y,
-            fill=color, width=4, tags=f"needle_{axis}"
-        )
-        
-        # Axis label
-        self.canvas.create_text(
-            center_x, center_y + radius + 20,
-            text=f"Axis {axis}", fill=color, font=("Arial", 12, "bold"),
-            tags=f"label_{axis}"
-        )
-        
-        # Position value display
-        self.canvas.create_text(
-            center_x, center_y + radius + 40,
-            text="0", fill='#ffffff', font=("Arial", 10, "bold"),
-            tags=f"value_{axis}"
-        )
-    
-    def update_position(self, axis, position):
-        """Update gauge needle position for an axis"""
-        center_x, center_y = self.gauge_centers[axis]
-        radius = self.gauge_radius
-        
-        # Normalize position to -10 to +10 scale (centered at zero)
-        max_position = 50000  # Adjust based on your controller's range
-        normalized_pos = max(-1, min(1, position / max_position))
-        
-        # Calculate needle angle (180 to 360 degrees, with 270 as center/zero)
-        start_angle = 180
-        extent = 180
-        # Map -1 to 180 degrees (left), 0 to 270 degrees (center), +1 to 360 degrees (right)
-        needle_angle = start_angle + ((normalized_pos + 1) * extent / 2)
-        needle_rad = math.radians(needle_angle)
-        
-        # Update needle position
-        needle_length = radius - 20
-        needle_x = center_x + needle_length * math.cos(needle_rad)
-        needle_y = center_y - needle_length * math.sin(needle_rad)
-        
-        # Update needle line
-        self.canvas.coords(f"needle_{axis}", center_x, center_y, needle_x, needle_y)
-        
-        # Update position value
-        self.canvas.itemconfig(f"value_{axis}", text=str(position))
-        
-        # Store position
-        self.axis_positions[axis] = position
-    
-    def highlight_axis(self, axis):
-        """Highlight the selected axis gauge"""
-        self.selected_axis = axis
-        
-        # Update all gauge elements to show which one is selected
-        for ax in ["A", "B", "C", "D"]:
-            color = self.highlighted_colors[ax] if ax == axis else self.axis_colors[ax]
-            
-            # Update hub color
-            if f"hub_{ax}" in self.canvas.find_all():
-                self.canvas.itemconfig(f"hub_{ax}", fill=color)
-            
-            # Update needle color
-            if f"needle_{ax}" in self.canvas.find_all():
-                self.canvas.itemconfig(f"needle_{ax}", fill=color)
-            
-            # Update label color
-            if f"label_{ax}" in self.canvas.find_all():
-                self.canvas.itemconfig(f"label_{ax}", fill=color)
-    
-    def update_from_controller(self):
-        """Update positions from controller data"""
-        try:
-            if hasattr(self.controller, 'g') and self.controller.g:
-                # Get position data from controller
-                response = self.controller.send_command("TP")
-                if response:
-                    positions = response.split(',')
-                    if len(positions) >= 4:
-                        for i, axis in enumerate(["A", "B", "C", "D"]):
-                            try:
-                                pos = int(positions[i])
-                                self.update_position(axis, pos)
-                            except (ValueError, IndexError):
-                                pass
-        except Exception:
-            pass
+from galil_interface import GalilController
+# Import consolidated functions
+import galil_functions
 
 class GalilSetupApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Galil DMC-4143 Futuristic Control Interface")
-        self.root.geometry(f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}")
-        self.root.resizable(True, True)  # Make window resizable
+        self.root.title("Galil Setup Tool")
+        self.root.geometry("1400x900")
+        self.root.configure(bg='#f5f5f5')  # Light gray background
         
-        # Set dark theme
-        self.setup_dark_theme()
+        # Initialize controller and components
+        self.controller = None
+        self.test_encoder_update_running = False
+        self.auto_connect_running = False
         
-        if not self.check_gclib_dll():
-            messagebox.showerror(
-                "Missing DLL",
-                "Could not load gclib.dll. Make sure it is in the application folder or in your system PATH."
-            )
-            self.root.destroy()
-            return
-
-        # Initialize controller as instance variable
-        self.controller = GalilController()
-        self.config = load_config()
+        # Color scheme matching Acertara
+        self.colors = {
+            'sidebar_bg': '#2c3e50',      # Dark gray/black sidebar
+            'sidebar_fg': '#ffffff',      # White text in sidebar
+            'header_bg': '#ffffff',       # White header
+            'header_fg': '#2c3e50',       # Dark text in header
+            'main_bg': '#f5f5f5',         # Light gray main area
+            'main_fg': '#2c3e50',         # Dark text in main area
+            'accent_blue': '#3498db',     # Blue accent color
+            'success_green': '#27ae60',   # Green for success
+            'warning_orange': '#f39c12',  # Orange for warnings
+            'error_red': '#e74c3c',       # Red for errors
+            'card_bg': '#ffffff',         # White cards
+            'card_border': '#e0e0e0',     # Light border for cards
+            'online_green': '#2ecc71'     # Green for online status
+        }
         
-        # Initialize network configurator
-        self.network_configurator = NetworkConfigurator()
+        self.setup_ui()
         
-        # Create main container with futuristic styling
-        self.create_futuristic_layout()
+        # Auto-detect and connect to controller on startup (delay to ensure UI is ready)
+        self.root.after(1000, self.auto_connect_to_controller)
         
-        # Initialize gauge visualizer
-        self.visualizer = GaugeVisualizer(self.canvas, self.controller)
+    def setup_ui(self):
+        """Setup the main UI with Acertara-style layout"""
+        # Configure grid weights
+        self.root.grid_rowconfigure(0, weight=1)
+        self.root.grid_columnconfigure(1, weight=1)
         
-        # Start position updates
-        self.root.after(200, self.update_gauge_position)
-
-    def select_axis(self, axis):
-        """Select an axis and update the UI"""
-        self.selected_axis.set(axis)
-        self.highlight_selected_axis(axis)
-        self.current_axis_label.config(text=axis)
+        # Create sidebar
+        self.create_sidebar()
         
-        # Update the gauge colors to highlight the selected axis
-        self.highlight_gauge_axis(axis)
-        
-        # Update position display for the selected axis
-        self.update_position_display()
-        
-        # Load PID values for the selected axis into the tuning block
-        self.load_pid_values_for_axis(axis)
-    
-    def highlight_selected_axis(self, selected_axis):
-        """Highlight the selected axis button and unhighlight others"""
-        for axis in ["A", "B", "C", "D"]:
-            btn = getattr(self, f"axis_btn_{axis}")
-            if axis == selected_axis:
-                btn.config(bg='#0066cc', fg='#ffffff')
-            else:
-                btn.config(bg='#404040', fg='#ffffff')
-    
-    def highlight_gauge_axis(self, selected_axis):
-        """Highlight the selected axis gauge with a brighter color"""
-        # This will be implemented in the gauge visualizer
-        if hasattr(self, 'visualizer'):
-            self.visualizer.highlight_axis(selected_axis)
-
-    def setup_dark_theme(self):
-        """Setup modern black, white, blue, and grey theme"""
-        style = ttk.Style()
-        style.theme_use('clam')
-        
-        # Configure modern theme colors
-        style.configure('Dark.TFrame', background='#1a1a1a')
-        style.configure('Dark.TLabel', background='#1a1a1a', foreground='#ffffff')
-        style.configure('Dark.TButton', 
-                       background='#2a2a2a', 
-                       foreground='#ffffff',
-                       borderwidth=2,
-                       relief='raised')
-        style.configure('Primary.TButton',
-                       background='#0066cc',
-                       foreground='#ffffff',
-                       borderwidth=3,
-                       relief='raised')
-        style.configure('Secondary.TButton',
-                       background='#404040',
-                       foreground='#ffffff',
-                       borderwidth=3,
-                       relief='raised')
-        style.configure('Danger.TButton',
-                       background='#cc0000',
-                       foreground='#ffffff',
-                       borderwidth=3,
-                       relief='raised')
-
-    def create_futuristic_layout(self):
-        """Create the futuristic layout"""
-        # Main container
-        self.main_container = tk.Frame(self.root, bg='#1a1a1a')
-        self.main_container.pack(fill="both", expand=True, padx=10, pady=10)
-        
-        # Title
-        title_frame = tk.Frame(self.main_container, bg='#1a1a1a')
-        title_frame.pack(fill="x", pady=(0, 10))
-        
-        title_label = tk.Label(
-            title_frame,
-            text="GALIL DMC-4143 CONTROL INTERFACE",
-            font=("Arial", 18, "bold"),
-            bg='#1a1a1a',
-            fg='#ffffff'
-        )
-        title_label.pack()
+        # Create header
+        self.create_header()
         
         # Create main content area
-        content_frame = tk.Frame(self.main_container, bg='#1a1a1a')
-        content_frame.pack(fill="both", expand=True)
+        self.create_main_content()
         
-        # Left panel - Controls
-        self.create_control_panel(content_frame)
+    def create_sidebar(self):
+        """Create the dark sidebar with navigation"""
+        # Sidebar frame
+        sidebar = tk.Frame(self.root, bg=self.colors['sidebar_bg'], width=250)
+        sidebar.grid(row=0, column=0, sticky="nsew")
+        sidebar.grid_propagate(False)
         
-        # Right panel - 3D Visualization
-        self.create_visualization_panel(content_frame)
+        # User profile section
+        profile_frame = tk.Frame(sidebar, bg=self.colors['sidebar_bg'])
+        profile_frame.pack(fill='x', padx=20, pady=20)
         
-        # Bottom panel - Diagnostics
-        self.create_diagnostics_panel()
-
-    def create_control_panel(self, parent):
-        """Create the control panel"""
-        # Create a frame with scrollbar
-        control_container = tk.Frame(parent, bg='#1a1a1a')
-        control_container.pack(side="left", fill="y", padx=(0, 10))
+        # Acertara logo
+        logo_frame = tk.Frame(profile_frame, bg=self.colors['sidebar_bg'])
+        logo_frame.pack(pady=(0, 15))
         
-        # Create canvas for scrolling
-        canvas = tk.Canvas(control_container, bg='#2a2a2a', highlightthickness=0)
-        scrollbar = tk.Scrollbar(control_container, orient="vertical", command=canvas.yview)
-        scrollable_frame = tk.Frame(canvas, bg='#2a2a2a')
+        # Prefer using an image logo if available
+        try:
+            import os
+            logo_path = os.path.join('assets', 'acertara_logo.png')
+            if os.path.isfile(logo_path):
+                from tkinter import PhotoImage
+                self._sidebar_logo_img = PhotoImage(file=logo_path)
+                logo_img_label = tk.Label(logo_frame, image=self._sidebar_logo_img, bg=self.colors['sidebar_bg'])
+                logo_img_label.pack(side='left')
+            else:
+                # Fallback to simple text logo
+                logo_fallback = tk.Label(logo_frame, text="A", 
+                                         font=("Arial", 24, "bold"),
+                                         bg=self.colors['accent_blue'], fg='white',
+                                         width=2, height=1, relief='flat')
+                logo_fallback.pack(side='left')
+        except Exception:
+            logo_fallback = tk.Label(logo_frame, text="A", 
+                                     font=("Arial", 24, "bold"),
+                                     bg=self.colors['accent_blue'], fg='white',
+                                     width=2, height=1, relief='flat')
+            logo_fallback.pack(side='left')
         
-        scrollable_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
+        # ACERTARA text
+        logo_text_frame = tk.Frame(logo_frame, bg=self.colors['sidebar_bg'])
+        logo_text_frame.pack(side='left', padx=(12, 0))
         
-        # Add mouse wheel scrolling
-        def _on_mousewheel(event):
-            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        acertara_text = tk.Label(logo_text_frame, text="ACERTARA", 
+                               font=("Arial", 16, "bold"), 
+                               bg=self.colors['sidebar_bg'], fg='black')
+        acertara_text.pack()
         
-        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        acoustic_text = tk.Label(logo_text_frame, text="acoustic laboratories", 
+                               font=("Arial", 9), 
+                               bg=self.colors['sidebar_bg'], fg='#666666')
+        acoustic_text.pack()
         
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
+        # User icon (placeholder)
+        user_icon = tk.Label(profile_frame, text="👤", font=("Arial", 24), 
+                           bg=self.colors['sidebar_bg'], fg=self.colors['sidebar_fg'])
+        user_icon.pack()
         
-        # Pack canvas and scrollbar
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
+        # User name
+        user_name = tk.Label(profile_frame, text="Ryan McDowell", 
+                           font=("Arial", 12, "bold"), 
+                           bg=self.colors['sidebar_bg'], fg=self.colors['sidebar_fg'])
+        user_name.pack(pady=(10, 5))
         
-        # Control panel title
-        tk.Label(
-            scrollable_frame,
-            text="CONTROL PANEL",
-            font=("Arial", 14, "bold"),
-            bg='#2a2a2a',
-            fg='#ffffff'
-        ).pack(pady=10)
+        # Online status
+        status_frame = tk.Frame(profile_frame, bg=self.colors['sidebar_bg'])
+        status_frame.pack()
         
-        # Connection status
-        self.status_var = tk.StringVar(value=STATUS_DISCONNECTED)
-        status_label = tk.Label(
-            scrollable_frame,
-            textvariable=self.status_var,
-            font=("Arial", 10, "bold"),
-            bg='#2a2a2a',
-            fg='#ff6666'
-        )
-        status_label.pack(pady=5)
+        online_dot = tk.Label(status_frame, text="●", font=("Arial", 8), 
+                             bg=self.colors['sidebar_bg'], fg=self.colors['online_green'])
+        online_dot.pack(side='left')
         
-        # Connection type selection
-        conn_type_frame = tk.LabelFrame(scrollable_frame, text="CONNECTION TYPE", 
-                                      bg='#2a2a2a', fg='#ffffff', font=("Arial", 10, "bold"))
-        conn_type_frame.pack(fill="x", padx=10, pady=5)
+        online_text = tk.Label(status_frame, text="Online", 
+                              font=("Arial", 10), 
+                              bg=self.colors['sidebar_bg'], fg=self.colors['sidebar_fg'])
+        online_text.pack(side='left', padx=(5, 0))
         
-        self.conn_type = tk.StringVar(value="USB")
-        tk.Radiobutton(conn_type_frame, text="USB", variable=self.conn_type, value="USB",
-                      bg='#2a2a2a', fg='#ffffff', selectcolor='#1a1a1a',
-                      font=("Arial", 9)).pack(side="left", padx=5)
-        tk.Radiobutton(conn_type_frame, text="Network", variable=self.conn_type, value="Network",
-                      bg='#2a2a2a', fg='#ffffff', selectcolor='#1a1a1a',
-                      font=("Arial", 9)).pack(side="left", padx=5)
+        # Navigation menu
+        nav_frame = tk.Frame(sidebar, bg=self.colors['sidebar_bg'])
+        nav_frame.pack(fill='both', expand=True, padx=20, pady=20)
         
-        # IP Address entry (for network connection)
-        ip_frame = tk.LabelFrame(scrollable_frame, text="IP ADDRESS", 
-                               bg='#2a2a2a', fg='#ffffff', font=("Arial", 10, "bold"))
-        ip_frame.pack(fill="x", padx=10, pady=5)
+        # Menu items
+        menu_items = [
+            ("🎯", "Controller Testing", self.show_controller_testing),
+            ("🌐", "Network Config", self.show_network_config),
+            ("⚙️", "Settings", self.show_settings),
+        ]
         
-        self.ip_entry = tk.Entry(ip_frame, width=15, bg='#1a1a1a', fg='#ffffff',
-                                insertbackground='#ffffff')
-        self.ip_entry.insert(0, self.config.get("ip_address", "192.168.0.100"))
-        self.ip_entry.pack(pady=5)
+        for icon, text, command in menu_items:
+            menu_item = tk.Button(nav_frame, text=f"{icon} {text}", 
+                                font=("Arial", 11), 
+                                bg=self.colors['sidebar_bg'], fg=self.colors['sidebar_fg'],
+                                bd=0, relief='flat', anchor='w',
+                                command=command)
+            menu_item.pack(fill='x', pady=2)
+            
+            # Hover effects
+            menu_item.bind('<Enter>', lambda e, btn=menu_item: btn.configure(bg='#34495e'))
+            menu_item.bind('<Leave>', lambda e, btn=menu_item: btn.configure(bg=self.colors['sidebar_bg']))
         
-        # Axis selection
-        axis_frame = tk.LabelFrame(scrollable_frame, text="AXIS SELECTION", 
-                                 bg='#2a2a2a', fg='#ffffff', font=("Arial", 10, "bold"))
-        axis_frame.pack(fill="x", padx=10, pady=5)
+    def create_header(self):
+        """Create the light header with logo and controls"""
+        # Header frame
+        header = tk.Frame(self.root, bg=self.colors['header_bg'], height=80)
+        header.grid(row=0, column=1, sticky="ew")
+        header.grid_propagate(False)
         
-        # Axis selector buttons
-        axis_selector_frame = tk.Frame(axis_frame, bg='#2a2a2a')
-        axis_selector_frame.pack(pady=5)
+        # Configure header grid
+        header.grid_columnconfigure(1, weight=1)
         
-        self.selected_axis = tk.StringVar(value=DEFAULT_AXIS)
+        # Left side - Logo and hamburger menu
+        left_frame = tk.Frame(header, bg=self.colors['header_bg'])
+        left_frame.grid(row=0, column=0, sticky="w", padx=20, pady=20)
         
-        # Create axis selector buttons
-        for axis in ["A", "B", "C", "D"]:
-            axis_btn = tk.Button(
-                axis_selector_frame,
-                text=f"Axis {axis}",
-                width=8,
-                command=lambda a=axis: self.select_axis(a),
-                bg='#404040',
-                fg='#ffffff',
-                font=("Arial", 9, "bold"),
-                relief='raised',
-                bd=2
-            )
-            axis_btn.pack(side="left", padx=2)
-            setattr(self, f"axis_btn_{axis}", axis_btn)
+        # Hamburger menu
+        hamburger = tk.Label(left_frame, text="☰", font=("Arial", 18), 
+                           bg=self.colors['header_bg'], fg=self.colors['header_fg'])
+        hamburger.pack(side='left', padx=(0, 15))
         
-        # Highlight the default selected axis
-        self.highlight_selected_axis(DEFAULT_AXIS)
-        
-        # Current axis display
-        current_axis_frame = tk.Frame(axis_frame, bg='#2a2a2a')
-        current_axis_frame.pack(pady=5)
-        
-        tk.Label(current_axis_frame, text="Current Axis:", bg='#2a2a2a', fg='#ffffff', 
-                font=("Arial", 9, "bold")).pack(side="left", padx=5)
-        
-        self.current_axis_label = tk.Label(
-            current_axis_frame,
-            text=DEFAULT_AXIS,
-            bg='#0066cc',
-            fg='#ffffff',
-            font=("Arial", 12, "bold"),
-            width=3,
-            relief='raised',
-            bd=2
-        )
-        self.current_axis_label.pack(side="left", padx=5)
-        
-        # Current position display
-        position_frame = tk.Frame(axis_frame, bg='#2a2a2a')
-        position_frame.pack(pady=5)
-        
-        tk.Label(position_frame, text="Position:", bg='#2a2a2a', fg='#ffffff', 
-                font=("Arial", 9, "bold")).pack(side="left", padx=5)
-        
-        self.position_label = tk.Label(
-            position_frame,
-            text="0",
-            bg='#1a1a1a',
-            fg='#ffffff',
-            font=("Arial", 10, "bold"),
-            width=12,
-            relief='sunken',
-            bd=2
-        )
-        self.position_label.pack(side="left", padx=5)
-        
-        # Speed control
-        speed_frame = tk.LabelFrame(scrollable_frame, text="SPEED CONTROL", 
-                                  bg='#2a2a2a', fg='#ffffff', font=("Arial", 10, "bold"))
-        speed_frame.pack(fill="x", padx=10, pady=5)
-        
-        tk.Label(speed_frame, text="Speed:", bg='#2a2a2a', fg='#ffffff').pack(side="left", padx=5)
-        self.jog_speed_entry = tk.Entry(speed_frame, width=10, bg='#1a1a1a', fg='#ffffff',
-                                      insertbackground='#ffffff')
-        self.jog_speed_entry.insert(0, str(DEFAULT_JOG_SPEED))
-        self.jog_speed_entry.pack(side="left", padx=5)
-        
-        # Motion controls
-        motion_frame = tk.LabelFrame(scrollable_frame, text="MOTION CONTROLS", 
-                                   bg='#2a2a2a', fg='#ffffff', font=("Arial", 10, "bold"))
-        motion_frame.pack(fill="x", padx=10, pady=5)
-        
-        # Jog buttons with modern styling
-        jog_frame = tk.Frame(motion_frame, bg='#2a2a2a')
-        jog_frame.pack(pady=5)
-        
-        tk.Button(jog_frame, text="JOG +", width=8, command=self.jog_positive,
-                 bg='#0066cc', fg='#ffffff', font=("Arial", 10, "bold"),
-                 relief='raised', bd=3).pack(side="left", padx=2)
-        tk.Button(jog_frame, text="JOG -", width=8, command=self.jog_negative,
-                 bg='#0066cc', fg='#ffffff', font=("Arial", 10, "bold"),
-                 relief='raised', bd=3).pack(side="left", padx=2)
-        tk.Button(jog_frame, text="STOP", width=8, command=self.stop_motion,
-                 bg='#cc0000', fg='#ffffff', font=("Arial", 10, "bold"),
-                 relief='raised', bd=3).pack(side="left", padx=2)
-        
-        # Connection controls
-        conn_frame = tk.LabelFrame(scrollable_frame, text="CONNECTION", 
-                                 bg='#2a2a2a', fg='#ffffff', font=("Arial", 10, "bold"))
-        conn_frame.pack(fill="x", padx=10, pady=5)
-        
-        tk.Button(conn_frame, text="CONNECT", command=self.connect_to_controller,
-                 bg='#0066cc', fg='#ffffff', font=("Arial", 10, "bold"),
-                 relief='raised', bd=3).pack(pady=5)
-        
-        # Test buttons
-        test_frame = tk.LabelFrame(scrollable_frame, text="DIAGNOSTICS", 
-                                 bg='#2a2a2a', fg='#ffffff', font=("Arial", 10, "bold"))
-        test_frame.pack(fill="x", padx=10, pady=5)
-        
-        tk.Button(test_frame, text="RUN DIAGNOSTICS", command=self.run_diagnostics,
-                 bg='#0066cc', fg='#ffffff', font=("Arial", 9, "bold"),
-                 relief='raised', bd=3).pack(pady=2)
-        tk.Button(test_frame, text="COMPREHENSIVE TEST", command=self.run_comprehensive_test,
-                 bg='#0066cc', fg='#ffffff', font=("Arial", 9, "bold"),
-                 relief='raised', bd=3).pack(pady=2)
-        
-        # Automated test section
-        auto_test_frame = tk.LabelFrame(scrollable_frame, text="AUTOMATED TESTING", 
-                                      bg='#2a2a2a', fg='#ffffff', font=("Arial", 10, "bold"))
-        auto_test_frame.pack(fill="x", padx=10, pady=5)
-        
-        tk.Button(auto_test_frame, text="RUN AUTOMATED TEST", command=self.run_automated_test,
-                 bg='#cc6600', fg='#ffffff', font=("Arial", 9, "bold"),
-                 relief='raised', bd=3).pack(pady=2)
-        tk.Button(auto_test_frame, text="STOP AUTOMATED TEST", command=self.stop_automated_test,
-                 bg='#cc0000', fg='#ffffff', font=("Arial", 9, "bold"),
-                 relief='raised', bd=3).pack(pady=2)
-        tk.Button(auto_test_frame, text="TEST SIMPLE MOVEMENT", command=self.test_simple_movement,
-                 bg='#0066cc', fg='#ffffff', font=("Arial", 9, "bold"),
-                 relief='raised', bd=3).pack(pady=2)
-        tk.Button(auto_test_frame, text="TEST COMMAND FORMATS", command=self.test_command_formats,
-                 bg='#0066cc', fg='#ffffff', font=("Arial", 9, "bold"),
-                 relief='raised', bd=3).pack(pady=2)
-        
-        # DLL Installation buttons
-        dll_frame = tk.LabelFrame(scrollable_frame, text="DLL INSTALLATION", 
-                                bg='#2a2a2a', fg='#ffffff', font=("Arial", 10, "bold"))
-        dll_frame.pack(fill="x", padx=10, pady=5)
-        
-        tk.Button(dll_frame, text="INSTALL DLL FILES", command=self.install_dll_files,
-                 bg='#00cc00', fg='#ffffff', font=("Arial", 9, "bold"),
-                 relief='raised', bd=3).pack(pady=2)
-        tk.Button(dll_frame, text="CHECK DLL STATUS", command=self.check_dll_status,
-                 bg='#404040', fg='#ffffff', font=("Arial", 9, "bold"),
-                 relief='raised', bd=3).pack(pady=2)
-        
-        # Configuration buttons
-        config_frame = tk.LabelFrame(scrollable_frame, text="CONFIGURATION", 
-                                   bg='#2a2a2a', fg='#ffffff', font=("Arial", 10, "bold"))
-        config_frame.pack(fill="x", padx=10, pady=5)
-        
-        tk.Button(config_frame, text="CONFIGURE AXIS", command=self.configure_selected_axis,
-                 bg='#0066cc', fg='#ffffff', font=("Arial", 9, "bold"),
-                 relief='raised', bd=3).pack(pady=2)
-        tk.Button(config_frame, text="SAVE CONFIG", command=self.save_current_config,
-                 bg='#0066cc', fg='#ffffff', font=("Arial", 9, "bold"),
-                 relief='raised', bd=3).pack(pady=2)
-        
-        # Network Configuration buttons
-        network_frame = tk.LabelFrame(scrollable_frame, text="NETWORK CONFIGURATION", 
-                                    bg='#2a2a2a', fg='#ffffff', font=("Arial", 10, "bold"))
-        network_frame.pack(fill="x", padx=10, pady=5)
-        
-        tk.Button(network_frame, text="SET IP (SIMPLE)", command=self.set_controller_ip,
-                 bg='#0066cc', fg='#ffffff', font=("Arial", 9, "bold"),
-                 relief='raised', bd=3).pack(pady=2)
-        tk.Button(network_frame, text="SET IP (ADVANCED)", command=self.set_controller_ip_advanced,
-                 bg='#0066cc', fg='#ffffff', font=("Arial", 9, "bold"),
-                 relief='raised', bd=3).pack(pady=2)
-        tk.Button(network_frame, text="DISCOVER CONTROLLERS", command=self.discover_network_controllers,
-                 bg='#0066cc', fg='#ffffff', font=("Arial", 9, "bold"),
-                 relief='raised', bd=3).pack(pady=2)
-        tk.Button(network_frame, text="TEST CONNECTION", command=self.test_network_connection,
-                 bg='#0066cc', fg='#ffffff', font=("Arial", 9, "bold"),
-                 relief='raised', bd=3).pack(pady=2)
-        tk.Button(network_frame, text="WINDOWS PING TEST", command=self.test_windows_ping,
-                 bg='#0066cc', fg='#ffffff', font=("Arial", 9, "bold"),
-                 relief='raised', bd=3).pack(pady=2)
-        
-        # Computer Network Configuration buttons
-        computer_network_frame = tk.LabelFrame(scrollable_frame, text="COMPUTER NETWORK CONFIG", 
-                                             bg='#2a2a2a', fg='#ffffff', font=("Arial", 10, "bold"))
-        computer_network_frame.pack(fill="x", padx=10, pady=5)
-        
-        tk.Button(computer_network_frame, text="READ NETWORK SETTINGS", command=self.read_network_settings,
-                 bg='#00cc00', fg='#ffffff', font=("Arial", 9, "bold"),
-                 relief='raised', bd=3).pack(pady=2)
-        tk.Button(computer_network_frame, text="APPLY TARGET SETTINGS", command=self.apply_target_network_settings,
-                 bg='#cc6600', fg='#ffffff', font=("Arial", 9, "bold"),
-                 relief='raised', bd=3).pack(pady=2)
-        tk.Button(computer_network_frame, text="RESET TO DHCP", command=self.reset_network_to_dhcp,
-                 bg='#404040', fg='#ffffff', font=("Arial", 9, "bold"),
-                 relief='raised', bd=3).pack(pady=2)
-        tk.Button(computer_network_frame, text="TEST CONNECTIVITY", command=self.test_network_connectivity,
-                 bg='#0066cc', fg='#ffffff', font=("Arial", 9, "bold"),
-                 relief='raised', bd=3).pack(pady=2)
-        
-        # Position control
-        pos_frame = tk.LabelFrame(scrollable_frame, text="POSITION CONTROL", 
-                                bg='#2a2a2a', fg='#ffffff', font=("Arial", 10, "bold"))
-        pos_frame.pack(fill="x", padx=10, pady=5)
-        
-        tk.Button(pos_frame, text="RESET POSITION", command=self.reset_axis_position,
-                 bg='#404040', fg='#ffffff', font=("Arial", 9, "bold"),
-                 relief='raised', bd=3).pack(pady=2)
-        tk.Button(pos_frame, text="TEST RESET COMMANDS", command=self.test_reset_commands,
-                 bg='#404040', fg='#ffffff', font=("Arial", 9, "bold"),
-                 relief='raised', bd=3).pack(pady=2)
-        
-        # PID controls
-        pid_frame = tk.LabelFrame(scrollable_frame, text="PID TUNING", 
-                                bg='#2a2a2a', fg='#ffffff', font=("Arial", 10, "bold"))
-        pid_frame.pack(fill="x", padx=10, pady=5)
-        
-        for i, label in enumerate(["KP", "KI", "KD"]):
-            frame = tk.Frame(pid_frame, bg='#2a2a2a')
-            frame.pack(fill="x", pady=2)
-            tk.Label(frame, text=f"{label}:", bg='#2a2a2a', fg='#ffffff').pack(side="left", padx=5)
-            entry = tk.Entry(frame, width=8, bg='#1a1a1a', fg='#ffffff', insertbackground='#ffffff')
-            entry.pack(side="right", padx=5)
-            setattr(self, f"{label.lower()}_entry", entry)
-        
-        tk.Button(pid_frame, text="TUNE AXIS", command=self.tune_motor,
-                 bg='#0066cc', fg='#ffffff', font=("Arial", 9, "bold"),
-                 relief='raised', bd=3).pack(pady=2)
-        
-        tk.Button(pid_frame, text="LOAD PID VALUES", command=self.load_current_axis_pid,
-                 bg='#404040', fg='#ffffff', font=("Arial", 9, "bold"),
-                 relief='raised', bd=3).pack(pady=2)
-
-    def create_visualization_panel(self, parent):
-        """Create the gauge visualization panel"""
-        viz_frame = tk.Frame(parent, bg='#1a1a1a')
-        viz_frame.pack(side="right", fill="both", expand=True)
-        
-        # Gauge Visualization title
-        tk.Label(
-            viz_frame,
-            text="AXIS POSITION GAUGES",
-            font=("Arial", 14, "bold"),
-            bg='#1a1a1a',
-            fg='#ffffff'
-        ).pack(pady=10)
-        
-        # Canvas for gauge visualization
-        self.canvas = tk.Canvas(
-            viz_frame,
-            width=CANVAS_WIDTH,
-            height=CANVAS_HEIGHT,
-            bg='#0a0a0a',
-            highlightthickness=2,
-            highlightbackground='#0066cc'
-        )
-        self.canvas.pack(pady=10)
-
-    def create_diagnostics_panel(self):
-        """Create the diagnostics panel with enhanced logging capabilities"""
-        diag_frame = tk.LabelFrame(self.main_container, text="SYSTEM DIAGNOSTICS", 
-                                 bg='#1a1a1a', fg='#ffffff', font=("Arial", 12, "bold"))
-        diag_frame.pack(fill="x", pady=10)
-        
-        # Create a frame for the text area and scrollbar
-        text_frame = tk.Frame(diag_frame, bg='#1a1a1a')
-        text_frame.pack(fill="both", expand=True, padx=10, pady=10)
-        
-        # Diagnostics text area with scrollbar
-        self.diagnostics_text = tk.Text(
-            text_frame,
-            height=12,  # Increased height for better visibility
-            width=80,
-            wrap="word",
-            bg='#0a0a0a',
-            fg='#ffffff',
-            insertbackground='#ffffff',
-            font=("Consolas", 9),  # Monospace font for better alignment
-            state="normal"
-        )
-        
-        # Scrollbar for the diagnostics text
-        diagnostics_scrollbar = tk.Scrollbar(text_frame, orient="vertical", command=self.diagnostics_text.yview)
-        self.diagnostics_text.configure(yscrollcommand=diagnostics_scrollbar.set)
-        
-        # Pack text area and scrollbar
-        self.diagnostics_text.pack(side="left", fill="both", expand=True)
-        diagnostics_scrollbar.pack(side="right", fill="y")
-        
-        # Control buttons frame
-        button_frame = tk.Frame(diag_frame, bg='#1a1a1a')
-        button_frame.pack(fill="x", padx=10, pady=5)
+        # Right side - Controls
+        right_frame = tk.Frame(header, bg=self.colors['header_bg'])
+        right_frame.grid(row=0, column=2, sticky="e", padx=20, pady=20)
         
         # Control buttons
-        tk.Button(button_frame, text="CLEAR LOG", command=self.clear_diagnostics,
-                 bg='#cc0000', fg='#ffffff', font=("Arial", 9, "bold"),
-                 relief='raised', bd=2).pack(side="left", padx=5)
+        controls = [
+            ("🔔", "Notifications"),
+            ("⏻", "Logout"),
+            ("👤", "Ryan"),
+            ("⚙️", "Settings")
+        ]
         
-        tk.Button(button_frame, text="REFRESH DIAGNOSTICS", command=self.refresh_diagnostics,
-                 bg='#0066cc', fg='#ffffff', font=("Arial", 9, "bold"),
-                 relief='raised', bd=2).pack(side="left", padx=5)
-        
-        tk.Button(button_frame, text="AUTO-SCROLL ON", command=self.toggle_auto_scroll,
-                 bg='#00cc00', fg='#ffffff', font=("Arial", 9, "bold"),
-                 relief='raised', bd=2).pack(side="left", padx=5)
-        
-        # Initialize logging system
-        self.auto_scroll_enabled = True
-        self.log_timestamp_enabled = True
-        self.max_log_lines = 1000  # Maximum lines to keep in log
-        
-        # Start the logging system
-        self.start_logging_system()
-        
-        # Start periodic status updates
-        self.start_periodic_status_updates()
-
-    def update_gauge_position(self):
-        """Update gauge position display"""
-        try:
-            self.visualizer.update_from_controller()
-            # Also update the position display
-            self.update_position_display()
-        except Exception:
-            pass
-        self.root.after(100, self.update_gauge_position)  # Increased frequency for more responsive updates
-    
-    def update_position_display(self):
-        """Update the position display for the currently selected axis"""
-        try:
-            current_axis = self.selected_axis.get()
-            if hasattr(self.visualizer, 'axis_positions'):
-                position = self.visualizer.axis_positions.get(current_axis, 0)
-                self.position_label.config(text=str(position))
-        except Exception:
-            pass
-
-    def _append_diagnostic(self, line: str, level: str = "INFO"):
-        """Insert a single line into the diagnostics box with timestamp and level."""
-        import datetime
-        
-        # Create timestamp
-        timestamp = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]  # HH:MM:SS.mmm
-        
-        # Create formatted log entry
-        if self.log_timestamp_enabled:
-            log_entry = f"[{timestamp}] [{level}] {line}\n"
-        else:
-            log_entry = f"[{level}] {line}\n"
-        
-        # Insert the log entry
-        self.diagnostics_text.insert(tk.END, log_entry)
-        
-        # Auto-scroll if enabled
-        if self.auto_scroll_enabled:
-            self.diagnostics_text.see(tk.END)
-        
-        # Limit the number of lines to prevent memory issues
-        self._limit_log_lines()
-        
-        # Force update the display
-        self.diagnostics_text.update_idletasks()
-
-    def _limit_log_lines(self):
-        """Limit the number of lines in the log to prevent memory issues."""
-        try:
-            lines = self.diagnostics_text.get("1.0", tk.END).split('\n')
-            if len(lines) > self.max_log_lines:
-                # Remove oldest lines (keep the last max_log_lines)
-                excess_lines = len(lines) - self.max_log_lines
-                self.diagnostics_text.delete("1.0", f"{excess_lines + 1}.0")
-        except Exception:
-            pass
-
-    def log_info(self, message: str):
-        """Log an informational message."""
-        self._append_diagnostic(message, "INFO")
-
-    def log_warning(self, message: str):
-        """Log a warning message."""
-        self._append_diagnostic(message, "WARN")
-
-    def log_error(self, message: str):
-        """Log an error message."""
-        self._append_diagnostic(message, "ERROR")
-
-    def log_success(self, message: str):
-        """Log a success message."""
-        self._append_diagnostic(message, "SUCCESS")
-
-    def log_command(self, message: str):
-        """Log a command message."""
-        self._append_diagnostic(message, "CMD")
-
-    def log_status(self, message: str):
-        """Log a status message."""
-        self._append_diagnostic(message, "STATUS")
-
-    def clear_diagnostics(self):
-        """Clear the diagnostics log."""
-        self.diagnostics_text.delete("1.0", tk.END)
-        self.log_info("Diagnostics log cleared")
-
-    def toggle_auto_scroll(self):
-        """Toggle auto-scroll functionality."""
-        self.auto_scroll_enabled = not self.auto_scroll_enabled
-        status = "ON" if self.auto_scroll_enabled else "OFF"
-        self.log_info(f"Auto-scroll toggled {status}")
-        
-        # Update button text
-        for widget in self.root.winfo_children():
-            if isinstance(widget, tk.Button) and "AUTO-SCROLL" in widget.cget("text"):
-                widget.config(text=f"AUTO-SCROLL {status}")
-
-    def start_logging_system(self):
-        """Start the logging system with initial messages."""
-        self.log_info("=== GALIL DMC-4143 CONTROL INTERFACE STARTED ===")
-        self.log_info("Logging system initialized")
-        self.log_info("Auto-scroll enabled")
-        self.log_info("Ready for operations")
-
-    def start_periodic_status_updates(self):
-        """Start periodic status updates to the log."""
-        self.log_info("Starting periodic status updates")
-        self._periodic_status_update()
-
-    def _periodic_status_update(self):
-        """Periodic status update function."""
-        try:
-            # Log connection status
-            if hasattr(self.controller, 'g') and self.controller.g:
-                self.log_status("Controller: Connected")
-            else:
-                self.log_status("Controller: Disconnected")
+        for icon, tooltip in controls:
+            btn = tk.Label(right_frame, text=icon, font=("Arial", 16), 
+                          bg=self.colors['header_bg'], fg=self.colors['header_fg'])
+            btn.pack(side='left', padx=5)
             
-            # Log current axis selection
-            current_axis = self.selected_axis.get()
-            self.log_status(f"Selected Axis: {current_axis}")
+            # Add tooltip
+            if tooltip == "Ryan":
+                user_label = tk.Label(right_frame, text=tooltip, 
+                                    font=("Arial", 10), 
+                                    bg=self.colors['header_bg'], fg=self.colors['header_fg'])
+                user_label.pack(side='left', padx=(5, 10))
+        
+    def create_main_content(self):
+        """Create the main content area"""
+        # Main content frame
+        self.main_content = tk.Frame(self.root, bg=self.colors['main_bg'])
+        self.main_content.grid(row=0, column=1, sticky="nsew", padx=20, pady=20)
+        
+        # Show controller testing by default
+        self.show_controller_testing()
+        
+
+        
+    def clear_main_content(self):
+        """Clear the main content area"""
+        # Stop encoder updates when switching pages
+        self.test_encoder_update_running = False
+        
+        for widget in self.main_content.winfo_children():
+            widget.destroy()
             
-            # Log current speed setting
-            try:
-                speed = self.jog_speed_entry.get()
-                self.log_status(f"Jog Speed: {speed}")
-            except:
-                pass
+    def show_motor_setup(self):
+        """Show motor setup interface"""
+        self.clear_main_content()
+        
+        # Title
+        title = tk.Label(self.main_content, text="Motor Setup", 
+                        font=("Arial", 24, "bold"), 
+                        bg=self.colors['main_bg'], fg=self.colors['main_fg'])
+        title.pack(anchor='w', pady=(0, 20))
+        
+        # Motor setup content
+        setup_frame = tk.Frame(self.main_content, bg=self.colors['main_bg'])
+        setup_frame.pack(fill='both', expand=True)
+        
+        # PID Configuration Section
+        pid_frame = tk.LabelFrame(setup_frame, text="PID Configuration", 
+                                font=("Arial", 12, "bold"),
+                                bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                relief='solid', bd=1)
+        pid_frame.pack(fill='x', pady=(0, 20), padx=10)
+        
+        # Axis selection
+        axis_frame = tk.Frame(pid_frame, bg=self.colors['main_bg'])
+        axis_frame.pack(fill='x', padx=15, pady=10)
+        
+        tk.Label(axis_frame, text="Axis:", font=("Arial", 10, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
+        
+        self.axis_var = tk.StringVar(value="A")
+        axis_combo = ttk.Combobox(axis_frame, textvariable=self.axis_var, 
+                                 values=["A", "B", "C", "D"], width=10)
+        axis_combo.pack(side='left', padx=(10, 0))
+        
+        # PID values
+        pid_values_frame = tk.Frame(pid_frame, bg=self.colors['main_bg'])
+        pid_values_frame.pack(fill='x', padx=15, pady=10)
+        
+        # KP
+        tk.Label(pid_values_frame, text="KP:", font=("Arial", 10),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).grid(row=0, column=0, sticky='w')
+        self.kp_entry = tk.Entry(pid_values_frame, font=("Arial", 10), width=15)
+        self.kp_entry.grid(row=0, column=1, padx=(10, 20))
+        self.kp_entry.insert(0, "10.0")
+        
+        # KI
+        tk.Label(pid_values_frame, text="KI:", font=("Arial", 10),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).grid(row=0, column=2, sticky='w')
+        self.ki_entry = tk.Entry(pid_values_frame, font=("Arial", 10), width=15)
+        self.ki_entry.grid(row=0, column=3, padx=(10, 20))
+        self.ki_entry.insert(0, "0.1")
+        
+        # KD
+        tk.Label(pid_values_frame, text="KD:", font=("Arial", 10),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).grid(row=0, column=4, sticky='w')
+        self.kd_entry = tk.Entry(pid_values_frame, font=("Arial", 10), width=15)
+        self.kd_entry.grid(row=0, column=5, padx=(10, 0))
+        self.kd_entry.insert(0, "50.0")
+        
+        # Tune button
+        tune_btn = tk.Button(pid_frame, text="Tune Axis", 
+                           font=("Arial", 10, "bold"),
+                           bg=self.colors['success_green'], fg='white',
+                           command=self.tune_axis)
+        tune_btn.pack(pady=10)
+        
+        # Motion Parameters Section
+        motion_frame = tk.LabelFrame(setup_frame, text="Motion Parameters", 
+                                   font=("Arial", 12, "bold"),
+                                   bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                   relief='solid', bd=1)
+        motion_frame.pack(fill='x', pady=(0, 20), padx=10)
+        
+        # Speed and acceleration
+        motion_params_frame = tk.Frame(motion_frame, bg=self.colors['main_bg'])
+        motion_params_frame.pack(fill='x', padx=15, pady=10)
+        
+        # Speed
+        tk.Label(motion_params_frame, text="Speed:", font=("Arial", 10),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).grid(row=0, column=0, sticky='w')
+        self.speed_entry = tk.Entry(motion_params_frame, font=("Arial", 10), width=15)
+        self.speed_entry.grid(row=0, column=1, padx=(10, 20))
+        self.speed_entry.insert(0, "5000")
+        
+        # Acceleration
+        tk.Label(motion_params_frame, text="Acceleration:", font=("Arial", 10),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).grid(row=0, column=2, sticky='w')
+        self.accel_entry = tk.Entry(motion_params_frame, font=("Arial", 10), width=15)
+        self.accel_entry.grid(row=0, column=3, padx=(10, 20))
+        self.accel_entry.insert(0, "1000")
+        
+        # Deceleration
+        tk.Label(motion_params_frame, text="Deceleration:", font=("Arial", 10),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).grid(row=0, column=4, sticky='w')
+        self.decel_entry = tk.Entry(motion_params_frame, font=("Arial", 10), width=15)
+        self.decel_entry.grid(row=0, column=5, padx=(10, 0))
+        self.decel_entry.insert(0, "2000")
+        
+        # Apply button
+        apply_btn = tk.Button(motion_frame, text="Apply Parameters", 
+                            font=("Arial", 10, "bold"),
+                            bg=self.colors['accent_blue'], fg='white',
+                            command=self.apply_motion_params)
+        apply_btn.pack(pady=10)
+        
+        # Status section
+        status_frame = tk.LabelFrame(setup_frame, text="Status", 
+                                   font=("Arial", 12, "bold"),
+                                   bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                   relief='solid', bd=1)
+        status_frame.pack(fill='both', expand=True, padx=10, pady=(0, 10))
+        
+        # Status text area
+        self.motor_status_text = scrolledtext.ScrolledText(status_frame, height=10, font=("Consolas", 9),
+                                                         bg='white', fg='black')
+        self.motor_status_text.pack(fill='both', expand=True, padx=15, pady=15)
+        
+        # Initial status message
+        self.motor_status_text.insert(tk.END, "Motor Setup Interface Ready\n")
+        self.motor_status_text.insert(tk.END, "Connect to a controller to begin configuration...\n")
             
-            # Log position if controller is connected
-            if hasattr(self.controller, 'g') and self.controller.g:
+    def show_motion_controls(self):
+        """Show motion controls interface"""
+        self.clear_main_content()
+        
+        # Title
+        title = tk.Label(self.main_content, text="Motion Controls", 
+                        font=("Arial", 24, "bold"), 
+                        bg=self.colors['main_bg'], fg=self.colors['main_fg'])
+        title.pack(anchor='w', pady=(0, 20))
+        
+        # Motion controls content
+        controls_frame = tk.Frame(self.main_content, bg=self.colors['main_bg'])
+        controls_frame.pack(fill='both', expand=True)
+        
+        # Jog Controls Section
+        jog_frame = tk.LabelFrame(controls_frame, text="Jog Controls", 
+                                font=("Arial", 12, "bold"),
+                                bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                relief='solid', bd=1)
+        jog_frame.pack(fill='x', pady=(0, 20), padx=10)
+        
+        # Axis selection for jog
+        jog_axis_frame = tk.Frame(jog_frame, bg=self.colors['main_bg'])
+        jog_axis_frame.pack(fill='x', padx=15, pady=10)
+        
+        tk.Label(jog_axis_frame, text="Axis:", font=("Arial", 10, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
+        
+        self.jog_axis_var = tk.StringVar(value="A")
+        jog_axis_combo = ttk.Combobox(jog_axis_frame, textvariable=self.jog_axis_var, 
+                                     values=["A", "B", "C", "D"], width=10)
+        jog_axis_combo.pack(side='left', padx=(10, 20))
+        
+        # Jog distance
+        tk.Label(jog_axis_frame, text="Distance (mm):", font=("Arial", 10, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
+        
+        self.jog_distance_entry = tk.Entry(jog_axis_frame, font=("Arial", 10), width=15)
+        self.jog_distance_entry.pack(side='left', padx=(10, 0))
+        self.jog_distance_entry.insert(0, "10.0")
+        
+        # Jog buttons
+        jog_buttons_frame = tk.Frame(jog_frame, bg=self.colors['main_bg'])
+        jog_buttons_frame.pack(fill='x', padx=15, pady=10)
+        
+        tk.Button(jog_buttons_frame, text="Jog +", 
+                font=("Arial", 10, "bold"),
+                bg=self.colors['success_green'], fg='white',
+                command=lambda: self.jog_axis(1)).pack(side='left', padx=(0, 10))
+        
+        tk.Button(jog_buttons_frame, text="Jog -", 
+                font=("Arial", 10, "bold"),
+                bg=self.colors['error_red'], fg='white',
+                command=lambda: self.jog_axis(-1)).pack(side='left', padx=(0, 10))
+        
+        tk.Button(jog_buttons_frame, text="Stop", 
+                font=("Arial", 10, "bold"),
+                bg=self.colors['warning_orange'], fg='white',
+                command=self.stop_axis).pack(side='left')
+        
+        # Position Control Section
+        position_frame = tk.LabelFrame(controls_frame, text="Position Control", 
+                                     font=("Arial", 12, "bold"),
+                                     bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                     relief='solid', bd=1)
+        position_frame.pack(fill='x', pady=(0, 20), padx=10)
+        
+        # Position inputs
+        pos_inputs_frame = tk.Frame(position_frame, bg=self.colors['main_bg'])
+        pos_inputs_frame.pack(fill='x', padx=15, pady=10)
+        
+        tk.Label(pos_inputs_frame, text="Axis:", font=("Arial", 10, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).grid(row=0, column=0, sticky='w')
+        
+        self.pos_axis_var = tk.StringVar(value="A")
+        pos_axis_combo = ttk.Combobox(pos_inputs_frame, textvariable=self.pos_axis_var, 
+                                     values=["A", "B", "C", "D"], width=10)
+        pos_axis_combo.grid(row=0, column=1, padx=(10, 20))
+        
+        tk.Label(pos_inputs_frame, text="Position (counts):", font=("Arial", 10, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).grid(row=0, column=2, sticky='w')
+        
+        self.position_entry = tk.Entry(pos_inputs_frame, font=("Arial", 10), width=15)
+        self.position_entry.grid(row=0, column=3, padx=(10, 20))
+        self.position_entry.insert(0, "10000")
+        
+        tk.Button(pos_inputs_frame, text="Move", 
+                font=("Arial", 10, "bold"),
+                bg=self.colors['accent_blue'], fg='white',
+                command=self.move_to_position).grid(row=0, column=4, padx=(10, 0))
+        
+        # Status section
+        motion_status_frame = tk.LabelFrame(controls_frame, text="Status", 
+                                          font=("Arial", 12, "bold"),
+                                          bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                          relief='solid', bd=1)
+        motion_status_frame.pack(fill='both', expand=True, padx=10, pady=(0, 10))
+        
+        # Status text area
+        self.motion_status_text = scrolledtext.ScrolledText(motion_status_frame, height=10, font=("Consolas", 9),
+                                                          bg='white', fg='black')
+        self.motion_status_text.pack(fill='both', expand=True, padx=15, pady=15)
+        
+        # Initial status message
+        self.motion_status_text.insert(tk.END, "Motion Controls Interface Ready\n")
+        self.motion_status_text.insert(tk.END, "Connect to a controller to begin motion control...\n")
+            
+    def show_encoder_overlay(self):
+        """Show encoder overlay interface"""
+        self.clear_main_content()
+        
+        # Title
+        title = tk.Label(self.main_content, text="Encoder Overlay", 
+                        font=("Arial", 24, "bold"), 
+                        bg=self.colors['main_bg'], fg=self.colors['main_fg'])
+        title.pack(anchor='w', pady=(0, 20))
+        
+        # Encoder overlay content
+        overlay_frame = tk.Frame(self.main_content, bg=self.colors['main_bg'])
+        overlay_frame.pack(fill='both', expand=True)
+        
+        # Controls Section
+        controls_frame = tk.LabelFrame(overlay_frame, text="Encoder Controls", 
+                                     font=("Arial", 12, "bold"),
+                                     bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                     relief='solid', bd=1)
+        controls_frame.pack(fill='x', pady=(0, 20), padx=10)
+        
+        # Axis selection
+        axis_frame = tk.Frame(controls_frame, bg=self.colors['main_bg'])
+        axis_frame.pack(fill='x', padx=15, pady=10)
+        
+        tk.Label(axis_frame, text="Axis:", font=("Arial", 10, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
+        
+        self.encoder_axis_var = tk.StringVar(value="A")
+        encoder_axis_combo = ttk.Combobox(axis_frame, textvariable=self.encoder_axis_var, 
+                                         values=["A", "B", "C", "D"], width=10)
+        encoder_axis_combo.pack(side='left', padx=(10, 20))
+        
+        # Clicks per turn
+        tk.Label(axis_frame, text="Clicks per Turn:", font=("Arial", 10, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
+        
+        self.clicks_per_turn_entry = tk.Entry(axis_frame, font=("Arial", 10), width=15)
+        self.clicks_per_turn_entry.pack(side='left', padx=(10, 0))
+        self.clicks_per_turn_entry.insert(0, "64000")
+        
+        # Start/Stop button
+        self.encoder_running = False
+        self.encoder_start_btn = tk.Button(controls_frame, text="Start Encoder Display", 
+                                         font=("Arial", 10, "bold"),
+                                         bg=self.colors['success_green'], fg='white',
+                                         command=self.toggle_encoder_display)
+        self.encoder_start_btn.pack(pady=10)
+        
+        # Display Section
+        display_frame = tk.LabelFrame(overlay_frame, text="Encoder Position Display", 
+                                    font=("Arial", 12, "bold"),
+                                    bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                    relief='solid', bd=1)
+        display_frame.pack(fill='both', expand=True, padx=10, pady=(0, 10))
+        
+        # Canvas for encoder display
+        self.encoder_canvas = tk.Canvas(display_frame, bg='white', height=300)
+        self.encoder_canvas.pack(fill='both', expand=True, padx=15, pady=15)
+        
+        # Position text display
+        self.position_label = tk.Label(display_frame, text="Position: Not Connected", 
+                                     font=("Arial", 12, "bold"),
+                                     bg=self.colors['main_bg'], fg=self.colors['main_fg'])
+        self.position_label.pack(pady=(0, 15))
+        
+        # Initialize encoder update variables
+        self.encoder_update_running = True
+        self.encoder_update_thread = threading.Thread(target=self.encoder_update_loop, daemon=True)
+        self.encoder_update_thread.start()
+            
+    def show_diagnostics(self):
+        """Show diagnostics interface"""
+        self.clear_main_content()
+        
+        # Title
+        title = tk.Label(self.main_content, text="Diagnostics", 
+                        font=("Arial", 24, "bold"), 
+                        bg=self.colors['main_bg'], fg=self.colors['main_fg'])
+        title.pack(anchor='w', pady=(0, 20))
+        
+        # Diagnostics content
+        diag_frame = tk.Frame(self.main_content, bg=self.colors['main_bg'])
+        diag_frame.pack(fill='both', expand=True)
+        
+        # Controller Information Section
+        info_frame = tk.LabelFrame(diag_frame, text="Controller Information", 
+                                 font=("Arial", 12, "bold"),
+                                 bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                 relief='solid', bd=1)
+        info_frame.pack(fill='x', pady=(0, 20), padx=10)
+        
+        # Get info button
+        info_btn = tk.Button(info_frame, text="Get Controller Info", 
+                           font=("Arial", 10, "bold"),
+                           bg=self.colors['accent_blue'], fg='white',
+                           command=self.get_controller_info)
+        info_btn.pack(pady=10)
+        
+        # Live Diagnostics Section
+        live_frame = tk.LabelFrame(diag_frame, text="Live Diagnostics", 
+                                 font=("Arial", 12, "bold"),
+                                 bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                 relief='solid', bd=1)
+        live_frame.pack(fill='x', pady=(0, 20), padx=10)
+        
+        # Live diagnostics controls
+        live_controls_frame = tk.Frame(live_frame, bg=self.colors['main_bg'])
+        live_controls_frame.pack(fill='x', padx=15, pady=10)
+        
+        self.live_diag_var = tk.BooleanVar()
+        live_check = tk.Checkbutton(live_controls_frame, text="Enable Live Updates", 
+                                  variable=self.live_diag_var,
+                                  font=("Arial", 10),
+                                  bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                  command=self.toggle_live_diagnostics)
+        live_check.pack(side='left')
+        
+        # Update interval
+        tk.Label(live_controls_frame, text="Update Interval (ms):", font=("Arial", 10),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left', padx=(20, 5))
+        
+        self.update_interval_entry = tk.Entry(live_controls_frame, font=("Arial", 10), width=10)
+        self.update_interval_entry.pack(side='left')
+        self.update_interval_entry.insert(0, "1000")
+        
+        # Status section
+        diag_status_frame = tk.LabelFrame(diag_frame, text="Diagnostic Results", 
+                                        font=("Arial", 12, "bold"),
+                                        bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                        relief='solid', bd=1)
+        diag_status_frame.pack(fill='both', expand=True, padx=10, pady=(0, 10))
+        
+        # Status text area
+        self.diag_status_text = scrolledtext.ScrolledText(diag_status_frame, height=15, font=("Consolas", 9),
+                                                        bg='white', fg='black')
+        self.diag_status_text.pack(fill='both', expand=True, padx=15, pady=15)
+        
+        # Initial status message
+        self.diag_status_text.insert(tk.END, "Diagnostics Interface Ready\n")
+        self.diag_status_text.insert(tk.END, "Connect to a controller to begin diagnostics...\n")
+        
+        # Initialize live update variables
+        self.live_update_running = False
+        self.live_update_thread = None
+            
+    def show_network_config(self):
+        """Show network configuration interface"""
+        self.clear_main_content()
+        
+        # Title
+        title = tk.Label(self.main_content, text="Network Configuration", 
+                        font=("Arial", 24, "bold"), 
+                        bg=self.colors['main_bg'], fg=self.colors['main_fg'])
+        title.pack(anchor='w', pady=(0, 20))
+        
+        # Create network configuration interface
+        self.create_network_interface()
+        
+    def show_settings(self):
+        """Show settings interface"""
+        self.clear_main_content()
+        
+        # Title
+        title = tk.Label(self.main_content, text="Settings", 
+                        font=("Arial", 24, "bold"), 
+                        bg=self.colors['main_bg'], fg=self.colors['main_fg'])
+        title.pack(anchor='w', pady=(0, 20))
+        
+        # Settings content
+        settings_frame = tk.Frame(self.main_content, bg=self.colors['main_bg'])
+        settings_frame.pack(fill='both', expand=True)
+        
+        # General Settings Section
+        general_frame = tk.LabelFrame(settings_frame, text="General Settings", 
+                                    font=("Arial", 12, "bold"),
+                                    bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                    relief='solid', bd=1)
+        general_frame.pack(fill='x', pady=(0, 20), padx=10)
+        
+        general_desc = tk.Label(general_frame, 
+                              text="General Settings allows you to configure default values for the application.\n"
+                                   "This includes default IP addresses, motion parameters, and other global settings.",
+                              font=("Arial", 10),
+                              bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                              justify='left')
+        general_desc.pack(padx=15, pady=15)
+        
+        # Configuration Management Section
+        config_frame = tk.LabelFrame(settings_frame, text="Configuration Management", 
+                                   font=("Arial", 12, "bold"),
+                                   bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                   relief='solid', bd=1)
+        config_frame.pack(fill='x', pady=(0, 20), padx=10)
+        
+        # Save Configuration
+        save_frame = tk.Frame(config_frame, bg=self.colors['main_bg'])
+        save_frame.pack(fill='x', padx=15, pady=10)
+        
+        save_icon = tk.Label(save_frame, text="💾", font=("Arial", 16), 
+                           bg=self.colors['main_bg'], fg=self.colors['main_fg'])
+        save_icon.pack(side='left', padx=(0, 10))
+        
+        save_text = tk.Label(save_frame, text="Save Configuration", 
+                           font=("Arial", 12, "bold"),
+                           bg=self.colors['main_bg'], fg=self.colors['main_fg'])
+        save_text.pack(side='left', padx=(0, 10))
+        
+        save_desc = tk.Label(save_frame, text="Save current settings to a configuration file", 
+                           font=("Arial", 10),
+                           bg=self.colors['main_bg'], fg='#666666')
+        save_desc.pack(side='left', padx=(0, 10))
+        
+        save_btn = tk.Button(save_frame, text="Save", 
+                           font=("Arial", 10, "bold"),
+                           bg=self.colors['success_green'], fg='white',
+                           command=self.save_configuration)
+        save_btn.pack(side='right')
+        
+        # Load Configuration
+        load_frame = tk.Frame(config_frame, bg=self.colors['main_bg'])
+        load_frame.pack(fill='x', padx=15, pady=10)
+        
+        load_icon = tk.Label(load_frame, text="📁", font=("Arial", 16), 
+                           bg=self.colors['main_bg'], fg=self.colors['main_fg'])
+        load_icon.pack(side='left', padx=(0, 10))
+        
+        load_text = tk.Label(load_frame, text="Load Configuration", 
+                           font=("Arial", 12, "bold"),
+                           bg=self.colors['main_bg'], fg=self.colors['main_fg'])
+        load_text.pack(side='left', padx=(0, 10))
+        
+        load_desc = tk.Label(load_frame, text="Load settings from a configuration file", 
+                           font=("Arial", 10),
+                           bg=self.colors['main_bg'], fg='#666666')
+        load_desc.pack(side='left', padx=(0, 10))
+        
+        load_btn = tk.Button(load_frame, text="Load", 
+                           font=("Arial", 10, "bold"),
+                           bg=self.colors['accent_blue'], fg='white',
+                           command=self.load_configuration)
+        load_btn.pack(side='right')
+        
+        # Reset to Defaults
+        reset_frame = tk.Frame(config_frame, bg=self.colors['main_bg'])
+        reset_frame.pack(fill='x', padx=15, pady=10)
+        
+        reset_icon = tk.Label(reset_frame, text="🔄", font=("Arial", 16), 
+                            bg=self.colors['main_bg'], fg=self.colors['main_fg'])
+        reset_icon.pack(side='left', padx=(0, 10))
+        
+        reset_text = tk.Label(reset_frame, text="Reset to Defaults", 
+                            font=("Arial", 12, "bold"),
+                            bg=self.colors['main_bg'], fg=self.colors['main_fg'])
+        reset_text.pack(side='left', padx=(0, 10))
+        
+        reset_desc = tk.Label(reset_frame, text="Reset all settings to their original default values", 
+                            font=("Arial", 10),
+                            bg=self.colors['main_bg'], fg='#666666')
+        reset_desc.pack(side='left', padx=(0, 10))
+        
+        reset_btn = tk.Button(reset_frame, text="Reset", 
+                            font=("Arial", 10, "bold"),
+                            bg=self.colors['warning_orange'], fg='white',
+                            command=self.reset_to_defaults)
+        reset_btn.pack(side='right')
+        
+        # Status section
+        status_frame = tk.LabelFrame(settings_frame, text="Configuration Status", 
+                                   font=("Arial", 12, "bold"),
+                                   bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                   relief='solid', bd=1)
+        status_frame.pack(fill='both', expand=True, padx=10, pady=(0, 10))
+        
+        # Status text area
+        self.settings_status_text = scrolledtext.ScrolledText(status_frame, height=10, font=("Consolas", 9),
+                                                            bg='white', fg='black')
+        self.settings_status_text.pack(fill='both', expand=True, padx=15, pady=15)
+        
+        # Initial status message
+        self.settings_status_text.insert(tk.END, "Settings Interface Ready\n")
+        self.settings_status_text.insert(tk.END, "Use the buttons above to manage your configuration...\n")
+            
+    def create_network_interface(self):
+        """Create the network configuration interface"""
+        # Main network frame
+        network_frame = tk.Frame(self.main_content, bg=self.colors['main_bg'])
+        network_frame.pack(fill='both', expand=True)
+        
+        # Connection section
+        connection_frame = tk.LabelFrame(network_frame, text="Controller Connection", 
+                                       font=("Arial", 12, "bold"),
+                                       bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                       relief='solid', bd=1)
+        connection_frame.pack(fill='x', pady=(0, 20), padx=10)
+        
+        # IP Address input
+        ip_frame = tk.Frame(connection_frame, bg=self.colors['main_bg'])
+        ip_frame.pack(fill='x', padx=15, pady=10)
+        
+        tk.Label(ip_frame, text="IP Address:", font=("Arial", 10, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
+        
+        self.ip_entry = tk.Entry(ip_frame, font=("Arial", 10), width=15)
+        self.ip_entry.pack(side='left', padx=(10, 0))
+        self.ip_entry.insert(0, "10.1.0.21")
+        
+        # Connect button
+        connect_btn = tk.Button(ip_frame, text="Connect", 
+                              font=("Arial", 10, "bold"),
+                              bg=self.colors['accent_blue'], fg='white',
+                              command=self.connect_to_controller)
+        connect_btn.pack(side='left', padx=(10, 0))
+        
+        # Discover button
+        discover_btn = tk.Button(ip_frame, text="Discover Controllers", 
+                               font=("Arial", 10, "bold"),
+                               bg=self.colors['warning_orange'], fg='white',
+                               command=self.discover_controllers)
+        discover_btn.pack(side='left', padx=(10, 0))
+        
+        # Network configuration section
+        config_frame = tk.LabelFrame(network_frame, text="Network Configuration", 
+                                   font=("Arial", 12, "bold"),
+                                   bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                   relief='solid', bd=1)
+        config_frame.pack(fill='x', pady=(0, 20), padx=10)
+        
+        # Network settings inputs
+        settings_frame = tk.Frame(config_frame, bg=self.colors['main_bg'])
+        settings_frame.pack(fill='x', padx=15, pady=10)
+        
+        # IP Address
+        tk.Label(settings_frame, text="New IP:", font=("Arial", 10),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).grid(row=0, column=0, sticky='w')
+        self.new_ip_entry = tk.Entry(settings_frame, font=("Arial", 10), width=15)
+        self.new_ip_entry.grid(row=0, column=1, padx=(10, 20))
+        
+        # Subnet Mask
+        tk.Label(settings_frame, text="Subnet Mask:", font=("Arial", 10),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).grid(row=0, column=2, sticky='w')
+        self.subnet_entry = tk.Entry(settings_frame, font=("Arial", 10), width=15)
+        self.subnet_entry.grid(row=0, column=3, padx=(10, 20))
+        self.subnet_entry.insert(0, "255.255.255.0")
+        
+        # Gateway
+        tk.Label(settings_frame, text="Gateway:", font=("Arial", 10),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).grid(row=1, column=0, sticky='w', pady=(10, 0))
+        self.gateway_entry = tk.Entry(settings_frame, font=("Arial", 10), width=15)
+        self.gateway_entry.grid(row=1, column=1, padx=(10, 20), pady=(10, 0))
+        
+        # Configuration buttons
+        buttons_frame = tk.Frame(config_frame, bg=self.colors['main_bg'])
+        buttons_frame.pack(fill='x', padx=15, pady=10)
+        
+        tk.Button(buttons_frame, text="Configure Network", 
+                font=("Arial", 10, "bold"),
+                bg=self.colors['success_green'], fg='white',
+                command=self.configure_network).pack(side='left', padx=(0, 10))
+        
+        tk.Button(buttons_frame, text="Reset to DHCP", 
+                font=("Arial", 10, "bold"),
+                bg=self.colors['warning_orange'], fg='white',
+                command=self.reset_to_dhcp).pack(side='left', padx=(0, 10))
+        
+        tk.Button(buttons_frame, text="COMPREHENSIVE NETWORK TEST", 
+                font=("Arial", 10, "bold"),
+                bg=self.colors['accent_blue'], fg='white',
+                command=self.comprehensive_network_test).pack(side='left', padx=(0, 10))
+        
+        tk.Button(buttons_frame, text="FORCE SAVE NETWORK", 
+                font=("Arial", 10, "bold"),
+                bg=self.colors['error_red'], fg='white',
+                command=self.force_save_network).pack(side='left')
+        
+        # Status and log section
+        status_frame = tk.LabelFrame(network_frame, text="Status & Log", 
+                                   font=("Arial", 12, "bold"),
+                                   bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                   relief='solid', bd=1)
+        status_frame.pack(fill='both', expand=True, padx=10, pady=(0, 10))
+        
+        # Log text area
+        self.log_text = scrolledtext.ScrolledText(status_frame, height=15, font=("Consolas", 9),
+                                                bg='white', fg='black')
+        self.log_text.pack(fill='both', expand=True, padx=15, pady=15)
+        
+        # Initial log message
+        self.log_info("Galil Setup Tool - Network Configuration")
+        self.log_info("Ready to connect to controller...")
+        
+    def connect_to_controller(self):
+        """Connect to the Galil controller"""
+        ip = self.ip_entry.get().strip()
+        if not ip:
+            messagebox.showerror("Error", "Please enter an IP address")
+            return
+            
+        if not validate_ip_address(ip):
+            messagebox.showerror("Error", "Invalid IP address format")
+            return
+            
+        self.log_info(f"Connecting to controller at {ip}...")
+        
+        try:
+            # Close existing connection if any
+            if self.controller:
                 try:
-                    response = self.controller.send_command("TP")
-                    if response:
-                        positions = response.split(',')
-                        if len(positions) >= 4:
-                            for i, axis in enumerate(["A", "B", "C", "D"]):
-                                try:
-                                    pos = int(positions[i])
-                                    self.log_status(f"Axis {axis} Position: {pos}")
-                                except (ValueError, IndexError):
-                                    pass
+                    self.controller.disconnect()
                 except:
                     pass
+                self.controller = None
             
-        except Exception as e:
-            self.log_error(f"Error in periodic status update: {str(e)}")
-        
-        # Schedule next update (every 30 seconds)
-        self.root.after(30000, self._periodic_status_update)
-
-    def _finish_diagnostics(self):
-        """Re-enable diagnostics buttons when done."""
-        pass  # Updated for new layout
-
-    def refresh_diagnostics(self):
-        """Fetch a one‐off diagnostics snapshot."""
-        self.log_info("=== REFRESHING DIAGNOSTICS ===")
-        
-        if getattr(self.controller, "g", None):
+            # Create new controller connection
+            self.controller = GalilController()
+            self.controller.connect(ip)
+            
+            # Test if it's actually a Galil controller
             try:
-                diag = get_diagnostics(self.controller)
-                self.log_info("Controller diagnostics retrieved successfully")
-                self.log_info("=== CONTROLLER DIAGNOSTICS ===")
-                
-                # Log each line of diagnostics
-                for line in diag.split('\n'):
-                    if line.strip():
-                        self.log_status(line.strip())
-                        
-            except Exception as e:
-                self.log_error(f"Error retrieving diagnostics: {str(e)}")
-        else:
-            self.log_warning("Controller not connected - cannot retrieve diagnostics")
-
-    def check_gclib_dll(self):
-        try:
-            cdll.LoadLibrary("gclib.dll")
-            return True
-        except OSError:
-            return False
-
-    def connect_to_controller(self):
-        """Connect to controller via USB or Network"""
-        conn_type = self.conn_type.get()
-        
-        self.log_info("=== ATTEMPTING CONNECTION ===")
-        self.log_info(f"Connection type: {conn_type}")
-        
-        if conn_type == "USB":
-            self.log_info("Searching for USB Galil controllers...")
-            ports = find_galil_com_ports()
-            if not ports:
-                self.log_error("No Galil controller detected over USB")
-                messagebox.showerror("Connection Error", "No Galil controller detected over USB.")
-                return
-            address = ports[0]
-            self.log_info(f"Found USB controller on port: {address}")
-        else:  # Network
-            address = self.ip_entry.get().strip()
-            if not address:
-                self.log_error("No IP address provided")
-                messagebox.showerror("Connection Error", "Please enter an IP address.")
-                return
-            self.log_info(f"Attempting network connection to: {address}")
-        
-        try:
-            self.log_info("Establishing connection...")
-            self.controller.connect(address)
-            self.status_var.set(f"Connected: {address}")
-            
-            self.log_success(f"Successfully connected to controller at {address}")
-            
-            # Update status color
-            for widget in self.root.winfo_children():
-                if isinstance(widget, tk.Label) and widget.cget("textvariable") == self.status_var:
-                    widget.config(fg='#00cc00')
-                    break
-
-        except Exception as e:
-            self.log_error(f"Connection failed: {str(e)}")
-            messagebox.showerror("Connection Error", str(e))
-            self.status_var.set(STATUS_DISCONNECTED)
-
-    def jog_positive(self):
-        axis = self.selected_axis.get()
-        speed = self.jog_speed_entry.get()
-        
-        self.log_info(f"=== JOG POSITIVE - AXIS {axis} ===")
-        self.log_info(f"Speed: {speed}")
-        
-        # Check if controller is connected
-        if not getattr(self.controller, "g", None):
-            self.log_error("Controller not connected - cannot jog")
-            messagebox.showerror("Connection Error", "Controller not connected. Please click Connect first.")
-            return
-            
-        try:
-            # Validate axis
-            if axis not in SERVO_BITS:
-                self.log_error(f"Invalid axis: {axis}")
-                messagebox.showerror("Invalid Axis", f"Axis {axis} is not valid. Use A, B, C, or D.")
-                return
-                
-            # Validate speed
-            try:
-                speed_val = int(speed)
-                if speed_val <= 0:
-                    self.log_error(f"Invalid speed: {speed} (must be positive)")
-                    messagebox.showerror("Invalid Speed", "Speed must be a positive number.")
-                    return
-                self.log_info(f"Speed validated: {speed_val}")
-            except ValueError:
-                self.log_error(f"Invalid speed format: {speed}")
-                messagebox.showerror("Invalid Speed", "Speed must be a valid number.")
-                return
-
-            # Apply preset if any
-            preset = self.config.get("axis_presets", {}).get(axis, {})
-            if preset:
-                self.log_info("Applying axis preset configuration")
-                configure_axis(self.controller, axis, preset)
-
-            # Execute jog commands
-            self.log_command(f"Servo-on command: SH{axis}")
-            self.controller.send_command(f"SH{axis}")
-            
-            self.log_command(f"Jog command: JG{axis}={speed}")
-            self.controller.send_command(f"JG{axis}={speed}")
-            
-            self.log_command(f"Begin command: BG{axis}")
-            self.controller.send_command(f"BG{axis}")
-            
-            self.log_success(f"Axis {axis} jogging positive at speed {speed}")
-            
-            # Update gauge display with actual position
-            self.update_position_from_controller(axis)
-            
-            # Schedule additional updates for smooth visual feedback
-            def delayed_update():
-                self.update_position_from_controller(axis)
-                self.visualizer.update_from_controller()
-            
-            # Update after a short delay to show movement
-            self.root.after(50, delayed_update)
-            
-        except Exception as e:
-            self.log_error(f"Jog positive failed: {str(e)}")
-            messagebox.showerror("Jog Error", f"Error: {str(e)}")
-
-    def jog_negative(self):
-        axis = self.selected_axis.get()
-        speed = self.jog_speed_entry.get()
-        
-        self.log_info(f"=== JOG NEGATIVE - AXIS {axis} ===")
-        self.log_info(f"Speed: {speed}")
-        
-        # Check if controller is connected
-        if not getattr(self.controller, "g", None):
-            self.log_error("Controller not connected - cannot jog")
-            messagebox.showerror("Connection Error", "Controller not connected. Please click Connect first.")
-            return
-            
-        try:
-            # Validate axis
-            if axis not in SERVO_BITS:
-                self.log_error(f"Invalid axis: {axis}")
-                messagebox.showerror("Invalid Axis", f"Axis {axis} is not valid. Use A, B, C, or D.")
-                return
-                
-            # Validate speed
-            try:
-                speed_val = int(speed)
-                if speed_val <= 0:
-                    self.log_error(f"Invalid speed: {speed} (must be positive)")
-                    messagebox.showerror("Invalid Speed", "Speed must be a positive number.")
-                    return
-                self.log_info(f"Speed validated: {speed_val}")
-            except ValueError:
-                self.log_error(f"Invalid speed format: {speed}")
-                messagebox.showerror("Invalid Speed", "Speed must be a valid number.")
-                return
-
-            preset = self.config.get("axis_presets", {}).get(axis, {})
-            if preset:
-                self.log_info("Applying axis preset configuration")
-                configure_axis(self.controller, axis, preset)
-
-            # Execute jog commands
-            self.log_command(f"Servo-on command: SH{axis}")
-            self.controller.send_command(f"SH{axis}")
-            
-            self.log_command(f"Jog command: JG{axis}=-{speed}")
-            self.controller.send_command(f"JG{axis}=-{speed}")
-            
-            self.log_command(f"Begin command: BG{axis}")
-            self.controller.send_command(f"BG{axis}")
-            
-            self.log_success(f"Axis {axis} jogging negative at speed {speed}")
-            
-            # Update gauge display with actual position
-            self.update_position_from_controller(axis)
-            
-            # Schedule additional updates for smooth visual feedback
-            def delayed_update():
-                self.update_position_from_controller(axis)
-                self.visualizer.update_from_controller()
-            
-            # Update after a short delay to show movement
-            self.root.after(50, delayed_update)
-            
-        except Exception as e:
-            self.log_error(f"Jog negative failed: {str(e)}")
-            messagebox.showerror("Jog Error", f"Error: {str(e)}")
-
-    def stop_motion(self):
-        axis = self.selected_axis.get()
-        
-        self.log_info(f"=== STOP MOTION - AXIS {axis} ===")
-        
-        # Check if controller is connected
-        if not getattr(self.controller, "g", None):
-            self.log_error("Controller not connected - cannot stop motion")
-            messagebox.showerror("Connection Error", "Controller not connected. Please click Connect first.")
-            return
-            
-        try:
-            # Validate axis
-            if axis not in SERVO_BITS:
-                self.log_error(f"Invalid axis: {axis}")
-                messagebox.showerror("Invalid Axis", f"Axis {axis} is not valid. Use A, B, C, or D.")
-                return
-                
-            # Stop command
-            self.log_command(f"Stop command: ST{axis}")
-            self.controller.send_command(f"ST{axis}")
-            
-            self.log_success(f"Axis {axis} motion stopped")
-            
-            # Update gauge display with actual position
-            self.update_position_from_controller(axis)
-            
-        except Exception as e:
-            self.log_error(f"Stop motion failed: {str(e)}")
-            messagebox.showerror("Stop Error", str(e))
-
-    def update_position_from_controller(self, axis):
-        """Update gauge display with actual position from controller"""
-        try:
-            if hasattr(self.controller, 'g') and self.controller.g:
-                response = self.controller.send_command("TP")
-                if response:
-                    positions = response.split(',')
-                    if len(positions) >= 4:
-                        axis_index = {"A": 0, "B": 1, "C": 2, "D": 3}.get(axis, 0)
-                        try:
-                            pos = int(positions[axis_index])
-                            self.visualizer.update_position(axis, pos)
-                            # Log position updates periodically (not every time to avoid spam)
-                            if hasattr(self, '_last_position_log') and time.time() - self._last_position_log.get(axis, 0) > 5:
-                                self.log_status(f"Axis {axis} position: {pos}")
-                                self._last_position_log[axis] = time.time()
-                            elif not hasattr(self, '_last_position_log'):
-                                self._last_position_log = {axis: time.time()}
-                        except (ValueError, IndexError):
-                            pass
-        except Exception:
-            pass
-
-    def test_jog_commands(self):
-        """Test different jog command formats to find the correct syntax."""
-        if not getattr(self.controller, "g", None):
-            messagebox.showerror("Connection Error", "Controller not connected. Please click Connect first.")
-            return
-            
-        axis = self.selected_axis.get()
-        speed = self.jog_speed_entry.get()
-        
-        # Test various command formats
-        test_commands = [
-            # Standard format with spaces
-            f"SH {SERVO_BITS[axis]}",
-            f"JG {axis}={speed}",
-            f"BG {axis}",
-            f"ST {axis}",
-            
-            # Alternative formats without spaces
-            f"SH{SERVO_BITS[axis]}",
-            f"JG{axis}={speed}",
-            f"BG{axis}",
-            
-            # Alternative servo-on formats
-            f"SH{axis}",
-            f"SH {axis}",
-            
-            # Alternative jog formats
-            f"JG{axis} {speed}",
-            f"JG {axis} {speed}",
-            
-            # Test individual commands
-            "SH",
-            "JG",
-            "BG",
-            "ST",
-            
-            # Test speed setting first
-            f"SP {axis}={speed}",
-            f"SP{axis}={speed}",
-            f"SP {axis}=1000",
-            f"SP{axis}=1000"
-        ]
-        
-        results = []
-        for cmd in test_commands:
-            try:
-                response = self.controller.send_command(cmd)
-                results.append(f"✓ {cmd}: {response}")
-            except Exception as e:
-                results.append(f"✗ {cmd}: {str(e)}")
-        
-        messagebox.showinfo("Command Test Results", "\n".join(results))
-
-    def run_comprehensive_test(self):
-        """Run comprehensive test including connection, commands, and servo."""
-        if not getattr(self.controller, "g", None):
-            messagebox.showerror("Connection Error", "Controller not connected. Please click Connect first.")
-            return
-        
-        # Create results list
-        results = []
-        results.append("=== COMPREHENSIVE CONTROLLER TEST ===")
-        results.append("")
-        
-        # Test 1: Connection and basic info
-        results.append("1. CONNECTION TEST:")
-        try:
-            # Test basic commands
-            commands = ["TP", "MG _FW", "MG _BN", "MG _ID"]
-            for cmd in commands:
-                try:
-                    response = self.controller.send_command(cmd)
-                    results.append(f"  ✓ {cmd}: {response}")
-                except Exception as e:
-                    results.append(f"  ✗ {cmd}: {str(e)}")
-        except Exception as e:
-            results.append(f"  ✗ Connection failed: {str(e)}")
-        
-        results.append("")
-        
-        # Test 2: Servo commands
-        results.append("2. SERVO COMMAND TEST:")
-        axis = self.selected_axis.get()
-        servo_commands = [
-            f"SH {SERVO_BITS[axis]}",  # Bitmask with space
-            f"SH{SERVO_BITS[axis]}",    # Bitmask without space
-            f"SH {axis}",                # Axis letter with space
-            f"SH{axis}",                 # Axis letter without space
-            f"SH {axis}1",              # Axis letter with 1
-            f"SH{axis}1",               # Axis letter with 1
-            f"SH {axis}ON",             # Axis letter with ON
-            f"SH{axis}ON",              # Axis letter with ON
-            "SH",                       # Just SH
-            "SH1",                      # Just SH1
-            "SHA",                      # Just SHA
-        ]
-        
-        for cmd in servo_commands:
-            try:
-                response = self.controller.send_command(cmd)
-                results.append(f"  ✓ {cmd}: {response}")
-            except Exception as e:
-                results.append(f"  ✗ {cmd}: {str(e)}")
-        
-        results.append("")
-        
-        # Test 3: Jog commands (without actually moving)
-        results.append("3. JOG COMMAND TEST:")
-        speed = self.jog_speed_entry.get()
-        jog_commands = [
-            f"SH {SERVO_BITS[axis]}",
-            f"JG {axis}={speed}",
-            f"ST {axis}",
-            f"SH{SERVO_BITS[axis]}",
-            f"JG{axis}={speed}",
-            f"ST{axis}",
-            f"SH{axis}",
-            f"JG{axis} {speed}",
-            f"JG {axis} {speed}",
-            f"SP {axis}={speed}",
-            f"SP{axis}={speed}",
-        ]
-        
-        for cmd in jog_commands:
-            try:
-                response = self.controller.send_command(cmd)
-                results.append(f"  ✓ {cmd}: {response}")
-            except Exception as e:
-                results.append(f"  ✗ {cmd}: {str(e)}")
-        
-        results.append("")
-        results.append("=== TEST COMPLETE ===")
-        
-        # Show results
-        messagebox.showinfo("Comprehensive Test Results", "\n".join(results))
-    
-    def test_servo_commands(self):
-        """Test different servo-on command formats."""
-        if not getattr(self.controller, "g", None):
-            messagebox.showerror("Connection Error", "Controller not connected. Please click Connect first.")
-            return
-            
-        axis = self.selected_axis.get()
-        
-        # Test various servo-on formats
-        servo_commands = [
-            f"SH {SERVO_BITS[axis]}",  # Bitmask with space
-            f"SH{SERVO_BITS[axis]}",    # Bitmask without space
-            f"SH {axis}",                # Axis letter with space
-            f"SH{axis}",                 # Axis letter without space
-            f"SH {axis}1",              # Axis letter with 1
-            f"SH{axis}1",               # Axis letter with 1
-            f"SH {axis}ON",             # Axis letter with ON
-            f"SH{axis}ON",              # Axis letter with ON
-            "SH",                       # Just SH
-            "SH1",                      # Just SH1
-            "SHA",                      # Just SHA
-        ]
-        
-        results = []
-        for cmd in servo_commands:
-            try:
-                response = self.controller.send_command(cmd)
-                results.append(f"✓ {cmd}: {response}")
-            except Exception as e:
-                results.append(f"✗ {cmd}: {str(e)}")
-        
-        messagebox.showinfo("Servo Test Results", "\n".join(results))
-
-    def configure_selected_axis(self):
-        """Configure the selected axis with preset settings and load PID values."""
-        axis = self.selected_axis.get()
-        
-        self.log_info(f"=== CONFIGURE AXIS {axis} ===")
-        
-        # Check if controller is connected
-        if not getattr(self.controller, "g", None):
-            self.log_error("Controller not connected - cannot configure axis")
-            messagebox.showerror("Connection Error", "Controller not connected. Please click Connect first.")
-            return
-            
-        try:
-            # Validate axis
-            if axis not in SERVO_BITS:
-                self.log_error(f"Invalid axis: {axis}")
-                messagebox.showerror("Invalid Axis", f"Axis {axis} is not valid. Use A, B, C, or D.")
-                return
-            
-            # Get preset for this axis
-            preset = self.config.get("axis_presets", {}).get(axis, {})
-            if not preset:
-                self.log_error(f"No preset found for axis {axis}")
-                messagebox.showerror("Configuration Error", f"No preset found for axis {axis}")
-                return
-            
-            self.log_info(f"Applying preset configuration for axis {axis}")
-            self.log_info(f"Preset settings: {preset}")
-            
-            # Apply configuration to controller
-            configure_axis(self.controller, axis, preset)
-            self.log_success(f"Axis {axis} configuration applied to controller")
-            
-            # Load PID values into the tuning block
-            self.load_pid_values_to_tuning_block(axis, preset)
-            self.log_success(f"PID values loaded into tuning block")
-            
-            # Log the PID values
-            kp = preset.get('kp', 'N/A')
-            ki = preset.get('ki', 'N/A')
-            kd = preset.get('kd', 'N/A')
-            self.log_info(f"PID values - KP: {kp}, KI: {ki}, KD: {kd}")
-            
-            messagebox.showinfo("Configuration Success", 
-                              f"Axis {axis} configured with preset settings.\n\n"
-                              f"PID values loaded into tuning block:\n"
-                              f"KP: {kp}\n"
-                              f"KI: {ki}\n"
-                              f"KD: {kd}")
-            
-        except Exception as e:
-            self.log_error(f"Error configuring axis {axis}: {str(e)}")
-            messagebox.showerror("Configuration Error", f"Error configuring axis {axis}: {str(e)}")
-
-    def load_pid_values_to_tuning_block(self, axis, preset):
-        """Load PID values from preset into the tuning block entry fields."""
-        try:
-            self.log_info(f"Loading PID values for axis {axis} into tuning block")
-            
-            # Clear existing values
-            self.kp_entry.delete(0, tk.END)
-            self.ki_entry.delete(0, tk.END)
-            self.kd_entry.delete(0, tk.END)
-            
-            # Load PID values from preset
-            kp_value = preset.get('kp', 10.0)  # Default fallback
-            ki_value = preset.get('ki', 0.1)   # Default fallback
-            kd_value = preset.get('kd', 50.0)  # Default fallback
-            
-            # Insert values into entry fields
-            self.kp_entry.insert(0, str(kp_value))
-            self.ki_entry.insert(0, str(ki_value))
-            self.kd_entry.insert(0, str(kd_value))
-            
-            self.log_success(f"PID values loaded - KP: {kp_value}, KI: {ki_value}, KD: {kd_value}")
-            
-        except Exception as e:
-            self.log_error(f"Error loading PID values to tuning block: {str(e)}")
-            print(f"Error loading PID values to tuning block: {str(e)}")
-
-    def load_pid_values_for_axis(self, axis):
-        """Load PID values for the selected axis into the tuning block."""
-        try:
-            # Get preset for this axis
-            preset = self.config.get("axis_presets", {}).get(axis, {})
-            
-            # Load PID values into the tuning block
-            self.load_pid_values_to_tuning_block(axis, preset)
-            
-        except Exception as e:
-            print(f"Error loading PID values for axis {axis}: {str(e)}")
-
-    def load_current_axis_pid(self):
-        """Load PID values for the currently selected axis into the tuning block."""
-        try:
-            axis = self.selected_axis.get()
-            self.log_info(f"=== LOAD PID VALUES - AXIS {axis} ===")
-            
-            self.load_pid_values_for_axis(axis)
-            
-            # Get the preset values for display
-            preset = self.config.get("axis_presets", {}).get(axis, {})
-            kp_value = preset.get('kp', 'N/A')
-            ki_value = preset.get('ki', 'N/A')
-            kd_value = preset.get('kd', 'N/A')
-            
-            self.log_success(f"PID values loaded for axis {axis}")
-            self.log_info(f"PID values - KP: {kp_value}, KI: {ki_value}, KD: {kd_value}")
-            
-            messagebox.showinfo("PID Values Loaded", 
-                              f"PID values for Axis {axis} loaded into tuning block:\n\n"
-                              f"KP: {kp_value}\n"
-                              f"KI: {ki_value}\n"
-                              f"KD: {kd_value}")
-            
-        except Exception as e:
-            self.log_error(f"Error loading PID values: {str(e)}")
-            messagebox.showerror("Error", f"Error loading PID values: {str(e)}")
-
-    def save_current_config(self):
-        """Save current configuration to file."""
-        try:
-            # Update config with current values
-            self.config["ip_address"] = self.ip_entry.get()
-            self.config["jog_speed"] = int(self.jog_speed_entry.get())
-            
-            # Save to file
-            save_config(self.config)
-            messagebox.showinfo("Configuration Saved", "Current settings have been saved to config.json")
-            
-        except Exception as e:
-            messagebox.showerror("Save Error", f"Error saving configuration: {str(e)}")
-
-    def run_diagnostics(self):
-        import threading, time
-
-        # Must be connected
-        if not getattr(self.controller, "g", None):
-            messagebox.showerror("Diagnostics Error", "Controller not connected. Please click Connect first.")
-            return
-
-        self.diagnostics_text.delete("1.0", tk.END)
-
-        def worker():
-            axes = ["A", "B", "C", "D"]
-            SPEED = 10000  # Use a reasonable speed for testing
-            TIMEOUT_S = 5
-
-            self.root.after(0, self._append_diagnostic, "=== ±1 cm Movement Test ===")
-            for axis in axes:
-                # Servo-on
-                try:
-                    self.controller.send_command(f"SH{axis}")
-                    self.root.after(0, self._append_diagnostic, f"Servo-on Axis {axis}")
-                except Exception as e:
-                    self.root.after(0, self._append_diagnostic, f"Axis {axis}: servo-on failed: {e}")
-                    continue  # Try next axis instead of returning
-
-                # Set speed
-                try:
-                    self.controller.send_command(f"SP{axis}={SPEED}")
-                    self.root.after(0, self._append_diagnostic, f"Speed set for Axis {axis}")
-                except Exception as e:
-                    self.root.after(0, self._append_diagnostic, f"Axis {axis}: speed set failed: {e}")
-                    continue
-
-                # ±1 cm moves (positive then negative)
-                for direction in (SPEED, -SPEED):
-                    try:
-                        # Use JG for continuous movement
-                        self.controller.send_command(f"JG{axis}={direction}")
-                        self.controller.send_command(f"BG{axis}")
-                        self.root.after(
-                            0, self._append_diagnostic,
-                            f"Axis {axis}: moving {direction:+} speed..."
-                        )
-                    except Exception as e:
-                        self.root.after(
-                            0, self._append_diagnostic,
-                            f"Axis {axis}: move cmd failed: {e}"
-                        )
-                        continue
-
-                    # Wait for movement to complete
-                    time.sleep(1)  # Simple wait instead of complex polling
+                response = self.controller.send_command("MG _BN")
+                if response and response.strip() != "?":
+                    self.log_success(f"Successfully connected to controller at {ip}")
+                    self.log_info(f"Controller serial: {response.strip()}")
+                    messagebox.showinfo("Success", f"Connected to controller at {ip}")
                     
-                    # Stop the movement
-                    try:
-                        self.controller.send_command(f"ST{axis}")
-                        self.root.after(
-                            0, self._append_diagnostic,
-                            f"Axis {axis}: movement stopped"
-                        )
-                    except Exception as e:
-                        self.root.after(
-                            0, self._append_diagnostic,
-                            f"Axis {axis}: stop failed: {e}"
-                        )
-
-                self.root.after(
-                    0, self._append_diagnostic,
-                    f"Axis {axis}: ±1 cm test done"
-                )
-
-            # Simple movement test
-            self.root.after(0, self._append_diagnostic, "\n=== Simple Movement Test ===")
-            try:
-                # Test axis A with a simple movement
-                self.controller.send_command("SHA")
-                self.controller.send_command("SPA=5000")
-                self.controller.send_command("JGA=5000")
-                self.controller.send_command("BGA")
-                self.root.after(0, self._append_diagnostic, "Axis A: Started movement")
-                
-                time.sleep(2)  # Let it move for 2 seconds
-                
-                self.controller.send_command("STA")
-                self.root.after(0, self._append_diagnostic, "Axis A: Movement stopped")
+                    # Update UI to show connected state
+                    self.update_connection_status(True)
+                else:
+                    self.log_error(f"Controller at {ip} is not responding to Galil commands")
+                    self.controller.disconnect()
+                    self.controller = None
+                    messagebox.showerror("Connection Error", f"Controller at {ip} is not responding to Galil commands")
             except Exception as e:
-                self.root.after(0, self._append_diagnostic, f"Simple movement test failed: {e}")
-
-            # Full settings dump
-            self.root.after(0, self._append_diagnostic, "\n=== Full Settings Dump ===")
-            try:
-                info = get_controller_info(self.controller)
-                for line in info.splitlines():
-                    self.root.after(0, self._append_diagnostic, line)
-            except Exception as e:
-                self.root.after(0, self._append_diagnostic, f"Error reading settings: {e}")
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def load_config_to_fields(self):
-        if "jog_speed" in self.config:
-            self.jog_speed_entry.delete(0, tk.END)
-            self.jog_speed_entry.insert(0, str(self.config["jog_speed"]))
-
-    def tune_motor(self):
-        axis = self.selected_axis.get()
+                self.log_error(f"Controller validation failed: {e}")
+                if self.controller:
+                    self.controller.disconnect()
+                    self.controller = None
+                messagebox.showerror("Connection Error", f"Controller validation failed: {e}")
+                
+        except Exception as e:
+            self.log_error(f"Connection error: {str(e)}")
+            messagebox.showerror("Error", f"Connection error: {str(e)}")
+            
+    def discover_controllers(self):
+        """Discover Galil controllers on the network"""
+        self.log_info("Discovering Galil controllers on network...")
         
-        self.log_info(f"=== TUNE MOTOR - AXIS {axis} ===")
+        try:
+            controllers = discover_galil_controllers()
+            if controllers:
+                self.log_success(f"Found {len(controllers)} controller(s):")
+                for controller in controllers:
+                    self.log_info(f"  - {controller}")
+            else:
+                self.log_warning("No Galil controllers found on network")
+        except Exception as e:
+            self.log_error(f"Discovery error: {str(e)}")
+            
+    def configure_network(self):
+        """Configure the controller's network settings"""
+        if not self.controller:
+            messagebox.showerror("Error", "Please connect to a controller first")
+            return
+            
+        ip = self.new_ip_entry.get().strip()
+        subnet = self.subnet_entry.get().strip()
+        gateway = self.gateway_entry.get().strip()
         
-        # Check if controller is connected
-        if not getattr(self.controller, "g", None):
-            self.log_error("Controller not connected - cannot tune motor")
-            messagebox.showerror("Connection Error", "Controller not connected. Please click Connect first.")
+        if not all([ip, subnet, gateway]):
+            messagebox.showerror("Error", "Please fill in all network settings")
+            return
+            
+        if not all(validate_ip_address(addr) for addr in [ip, subnet, gateway]):
+            messagebox.showerror("Error", "Invalid IP address format")
+            return
+            
+        self.log_info(f"Configuring network: IP={ip}, Subnet={subnet}, Gateway={gateway}")
+        
+        try:
+            result = configure_controller_network_dmc4143(self.controller, ip, subnet, gateway)
+            
+            if result['success']:
+                self.log_success("Network configuration completed successfully")
+                self.log_info("Remember to power cycle the controller for changes to take effect")
+                messagebox.showinfo("Success", "Network configuration completed successfully")
+            else:
+                self.log_error("Network configuration failed")
+                self.log_error(f"Error: {result.get('error', 'Unknown error')}")
+                messagebox.showerror("Error", "Network configuration failed")
+                
+        except Exception as e:
+            self.log_error(f"Configuration error: {str(e)}")
+            messagebox.showerror("Error", f"Configuration error: {str(e)}")
+            
+    def reset_to_dhcp(self):
+        """Reset controller to DHCP mode"""
+        if not self.controller:
+            messagebox.showerror("Error", "Please connect to a controller first")
+            return
+            
+        self.log_info("Resetting controller to DHCP mode...")
+        
+        try:
+            result = reset_controller_network_to_dhcp(self.controller)
+            
+            if result['success']:
+                self.log_success("Controller reset to DHCP mode successfully")
+                messagebox.showinfo("Success", "Controller reset to DHCP mode")
+            else:
+                self.log_error("Failed to reset controller to DHCP")
+                self.log_error(f"Error: {result.get('error', 'Unknown error')}")
+                messagebox.showerror("Error", "Failed to reset controller to DHCP")
+                
+        except Exception as e:
+            self.log_error(f"Reset error: {str(e)}")
+            messagebox.showerror("Error", f"Reset error: {str(e)}")
+            
+    def comprehensive_network_test(self):
+        """Run comprehensive network test"""
+        if not self.controller:
+            messagebox.showerror("Error", "Please connect to a controller first")
+            return
+            
+        self.log_info("=== COMPREHENSIVE NETWORK TEST ===")
+        
+        try:
+            results = comprehensive_network_test(self.controller)
+            
+            if results.get('error'):
+                self.log_error(f"Test error: {results['error']}")
+            else:
+                self.log_success("Comprehensive network test completed")
+                
+                # Log key results
+                if 'MG _BN' in results.get('basic_commands', {}):
+                    serial = results['basic_commands']['MG _BN']
+                    self.log_info(f"Controller serial: {serial}")
+                
+                if 'current_ip' in results.get('controller_info', {}):
+                    current_ip = results['controller_info']['current_ip']
+                    self.log_info(f"Current IP: {current_ip}")
+                
+                # Log recommendations
+                for rec in results.get('recommendations', []):
+                    self.log_info(f"Recommendation: {rec}")
+                    
+        except Exception as e:
+            self.log_error(f"Test error: {str(e)}")
+            
+    def force_save_network(self):
+        """Force save network settings"""
+        if not self.controller:
+            messagebox.showerror("Error", "Please connect to a controller first")
+            return
+            
+        # Get current settings from entry fields
+        ip = self.new_ip_entry.get().strip()
+        subnet = self.subnet_entry.get().strip()
+        gateway = self.gateway_entry.get().strip()
+        
+        if not all([ip, subnet, gateway]):
+            messagebox.showerror("Error", "Please fill in all network settings first")
+            return
+            
+        self.log_info("=== FORCE SAVE NETWORK SETTINGS ===")
+        
+        try:
+            results = force_save_network_settings_dmc4143(self.controller, ip, subnet, gateway)
+            
+            if results.get('success'):
+                self.log_success("Force save completed successfully")
+                self.log_info("Remember to power cycle the controller")
+                messagebox.showinfo("Success", "Force save completed successfully")
+            else:
+                self.log_error("Force save failed")
+                self.log_error(f"Error: {results.get('error', 'Unknown error')}")
+                messagebox.showerror("Error", "Force save failed")
+                
+        except Exception as e:
+            self.log_error(f"Force save error: {str(e)}")
+            messagebox.showerror("Error", f"Force save error: {str(e)}")
+            
+    def log_info(self, message):
+        """Log an info message"""
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self.log_text.insert(tk.END, f"[{timestamp}] INFO: {message}\n")
+        self.log_text.see(tk.END)
+        
+    def log_success(self, message):
+        """Log a success message"""
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self.log_text.insert(tk.END, f"[{timestamp}] SUCCESS: {message}\n")
+        self.log_text.see(tk.END)
+        
+    def log_warning(self, message):
+        """Log a warning message"""
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self.log_text.insert(tk.END, f"[{timestamp}] WARNING: {message}\n")
+        self.log_text.see(tk.END)
+        
+    def log_error(self, message):
+        """Log an error message"""
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self.log_text.insert(tk.END, f"[{timestamp}] ERROR: {message}\n")
+        self.log_text.see(tk.END)
+        
+    def tune_axis(self):
+        """Tune the selected axis with PID values"""
+        if not self.controller:
+            messagebox.showerror("Error", "Please connect to a controller first")
             return
             
         try:
+            axis = self.axis_var.get()
             kp = float(self.kp_entry.get())
             ki = float(self.ki_entry.get())
             kd = float(self.kd_entry.get())
             
-            self.log_info(f"PID values from tuning block - KP: {kp}, KI: {ki}, KD: {kd}")
+            self.motor_status_text.insert(tk.END, f"Tuning axis {axis} with KP={kp}, KI={ki}, KD={kd}...\n")
             
-        except ValueError:
-            self.log_error("Invalid PID values - KP, KI, and KD must be numbers")
-            messagebox.showerror("Input Error", "KP, KI, and KD must be numbers.")
+            # Use the galil_functions module function
+            galil_functions.tune_axis(self.controller, axis, kp, ki, kd)
+            
+            self.motor_status_text.insert(tk.END, f"Axis {axis} tuning completed successfully!\n")
+            self.motor_status_text.see(tk.END)
+            
+        except Exception as e:
+            error_msg = f"Tuning error: {str(e)}"
+            self.motor_status_text.insert(tk.END, f"ERROR: {error_msg}\n")
+            self.motor_status_text.see(tk.END)
+            messagebox.showerror("Tuning Error", error_msg)
+            
+    def apply_motion_params(self):
+        """Apply motion parameters to the selected axis"""
+        if not self.controller:
+            messagebox.showerror("Error", "Please connect to a controller first")
             return
             
         try:
-            self.log_info("Applying PID tuning to controller")
-            tune_axis(self.controller, axis, kp, ki, kd)
+            axis = self.axis_var.get()
+            speed = int(self.speed_entry.get())
+            accel = int(self.accel_entry.get())
+            decel = int(self.decel_entry.get())
             
-            self.log_success(f"Axis {axis} tuned successfully")
-            self.log_info(f"Final PID values - KP: {kp}, KI: {ki}, KD: {kd}")
+            self.motor_status_text.insert(tk.END, f"Applying motion parameters to axis {axis}...\n")
             
-            messagebox.showinfo("Tuned", f"Axis {axis} tuned.")
-            
-        except Exception as e:
-            self.log_error(f"Tune motor failed: {str(e)}")
-            messagebox.showerror("Tune Error", str(e))
-
-    def test_connection(self):
-        """Test if the controller is responding to basic commands."""
-        if not getattr(self.controller, "g", None):
-            messagebox.showerror("Connection Error", "Controller not connected. Please click Connect first.")
-            return
-            
-        try:
-            # Try various basic commands to test connection
-            commands = ["TP", "MG _FW", "MG _BN", "MG _ID"]
-            results = []
-            
-            for cmd in commands:
-                try:
-                    response = self.controller.send_command(cmd)
-                    results.append(f"✓ {cmd}: {response}")
-                except Exception as e:
-                    results.append(f"✗ {cmd}: {str(e)}")
-            
-            messagebox.showinfo("Connection Test", "\n".join(results))
-        except Exception as e:
-            messagebox.showerror("Connection Test Failed", f"Error: {str(e)}")
-
-    def set_controller_ip(self):
-        """Open a dialog to set the controller's IP address."""
-        new_ip = simpledialog.askstring("Set IP Address", "Enter the new IP address for the controller:",
-                                      initialvalue=self.ip_entry.get())
-        if new_ip:
-            # Update the entry field
-            self.ip_entry.delete(0, tk.END)
-            self.ip_entry.insert(0, new_ip)
-            self.config["ip_address"] = new_ip
-            save_config(self.config)
-            
-            # If controller is connected, try to set the IP on the controller
-            if getattr(self.controller, "g", None):
-                try:
-                    # Set the IP address on the controller - try different formats
-                    ip_commands = [
-                        f"IP{new_ip}",
-                        f"IP {new_ip}",
-                        f"IP={new_ip}",
-                        f"IP {new_ip}",
-                        f"IP{new_ip.replace('.', '')}"  # Some controllers use IP192168001
-                    ]
-                    
-                    success = False
-                    for cmd in ip_commands:
-                        try:
-                            self.controller.send_command(cmd)
-                            success = True
-                            break
-                        except Exception:
-                            continue
-                    
-                    if success:
-                        messagebox.showinfo("IP Set", f"Controller IP address set to: {new_ip}\nNote: You may need to reconnect after IP change.")
-                    else:
-                        messagebox.showwarning("IP Set", f"IP address updated in config to: {new_ip}\nWarning: Could not set IP on controller. Try reconnecting.")
-                except Exception as e:
-                    messagebox.showwarning("IP Set", f"IP address updated in config to: {new_ip}\nWarning: Could not set IP on controller: {str(e)}")
-            else:
-                messagebox.showinfo("IP Set", f"Controller IP address set to: {new_ip}\nConnect to apply the new IP.")
-
-    def discover_network_controllers(self):
-        """Discover Galil controllers on the network."""
-        try:
-            addresses = discover_galil_controllers()
-            
-            if addresses:
-                # Format the results
-                result = "Available Galil Controllers:\n\n"
-                for addr, info in addresses.items():
-                    result += f"Address: {addr}\n"
-                    if info:
-                        result += f"Info: {info}\n"
-                    result += "-" * 40 + "\n"
-                
-                messagebox.showinfo("Network Discovery", result)
-            else:
-                messagebox.showinfo("Network Discovery", "No Galil controllers found on the network.")
-                
-        except Exception as e:
-            messagebox.showerror("Discovery Error", f"Error discovering controllers: {str(e)}")
-
-
-
-    def set_controller_ip_advanced(self):
-        """Advanced IP setting with multiple options."""
-        # Create a custom dialog for advanced IP setting
-        dialog = tk.Toplevel(self.root)
-        dialog.title("Advanced IP Configuration")
-        dialog.geometry("400x300")
-        dialog.configure(bg='#1a1a1a')
-        dialog.transient(self.root)
-        dialog.grab_set()
-        
-        # Center the dialog
-        dialog.geometry("+%d+%d" % (self.root.winfo_rootx() + 50, self.root.winfo_rooty() + 50))
-        
-        # IP Address entry
-        tk.Label(dialog, text="IP Address:", bg='#1a1a1a', fg='#00ff00', font=("Courier", 10)).pack(pady=5)
-        ip_entry = tk.Entry(dialog, width=20, bg='#1a1a1a', fg='#00ff00', insertbackground='#00ff00')
-        ip_entry.insert(0, self.ip_entry.get())
-        ip_entry.pack(pady=5)
-        
-        # Subnet Mask entry
-        tk.Label(dialog, text="Subnet Mask:", bg='#1a1a1a', fg='#00ff00', font=("Courier", 10)).pack(pady=5)
-        mask_entry = tk.Entry(dialog, width=20, bg='#1a1a1a', fg='#00ff00', insertbackground='#00ff00')
-        mask_entry.insert(0, "255.255.255.0")
-        mask_entry.pack(pady=5)
-        
-        # Gateway entry
-        tk.Label(dialog, text="Gateway:", bg='#1a1a1a', fg='#00ff00', font=("Courier", 10)).pack(pady=5)
-        gateway_entry = tk.Entry(dialog, width=20, bg='#1a1a1a', fg='#00ff00', insertbackground='#00ff00')
-        gateway_entry.insert(0, "192.168.0.1")
-        gateway_entry.pack(pady=5)
-        
-        def apply_settings():
-            ip = ip_entry.get().strip()
-            mask = mask_entry.get().strip()
-            gateway = gateway_entry.get().strip()
-            
-            if not ip:
-                messagebox.showerror("Error", "IP address is required.")
-                return
-                
-            try:
-                # Update config
-                self.config["ip_address"] = ip
-                save_config(self.config)
-                
-                # Update main entry
-                self.ip_entry.delete(0, tk.END)
-                self.ip_entry.insert(0, ip)
-                
-                # If controller is connected, try to set network settings
-                if getattr(self.controller, "g", None):
-                    try:
-                        # Prepare settings dictionary
-                        settings = {'ip': ip}
-                        if mask and mask != "255.255.255.0":
-                            settings['subnet_mask'] = mask
-                        if gateway and gateway != "192.168.0.1":
-                            settings['gateway'] = gateway
-                        
-                        # Set network settings using utility function
-                        results = set_controller_network_settings(self.controller, settings)
-                        
-                        # Check results
-                        if results.get('ip', False):
-                            messagebox.showinfo("Success", f"Network settings applied:\nIP: {ip}\nMask: {mask}\nGateway: {gateway}\n\nYou may need to reconnect.")
-                        else:
-                            messagebox.showwarning("Warning", f"Settings saved to config but could not apply to controller.\nTry reconnecting.")
-                            
-                    except Exception as e:
-                        messagebox.showwarning("Warning", f"Settings saved to config but could not apply to controller: {str(e)}")
-                else:
-                    messagebox.showinfo("Success", f"Network settings saved to config:\nIP: {ip}\nMask: {mask}\nGateway: {gateway}\n\nConnect to apply settings.")
-                
-                dialog.destroy()
-                
-            except Exception as e:
-                messagebox.showerror("Error", f"Error saving settings: {str(e)}")
-        
-        # Buttons
-        button_frame = tk.Frame(dialog, bg='#1a1a1a')
-        button_frame.pack(pady=20)
-        
-        tk.Button(button_frame, text="Apply", command=apply_settings,
-                 bg='#003300', fg='#00ff00', font=("Courier", 10, "bold"),
-                 relief='raised', bd=3).pack(side="left", padx=5)
-        
-        tk.Button(button_frame, text="Cancel", command=dialog.destroy,
-                 bg='#330000', fg='#ff0000', font=("Courier", 10, "bold"),
-                 relief='raised', bd=3).pack(side="left", padx=5)
-
-
-
-    def test_network_connection(self):
-        """Test connection to the current IP address."""
-        ip_address = self.ip_entry.get().strip()
-        if not ip_address:
-            messagebox.showerror("Error", "Please enter an IP address first.")
-            return
-            
-        try:
-            # Test the connection
-            result = test_controller_connection(ip_address)
-            
-            # Format the results
-            status = "Connection Test Results:\n\n"
-            status += f"IP Address: {result['ip']}\n"
-            status += f"Ping Test: {'✓ PASS' if result['ping_success'] else '✗ FAIL'}\n"
-            status += f"Connection Test: {'✓ PASS' if result['connection_success'] else '✗ FAIL'}\n"
-            
-            if result['model']:
-                status += f"Controller Model: {result['model']}\n"
-            if result['firmware']:
-                status += f"Firmware: {result['firmware']}\n"
-            if result['error']:
-                status += f"Error: {result['error']}\n"
-            
-            # Add troubleshooting suggestions
-            if not result['ping_success']:
-                status += "\n" + "="*50 + "\n"
-                status += "TROUBLESHOOTING SUGGESTIONS:\n\n"
-                status += "1. Check if controller is powered on\n"
-                status += "2. Verify network cable is connected\n"
-                status += "3. Check if IP address is correct\n"
-                status += "4. Try 'DISCOVER CONTROLLERS' to find controllers\n"
-                status += "5. Check Windows Firewall settings\n"
-                status += "6. Verify you're on the same network subnet\n"
-                status += "7. Try pinging the IP from Command Prompt\n"
-                
-            messagebox.showinfo("Connection Test", status)
-            
-        except Exception as e:
-            messagebox.showerror("Test Error", f"Error testing connection: {str(e)}")
-
-    def reset_axis_position(self):
-        """Reset the position and encoder count of the selected axis to 0."""
-        axis = self.selected_axis.get()
-        
-        # Check if controller is connected
-        if not getattr(self.controller, "g", None):
-            messagebox.showerror("Connection Error", "Controller not connected. Please click Connect first.")
-            return
-            
-        try:
-            # Validate axis
-            if axis not in SERVO_BITS:
-                messagebox.showerror("Invalid Axis", f"Axis {axis} is not valid. Use A, B, C, or D.")
-                return
-                
-            # First, stop any current motion
-            try:
-                self.controller.send_command("ST")
-                # Wait a moment for motion to stop
-                self.root.after(100)
-            except Exception:
-                pass
-                
-            # Step 1: Servo off the axis to allow encoder reset
-            try:
-                self.controller.send_command(f"MO{axis}")
-                # Wait a moment
-                self.root.after(100)
-            except Exception:
-                pass
-                
-            # Step 2: Reset the encoder count to zero (this is the key step)
-            encoder_reset_success = False
-            encoder_reset_commands = [
-                f"DP{axis}=0",     # Define position to 0 (most reliable)
-                f"DP {axis}=0",    # Define position to 0 with space
-                f"RZ{axis}",       # Reset zero position
-                f"RZ {axis}",      # Reset zero position with space
-                f"ZP{axis}=0",     # Zero position
-                f"ZP {axis}=0",    # Zero position with space
-            ]
-            
-            for cmd in encoder_reset_commands:
-                try:
-                    self.controller.send_command(cmd)
-                    encoder_reset_success = True
-                    break
-                except Exception:
-                    continue
-            
-            if not encoder_reset_success:
-                messagebox.showerror("Reset Error", f"Could not reset encoder count for axis {axis}")
-                return
-                
-            # Step 3: Servo on the axis
-            try:
-                self.controller.send_command(f"SH{axis}")
-                # Wait a moment for servo to engage
-                self.root.after(100)
-            except Exception:
-                pass
-                
-            # Step 4: Verify the reset by reading position
-            try:
-                response = self.controller.send_command("TP")
-                if response:
-                    positions = response.split(',')
-                    if len(positions) >= 4:
-                        axis_index = {"A": 0, "B": 1, "C": 2, "D": 3}.get(axis, 0)
-                        try:
-                            current_pos = int(positions[axis_index])
-                            if abs(current_pos) <= 10:  # Allow small tolerance
-                                messagebox.showinfo("Position Reset", f"Position and encoder count of axis {axis} successfully reset to 0.\nCurrent position: {current_pos}")
-                            else:
-                                messagebox.showwarning("Position Reset", f"Position reset may not have worked completely.\nCurrent position: {current_pos}")
-                        except (ValueError, IndexError):
-                            messagebox.showinfo("Position Reset", f"Position and encoder count of axis {axis} reset to 0.")
-                    else:
-                        messagebox.showinfo("Position Reset", f"Position and encoder count of axis {axis} reset to 0.")
-                else:
-                    messagebox.showinfo("Position Reset", f"Position and encoder count of axis {axis} reset to 0.")
-            except Exception:
-                messagebox.showinfo("Position Reset", f"Position and encoder count of axis {axis} reset to 0.")
-            
-            # Update the gauge needle to center position (0) immediately
-            self.visualizer.update_position(axis, 0)
-            
-            # Schedule additional updates to ensure the display is current
-            def delayed_update():
-                self.update_position_from_controller(axis)
-                self.visualizer.update_from_controller()
-            
-            # Update after a short delay to allow the controller to process
-            self.root.after(200, delayed_update)
-                
-        except Exception as e:
-            messagebox.showerror("Reset Error", f"Error resetting position for axis {axis}: {str(e)}")
-    
-    def test_reset_commands(self):
-        """Test different reset commands to see which ones work."""
-        axis = self.selected_axis.get()
-        
-        # Check if controller is connected
-        if not getattr(self.controller, "g", None):
-            messagebox.showerror("Connection Error", "Controller not connected. Please click Connect first.")
-            return
-            
-        try:
-            # Get current position before reset
-            try:
-                response = self.controller.send_command("TP")
-                if response:
-                    positions = response.split(',')
-                    if len(positions) >= 4:
-                        axis_index = {"A": 0, "B": 1, "C": 2, "D": 3}.get(axis, 0)
-                        try:
-                            initial_pos = int(positions[axis_index])
-                        except (ValueError, IndexError):
-                            initial_pos = "Unknown"
-                    else:
-                        initial_pos = "Unknown"
-                else:
-                    initial_pos = "Unknown"
-            except Exception:
-                initial_pos = "Unknown"
-            
-            # Stop motion first
-            try:
-                self.controller.send_command("ST")
-            except Exception:
-                pass
-            
-            # Test various reset commands
-            test_commands = [
-                f"DP{axis}=0",     # Define position
-                f"DP {axis}=0",    # Define position with space
-                f"RZ{axis}",       # Reset zero
-                f"RZ {axis}",      # Reset zero with space
-                f"ZP{axis}=0",     # Zero position
-                f"ZP {axis}=0",    # Zero position with space
-                f"CN{axis}=0",     # Clear encoder count
-                f"CN {axis}=0",    # Clear encoder count with space
-                f"CE{axis}",       # Clear encoder
-                f"CE {axis}",      # Clear encoder with space
-                f"PA{axis}=0",     # Position absolute
-                f"PA {axis}=0",    # Position absolute with space
-            ]
-            
-            results = []
-            results.append(f"Initial position: {initial_pos}")
-            results.append("Testing reset commands:")
-            results.append("-" * 40)
-            
-            for cmd in test_commands:
-                try:
-                    self.controller.send_command(cmd)
-                    results.append(f"✓ {cmd}: Success")
-                except Exception as e:
-                    results.append(f"✗ {cmd}: {str(e)}")
-            
-            # Check final position
-            try:
-                response = self.controller.send_command("TP")
-                if response:
-                    positions = response.split(',')
-                    if len(positions) >= 4:
-                        axis_index = {"A": 0, "B": 1, "C": 2, "D": 3}.get(axis, 0)
-                        try:
-                            final_pos = int(positions[axis_index])
-                            results.append("-" * 40)
-                            results.append(f"Final position: {final_pos}")
-                        except (ValueError, IndexError):
-                            results.append("-" * 40)
-                            results.append("Final position: Unknown")
-                    else:
-                        results.append("-" * 40)
-                        results.append("Final position: Unknown")
-                else:
-                    results.append("-" * 40)
-                    results.append("Final position: Unknown")
-            except Exception:
-                results.append("-" * 40)
-                results.append("Final position: Unknown")
-            
-            messagebox.showinfo("Reset Command Test", "\n".join(results))
-            
-        except Exception as e:
-            messagebox.showerror("Test Error", f"Error testing reset commands: {str(e)}")
-    
-    def run_automated_test(self):
-        """Run automated test on all connected axes with 10cm movement pattern."""
-        # Check if controller is connected
-        if not getattr(self.controller, "g", None):
-            messagebox.showerror("Connection Error", "Controller not connected. Please click Connect first.")
-            return
-        
-        # Show test configuration dialog
-        test_config = self.show_test_config_dialog()
-        if not test_config:
-            return
-        
-        # Start the test in a separate thread
-        import threading
-        test_thread = threading.Thread(target=self._run_automated_test_thread, daemon=True, args=(test_config,))
-        test_thread.start()
-    
-    def show_test_config_dialog(self):
-        """Show dialog to configure automated test parameters."""
-        # Create a custom dialog for test configuration
-        dialog = tk.Toplevel(self.root)
-        dialog.title("Automated Test Configuration")
-        dialog.geometry("500x600")
-        dialog.configure(bg='#1a1a1a')
-        dialog.transient(self.root)
-        dialog.grab_set()
-        
-        # Center the dialog
-        dialog.geometry("+%d+%d" % (self.root.winfo_rootx() + 50, self.root.winfo_rooty() + 50))
-        
-        # Test parameters
-        tk.Label(dialog, text="Test Configuration", bg='#1a1a1a', fg='#ffffff', 
-                font=("Arial", 14, "bold")).pack(pady=10)
-        
-        # Total distance
-        tk.Label(dialog, text="Total Movement Distance (cm):", bg='#1a1a1a', fg='#ffffff', 
-                font=("Arial", 10)).pack(pady=5)
-        distance_entry = tk.Entry(dialog, width=10, bg='#1a1a1a', fg='#ffffff', insertbackground='#ffffff')
-        distance_entry.insert(0, "10")
-        distance_entry.pack(pady=5)
-        
-        # Step size
-        tk.Label(dialog, text="Step Size (mm):", bg='#1a1a1a', fg='#ffffff', 
-                font=("Arial", 10)).pack(pady=5)
-        step_entry = tk.Entry(dialog, width=10, bg='#1a1a1a', fg='#ffffff', insertbackground='#ffffff')
-        step_entry.insert(0, "1")
-        step_entry.pack(pady=5)
-        
-        # Delay between movements
-        tk.Label(dialog, text="Delay Between Movements (seconds):", bg='#1a1a1a', fg='#ffffff', 
-                font=("Arial", 10)).pack(pady=5)
-        delay_entry = tk.Entry(dialog, width=10, bg='#1a1a1a', fg='#ffffff', insertbackground='#ffffff')
-        delay_entry.insert(0, "0.1")
-        delay_entry.pack(pady=5)
-        
-        # Movement speed
-        tk.Label(dialog, text="Movement Speed (encoder units):", bg='#1a1a1a', fg='#ffffff', 
-                font=("Arial", 10)).pack(pady=5)
-        speed_entry = tk.Entry(dialog, width=10, bg='#1a1a1a', fg='#ffffff', insertbackground='#ffffff')
-        speed_entry.insert(0, "5000")
-        speed_entry.pack(pady=5)
-        
-        # Axis selection
-        tk.Label(dialog, text="Axes to Test:", bg='#1a1a1a', fg='#ffffff', 
-                font=("Arial", 10)).pack(pady=5)
-        
-        axis_frame = tk.Frame(dialog, bg='#1a1a1a')
-        axis_frame.pack(pady=5)
-        
-        axis_vars = {}
-        for axis in ["A", "B", "C", "D"]:
-            var = tk.BooleanVar(value=True)
-            axis_vars[axis] = var
-            tk.Checkbutton(axis_frame, text=f"Axis {axis}", variable=var,
-                          bg='#1a1a1a', fg='#ffffff', selectcolor='#1a1a1a',
-                          font=("Arial", 9)).pack(side="left", padx=5)
-        
-        result = {}
-        
-        def apply_config():
-            try:
-                result['distance'] = float(distance_entry.get())
-                result['step_size'] = float(step_entry.get())
-                result['delay'] = float(delay_entry.get())
-                result['speed'] = int(speed_entry.get())
-                result['axes'] = [axis for axis, var in axis_vars.items() if var.get()]
-                
-                if not result['axes']:
-                    messagebox.showerror("Error", "Please select at least one axis to test.")
-                    return
-                
-                dialog.destroy()
-            except ValueError as e:
-                messagebox.showerror("Error", f"Invalid input: {str(e)}")
-        
-        def cancel():
-            result.clear()
-            dialog.destroy()
-        
-        # Buttons
-        button_frame = tk.Frame(dialog, bg='#1a1a1a')
-        button_frame.pack(pady=20)
-        
-        tk.Button(button_frame, text="Start Test", command=apply_config,
-                 bg='#0066cc', fg='#ffffff', font=("Arial", 10, "bold"),
-                 relief='raised', bd=3).pack(side="left", padx=5)
-        
-        tk.Button(button_frame, text="Cancel", command=cancel,
-                 bg='#404040', fg='#ffffff', font=("Arial", 10, "bold"),
-                 relief='raised', bd=3).pack(side="left", padx=5)
-        
-        # Wait for dialog to close
-        dialog.wait_window()
-        
-        return result if result else None
-    
-    def _run_automated_test_thread(self, test_config):
-        """Run the automated test in a separate thread."""
-        try:
-            # Extract test parameters from config
-            distance_cm = test_config['distance']
-            step_size_mm = test_config['step_size']
-            delay_seconds = test_config['delay']
-            speed = test_config['speed']
-            axes_to_test = test_config['axes']
-            
-            # Convert to encoder units (assuming 1000 units = 1mm)
-            total_distance = int(distance_cm * 10000)  # Convert cm to encoder units
-            step_size = int(step_size_mm * 1000)       # Convert mm to encoder units
-            delay_ms = int(delay_seconds * 1000)       # Convert seconds to milliseconds
-            
-            # Reset stop flag
-            self._stop_test = False
-            
-            # Get current positions
-            current_positions = {}
-            try:
-                response = self.controller.send_command("TP")
-                if response:
-                    positions = response.split(',')
-                    if len(positions) >= 4:
-                        for i, axis in enumerate(["A", "B", "C", "D"]):
-                            try:
-                                current_positions[axis] = int(positions[i])
-                            except (ValueError, IndexError):
-                                current_positions[axis] = 0
-            except Exception:
-                for axis in ["A", "B", "C", "D"]:
-                    current_positions[axis] = 0
-            
-            # Test each selected axis
-            for axis in axes_to_test:
-                if self._stop_test:
-                    break
-                self._test_single_axis(axis, current_positions[axis], total_distance, step_size, delay_ms, speed)
-            
-            # Show completion message
-            if not self._stop_test:
-                self.root.after(0, lambda: messagebox.showinfo("Test Complete", 
-                                                              f"Automated test completed for axes: {', '.join(axes_to_test)}!"))
-            
-        except Exception as e:
-            error_msg = str(e)
-            self.root.after(0, lambda: messagebox.showerror("Test Error", f"Error during automated test: {error_msg}"))
-    
-    def _test_single_axis(self, axis, start_position, total_distance, step_size, delay_ms, speed):
-        """Test a single axis with the movement pattern."""
-        error_count = 0
-        max_errors = 10  # Maximum consecutive errors before stopping
-        
-        try:
-            # Stop any current motion
-            self.controller.send_command("ST")
-            self.root.after(delay_ms)
-            
-            # Servo on the axis
-            self.controller.send_command(f"SH{axis}")
-            self.root.after(delay_ms)
-            
-            # Set speed for precise movements
+            # Apply parameters
             self.controller.send_command(f"SP{axis}={speed}")
+            self.controller.send_command(f"AC{axis}={accel}")
+            self.controller.send_command(f"DC{axis}={decel}")
             
-            # Movement pattern: 0 → +5cm → -5cm → 0
-            movements = [
-                (start_position, start_position + total_distance//2),    # 0 → +5cm
-                (start_position + total_distance//2, start_position - total_distance//2),  # +5cm → -5cm
-                (start_position - total_distance//2, start_position)     # -5cm → 0
-            ]
-            
-            for start_pos, end_pos in movements:
-                # Move in 1mm increments
-                current_pos = start_pos
-                direction = 1 if end_pos > start_pos else -1
-                
-                while (direction > 0 and current_pos < end_pos) or (direction < 0 and current_pos > end_pos):
-                    # Check if user wants to stop at the beginning of each iteration
-                    if hasattr(self, '_stop_test') and self._stop_test:
-                        return
-                    
-                    # Calculate next position
-                    next_pos = current_pos + (direction * step_size)
-                    
-                    # Ensure we don't overshoot
-                    if direction > 0 and next_pos > end_pos:
-                        next_pos = end_pos
-                    elif direction < 0 and next_pos < end_pos:
-                        next_pos = end_pos
-                    
-                    # Move to next position - use absolute positioning
-                    try:
-                        # Stop any current motion first
-                        self.controller.send_command("ST")
-                        self.root.after(100)
-                        
-                        # Ensure servo is on
-                        self.controller.send_command(f"SH{axis}")
-                        self.root.after(100)
-                        
-                        # Set speed for this movement
-                        self.controller.send_command(f"SP{axis}={speed}")
-                        self.root.after(50)
-                        
-                        # Send position command with proper spacing - try different formats
-                        movement_success = False
-                        
-                        # Try format 1: PA {axis}={pos}
-                        try:
-                            self.controller.send_command(f"PA {axis}={next_pos}")
-                            self.root.after(50)
-                            self.controller.send_command(f"BG {axis}")
-                            movement_success = True
-                        except Exception as e1:
-                            if "question mark" in str(e1).lower():
-                                # Try format 2: PA{axis}={pos}
-                                try:
-                                    self.controller.send_command(f"PA{axis}={next_pos}")
-                                    self.root.after(50)
-                                    self.controller.send_command(f"BG{axis}")
-                                    movement_success = True
-                                except Exception as e2:
-                                    if "question mark" in str(e2).lower():
-                                        # Try format 3: PA {axis} {pos}
-                                        try:
-                                            self.controller.send_command(f"PA {axis} {next_pos}")
-                                            self.root.after(50)
-                                            self.controller.send_command(f"BG {axis}")
-                                            movement_success = True
-                                        except Exception as e3:
-                                            raise e3  # Re-raise the last error
-                                    else:
-                                        raise e2
-                            else:
-                                raise e1
-                        
-                        if not movement_success:
-                            raise Exception("All command formats failed")
-                        
-                        # Wait for movement to complete by checking if axis is still moving
-                        max_wait_time = 5000  # 5 seconds max wait
-                        wait_count = 0
-                        while wait_count < max_wait_time:
-                            # Check if user wants to stop during wait
-                            if hasattr(self, '_stop_test') and self._stop_test:
-                                return
-                            
-                            try:
-                                # Check if axis is still moving
-                                response = self.controller.send_command("MG _BG")
-                                if response and axis not in response:
-                                    break  # Axis has stopped moving
-                            except:
-                                break
-                            
-                            # Small delay while checking
-                            self.root.after(50)
-                            wait_count += 50
-                        
-                        # Verify position was reached
-                        try:
-                            actual_response = self.controller.send_command("TP")
-                            if actual_response:
-                                positions = actual_response.split(',')
-                                if len(positions) >= 4:
-                                    axis_index = {"A": 0, "B": 1, "C": 2, "D": 3}.get(axis, 0)
-                                    try:
-                                        actual_pos = int(positions[axis_index])
-                                        # Update display with actual position
-                                        self.visualizer.update_position(axis, actual_pos)
-                                        self.update_position_display()
-                                    except (ValueError, IndexError):
-                                        # If we can't read actual position, use expected
-                                        self.visualizer.update_position(axis, next_pos)
-                                        self.update_position_display()
-                                else:
-                                    self.visualizer.update_position(axis, next_pos)
-                                    self.update_position_display()
-                            else:
-                                self.visualizer.update_position(axis, next_pos)
-                                self.update_position_display()
-                        except:
-                            self.visualizer.update_position(axis, next_pos)
-                            self.update_position_display()
-                        
-                    except Exception as e:
-                        # If movement fails, log error and continue with next position
-                        error_count += 1
-                        print(f"Movement failed for axis {axis} to position {next_pos}: {str(e)} (Error #{error_count})")
-                        
-                        # Stop if too many consecutive errors
-                        if error_count >= max_errors:
-                            print(f"Too many consecutive errors ({error_count}), stopping test for axis {axis}")
-                            return
-                        
-                        # Don't continue the loop if there's a persistent error
-                        if "question mark" in str(e).lower():
-                            print(f"Skipping position {next_pos} due to command error")
-                            current_pos = next_pos  # Move to next position anyway
-                        continue
-                    
-                    # Wait specified delay
-                    self.root.after(delay_ms)
-                    
-                    current_pos = next_pos
-            
-            # Return to original position
-            try:
-                # Stop any current motion
-                self.controller.send_command("ST")
-                self.root.after(100)
-                
-                # Ensure servo is on
-                self.controller.send_command(f"SH{axis}")
-                self.root.after(100)
-                
-                # Set speed
-                self.controller.send_command(f"SP{axis}={speed}")
-                self.root.after(50)
-                
-                # Send position command with proper spacing - try different formats
-                movement_success = False
-                
-                # Try format 1: PA {axis}={pos}
-                try:
-                    self.controller.send_command(f"PA {axis}={start_position}")
-                    self.root.after(50)
-                    self.controller.send_command(f"BG {axis}")
-                    movement_success = True
-                except Exception as e1:
-                    if "question mark" in str(e1).lower():
-                        # Try format 2: PA{axis}={pos}
-                        try:
-                            self.controller.send_command(f"PA{axis}={start_position}")
-                            self.root.after(50)
-                            self.controller.send_command(f"BG{axis}")
-                            movement_success = True
-                        except Exception as e2:
-                            if "question mark" in str(e2).lower():
-                                # Try format 3: PA {axis} {pos}
-                                try:
-                                    self.controller.send_command(f"PA {axis} {start_position}")
-                                    self.root.after(50)
-                                    self.controller.send_command(f"BG {axis}")
-                                    movement_success = True
-                                except Exception as e3:
-                                    raise e3  # Re-raise the last error
-                            else:
-                                raise e2
-                    else:
-                        raise e1
-                
-                if not movement_success:
-                    raise Exception("All command formats failed")
-                
-                # Wait for final movement to complete
-                max_wait_time = 5000
-                wait_count = 0
-                while wait_count < max_wait_time:
-                    try:
-                        response = self.controller.send_command("MG _BG")
-                        if response and axis not in response:
-                            break
-                    except:
-                        break
-                    self.root.after(50)
-                    wait_count += 50
-                
-                # Update final position
-                self.visualizer.update_position(axis, start_position)
-                self.update_position_display()
-                
-            except Exception as e:
-                print(f"Error returning to start position: {str(e)}")
+            self.motor_status_text.insert(tk.END, f"Motion parameters applied successfully!\n")
+            self.motor_status_text.insert(tk.END, f"Speed: {speed}, Accel: {accel}, Decel: {decel}\n")
+            self.motor_status_text.see(tk.END)
             
         except Exception as e:
-            # Stop motion on error
-            try:
-                self.controller.send_command("ST")
-            except:
-                pass
-            raise e
-    
-    def stop_automated_test(self):
-        """Stop the automated test."""
-        self._stop_test = True
-        try:
-            # Stop all motion
-            self.controller.send_command("ST")
-            # Wait a moment for stop to take effect
-            self.root.after(100)
-            # Stop again to ensure all axes are stopped
-            self.controller.send_command("ST")
-        except Exception as e:
-            print(f"Error stopping motion: {str(e)}")
-        
-        messagebox.showinfo("Test Stopped", "Automated test has been stopped.")
-    
-    def test_windows_ping(self):
-        """Test ping using Windows ping command for better diagnostics."""
-        ip_address = self.ip_entry.get().strip()
-        if not ip_address:
-            messagebox.showerror("Error", "Please enter an IP address first.")
+            error_msg = f"Parameter application error: {str(e)}"
+            self.motor_status_text.insert(tk.END, f"ERROR: {error_msg}\n")
+            self.motor_status_text.see(tk.END)
+            messagebox.showerror("Parameter Error", error_msg)
+            
+    def jog_axis(self, direction):
+        """Jog the selected axis by the specified distance"""
+        if not self.controller:
+            messagebox.showerror("Error", "Please connect to a controller first")
             return
-        
+            
         try:
-            import subprocess
-            import platform
+            axis = self.jog_axis_var.get()
+            distance = float(self.jog_distance_entry.get()) * direction
             
-            # Use Windows ping command
-            if platform.system().lower() == "windows":
-                cmd = ["ping", "-n", "4", ip_address]  # 4 pings
-            else:
-                cmd = ["ping", "-c", "4", ip_address]  # 4 pings for Unix
+            self.motion_status_text.insert(tk.END, f"Jogging axis {axis} by {abs(distance)}mm...\n")
             
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            # Use the galil_functions module function
+            # Assuming 0.2 turns per mm and 64000 clicks per turn (default values)
+            turns_per_mm = 0.2
+            clicks_per_turn = 64000
             
-            # Format the results
-            status = f"Windows Ping Test Results:\n\n"
-            status += f"IP Address: {ip_address}\n"
-            status += f"Command: {' '.join(cmd)}\n\n"
-            status += f"Exit Code: {result.returncode}\n"
-            status += f"Success: {'✓ YES' if result.returncode == 0 else '✗ NO'}\n\n"
-            status += "Output:\n"
-            status += result.stdout
+            # Get speed from the speed entry field
+            speed = int(self.speed_entry.get())
+            galil_functions.jog_distance(self.controller, axis, distance, turns_per_mm, clicks_per_turn, speed)
             
-            if result.stderr:
-                status += "\nErrors:\n"
-                status += result.stderr
+            self.motion_status_text.insert(tk.END, f"Jog command sent successfully!\n")
+            self.motion_status_text.see(tk.END)
             
-            messagebox.showinfo("Windows Ping Test", status)
-            
-        except subprocess.TimeoutExpired:
-            messagebox.showerror("Ping Timeout", "Ping command timed out after 10 seconds.")
         except Exception as e:
-            messagebox.showerror("Ping Error", f"Error running ping command: {str(e)}")
-    
-    def test_command_formats(self):
-        """Test different command formats to see which ones work."""
-        axis = self.selected_axis.get()
-        
-        # Check if controller is connected
-        if not getattr(self.controller, "g", None):
-            messagebox.showerror("Connection Error", "Controller not connected. Please click Connect first.")
+            error_msg = f"Jog error: {str(e)}"
+            self.motion_status_text.insert(tk.END, f"ERROR: {error_msg}\n")
+            self.motion_status_text.see(tk.END)
+            messagebox.showerror("Jog Error", error_msg)
+            
+    def stop_axis(self):
+        """Stop the selected axis"""
+        if not self.controller:
+            messagebox.showerror("Error", "Please connect to a controller first")
             return
-        
-        results = []
-        results.append("=== COMMAND FORMAT TEST ===")
-        results.append("")
-        
-        # First, ensure servo is on
-        results.append("1. SERVO SETUP:")
+            
         try:
-            self.controller.send_command("ST")  # Stop any motion
-            self.root.after(100)
-            self.controller.send_command(f"SH{axis}")  # Servo on
-            self.root.after(100)
-            results.append(f"  ✓ Servo on for axis {axis}")
+            axis = self.jog_axis_var.get()
+            
+            self.motion_status_text.insert(tk.END, f"Stopping axis {axis}...\n")
+            
+            # Stop the axis
+            self.controller.send_command(f"ST{axis}")
+            
+            self.motion_status_text.insert(tk.END, f"Axis {axis} stopped successfully!\n")
+            self.motion_status_text.see(tk.END)
+            
         except Exception as e:
-            results.append(f"  ✗ Servo setup failed: {str(e)}")
-        
-        results.append("")
-        
-        # Test different PA command formats
-        pa_commands = [
-            f"PA {axis}=1000",
-            f"PA{axis}=1000", 
-            f"PA {axis} 1000",
-            f"PA{axis} 1000",
-            f"PA {axis}=1000",
-            f"PA{axis}=1000",
-            f"PA {axis}1000",
-            f"PA{axis} 1000",
-            f"PA {axis}=1000",
-            f"PA{axis}=1000"
-        ]
-        
-        results.append("2. PA Command Tests:")
-        for cmd in pa_commands:
-            try:
-                response = self.controller.send_command(cmd)
-                results.append(f"  ✓ {cmd}: {response}")
-            except Exception as e:
-                results.append(f"  ✗ {cmd}: {str(e)}")
-        
-        results.append("")
-        
-        # Test different BG command formats
-        bg_commands = [
-            f"BG {axis}",
-            f"BG{axis}",
-            f"BG {axis}",
-            f"BG{axis}"
-        ]
-        
-        results.append("3. BG Command Tests:")
-        for cmd in bg_commands:
-            try:
-                response = self.controller.send_command(cmd)
-                results.append(f"  ✓ {cmd}: {response}")
-            except Exception as e:
-                results.append(f"  ✗ {cmd}: {str(e)}")
-        
-        results.append("")
-        results.append("=== TEST COMPLETE ===")
-        
-        # Show results
-        messagebox.showinfo("Command Format Test Results", "\n".join(results))
-    
-    def test_simple_movement(self):
-        """Test a simple movement to verify motors are working."""
-        axis = self.selected_axis.get()
-        
-        # Check if controller is connected
-        if not getattr(self.controller, "g", None):
-            messagebox.showerror("Connection Error", "Controller not connected. Please click Connect first.")
+            error_msg = f"Stop error: {str(e)}"
+            self.motion_status_text.insert(tk.END, f"ERROR: {error_msg}\n")
+            self.motion_status_text.see(tk.END)
+            messagebox.showerror("Stop Error", error_msg)
+            
+    def move_to_position(self):
+        """Move the selected axis to the specified position"""
+        if not self.controller:
+            messagebox.showerror("Error", "Please connect to a controller first")
             return
-        
+            
         try:
-            # Stop any current motion
-            self.controller.send_command("ST")
-            self.root.after(100)
+            axis = self.pos_axis_var.get()
+            position = int(self.position_entry.get())
             
-            # Servo on the axis
-            self.controller.send_command(f"SH{axis}")
-            self.root.after(100)
+            self.motion_status_text.insert(tk.END, f"Moving axis {axis} to position {position}...\n")
             
-            # Set speed
-            speed = 5000
-            self.controller.send_command(f"SP{axis}={speed}")
+            # Use the galil_functions module function
+            # Get speed from the speed entry field
+            speed = int(self.speed_entry.get())
+            galil_functions.move_to_position(self.controller, axis, position, speed)
             
-            # Get current position
-            try:
-                response = self.controller.send_command("TP")
-                if response:
-                    positions = response.split(',')
-                    if len(positions) >= 4:
-                        axis_index = {"A": 0, "B": 1, "C": 2, "D": 3}.get(axis, 0)
-                        try:
-                            current_pos = int(positions[axis_index])
-                        except (ValueError, IndexError):
-                            current_pos = 0
-                    else:
-                        current_pos = 0
-                else:
-                    current_pos = 0
-            except:
-                current_pos = 0
-            
-            # Move 1mm in positive direction
-            target_pos = current_pos + 1000  # 1mm = 1000 encoder units
-            
-            # Send movement command with proper spacing - try different formats
-            try:
-                # Try PA command first
-                self.controller.send_command(f"PA {axis}={target_pos}")
-                self.root.after(50)
-                self.controller.send_command(f"BG {axis}")
-            except Exception as e:
-                if "question mark" in str(e).lower():
-                    # Try alternative command format
-                    try:
-                        self.controller.send_command(f"PA{axis}={target_pos}")
-                        self.root.after(50)
-                        self.controller.send_command(f"BG{axis}")
-                    except Exception as e2:
-                        if "question mark" in str(e2).lower():
-                            # Try with different spacing
-                            try:
-                                self.controller.send_command(f"PA {axis} {target_pos}")
-                                self.root.after(50)
-                                self.controller.send_command(f"BG {axis}")
-                            except Exception as e3:
-                                raise e3  # Re-raise the last error
-                        else:
-                            raise e2
-                else:
-                    raise e
-            
-            # Wait for movement
-            self.root.after(1000)
-            
-            # Check if movement occurred
-            try:
-                response = self.controller.send_command("TP")
-                if response:
-                    positions = response.split(',')
-                    if len(positions) >= 4:
-                        axis_index = {"A": 0, "B": 1, "C": 2, "D": 3}.get(axis, 0)
-                        try:
-                            new_pos = int(positions[axis_index])
-                            if abs(new_pos - current_pos) > 100:  # Allow some tolerance
-                                messagebox.showinfo("Movement Test", f"Movement successful!\nAxis {axis} moved from {current_pos} to {new_pos}")
-                            else:
-                                messagebox.showwarning("Movement Test", f"Movement may not have occurred.\nPosition changed from {current_pos} to {new_pos}")
-                        except (ValueError, IndexError):
-                            messagebox.showwarning("Movement Test", "Could not verify movement - position reading failed")
-                    else:
-                        messagebox.showwarning("Movement Test", "Could not verify movement - position reading failed")
-                else:
-                    messagebox.showwarning("Movement Test", "Could not verify movement - position reading failed")
-            except:
-                messagebox.showwarning("Movement Test", "Could not verify movement - position reading failed")
-            
-            # Update display
-            self.visualizer.update_position(axis, target_pos)
-            self.update_position_display()
+            self.motion_status_text.insert(tk.END, f"Move command sent successfully!\n")
+            self.motion_status_text.see(tk.END)
             
         except Exception as e:
-            messagebox.showerror("Movement Test Error", f"Error during movement test: {str(e)}")
-
-    def install_dll_files(self):
-        """Install gclib.dll and gclibo.dll to System32 directory."""
-        try:
-            self.log_info("=== DLL INSTALLATION ===")
+            error_msg = f"Move error: {str(e)}"
+            self.motion_status_text.insert(tk.END, f"ERROR: {error_msg}\n")
+            self.motion_status_text.see(tk.END)
+            messagebox.showerror("Move Error", error_msg)
             
-            # Show confirmation dialog
-            result = messagebox.askyesno(
-                "Install DLL Files",
-                "This will install gclib.dll and gclibo.dll to the Windows System32 directory.\n\n"
-                "This operation requires Administrator privileges.\n\n"
-                "Do you want to continue?"
+    def get_controller_info(self):
+        """Get static controller information"""
+        if not self.controller:
+            messagebox.showerror("Error", "Please connect to a controller first")
+            return
+            
+        try:
+            self.diag_status_text.delete(1.0, tk.END)
+            self.diag_status_text.insert(tk.END, "Getting controller information...\n\n")
+            
+            # Use the galil_functions module function
+            info = galil_functions.get_controller_info(self.controller)
+            
+            self.diag_status_text.insert(tk.END, "CONTROLLER INFORMATION:\n")
+            self.diag_status_text.insert(tk.END, "=" * 50 + "\n")
+            self.diag_status_text.insert(tk.END, info + "\n")
+            self.diag_status_text.see(tk.END)
+            
+        except Exception as e:
+            error_msg = f"Error getting controller info: {str(e)}"
+            self.diag_status_text.insert(tk.END, f"ERROR: {error_msg}\n")
+            self.diag_status_text.see(tk.END)
+            messagebox.showerror("Error", error_msg)
+            
+    def toggle_live_diagnostics(self):
+        """Toggle live diagnostic updates"""
+        if self.live_diag_var.get():
+            self.start_live_diagnostics()
+        else:
+            self.stop_live_diagnostics()
+            
+    def start_live_diagnostics(self):
+        """Start live diagnostic updates"""
+        if not self.controller:
+            messagebox.showerror("Error", "Please connect to a controller first")
+            self.live_diag_var.set(False)
+            return
+            
+        if self.live_update_running:
+            return
+            
+        self.live_update_running = True
+        self.live_update_thread = threading.Thread(target=self.live_diagnostic_loop, daemon=True)
+        self.live_update_thread.start()
+        
+    def stop_live_diagnostics(self):
+        """Stop live diagnostic updates"""
+        self.live_update_running = False
+        if self.live_update_thread:
+            self.live_update_thread.join(timeout=1)
+            
+    def live_diagnostic_loop(self):
+        """Live diagnostic update loop"""
+        while self.live_update_running:
+            try:
+                if not self.controller:
+                    break
+                    
+                # Get live diagnostics
+                diag_info = galil_functions.get_diagnostics(self.controller)
+                
+                # Update UI in main thread
+                self.root.after(0, self.update_diagnostic_display, diag_info)
+                
+                # Sleep for update interval
+                interval = int(self.update_interval_entry.get())
+                time.sleep(interval / 1000.0)
+                
+            except Exception as e:
+                # Update UI with error in main thread
+                self.root.after(0, self.update_diagnostic_display, f"Live update error: {str(e)}")
+                break
+                
+    def update_diagnostic_display(self, info):
+        """Update diagnostic display with new information"""
+        if not self.live_update_running:
+            return
+            
+        self.diag_status_text.delete(1.0, tk.END)
+        self.diag_status_text.insert(tk.END, "LIVE DIAGNOSTICS:\n")
+        self.diag_status_text.insert(tk.END, "=" * 50 + "\n")
+        self.diag_status_text.insert(tk.END, f"Last Update: {datetime.now().strftime('%H:%M:%S')}\n\n")
+        self.diag_status_text.insert(tk.END, info + "\n")
+        self.diag_status_text.see(tk.END)
+        
+    def toggle_encoder_display(self):
+        """Toggle encoder position display"""
+        if self.encoder_running:
+            self.stop_encoder_display()
+        else:
+            self.start_encoder_display()
+            
+    def start_encoder_display(self):
+        """Start encoder position display"""
+        if not self.controller:
+            messagebox.showerror("Error", "Please connect to a controller first")
+            return
+            
+        if self.encoder_update_running:
+            return
+            
+        self.encoder_running = True
+        self.encoder_start_btn.configure(text="Stop Encoder Display", bg=self.colors['error_red'])
+        
+        self.encoder_update_running = True
+        self.encoder_update_thread = threading.Thread(target=self.encoder_update_loop, daemon=True)
+        self.encoder_update_thread.start()
+        
+    def stop_encoder_display(self):
+        """Stop encoder position display"""
+        self.encoder_running = False
+        self.encoder_update_running = False
+        self.encoder_start_btn.configure(text="Start Encoder Display", bg=self.colors['success_green'])
+        
+        if self.encoder_update_thread:
+            self.encoder_update_thread.join(timeout=1)
+            
+    def encoder_update_loop(self):
+        """Encoder position update loop"""
+        while self.encoder_update_running:
+            try:
+                if not self.controller:
+                    break
+                    
+                # Get current position
+                axis = self.encoder_axis_var.get()
+                pos_str = self.controller.send_command(f"TP {axis}")
+                position = int(pos_str.strip())
+                
+                # Update UI in main thread
+                self.root.after(0, self.update_encoder_display, position)
+                
+                # Sleep for update interval
+                time.sleep(0.1)  # 100ms updates
+                
+            except Exception as e:
+                # Update UI with error in main thread
+                self.root.after(0, self.update_encoder_display, None, str(e))
+                break
+                
+    def update_encoder_display(self, position, error=None):
+        """Update encoder display with new position"""
+        if not self.encoder_update_running:
+            return
+            
+        if error:
+            self.position_label.configure(text=f"Error: {error}")
+            return
+            
+        # Update position label
+        self.position_label.configure(text=f"Position: {position}")
+        
+        # Update visual display
+        self.encoder_canvas.delete("all")
+        
+        # Draw encoder circle
+        canvas_width = self.encoder_canvas.winfo_width()
+        canvas_height = self.encoder_canvas.winfo_height()
+        
+        if canvas_width > 1 and canvas_height > 1:  # Canvas is properly sized
+            center_x = canvas_width // 2
+            center_y = canvas_height // 2
+            radius = min(center_x, center_y) - 20
+            
+            # Draw circle
+            self.encoder_canvas.create_oval(
+                center_x - radius, center_y - radius,
+                center_x + radius, center_y + radius,
+                outline='black', width=2
             )
             
-            if result:
-                self.log_info("User confirmed DLL installation")
-                # Attempt to install the DLL files
-                success = install_all_gclib_dlls()
-                
-                if success:
-                    self.log_success("DLL files installed successfully")
-                    # Update the DLL check status
-                    self.check_gclib_dll()
+            # Calculate angle from position
+            clicks_per_turn = int(self.clicks_per_turn_entry.get())
+            angle = (position % clicks_per_turn) / clicks_per_turn * 2 * 3.14159
+            
+            # Draw position indicator
+            indicator_x = center_x + radius * 0.8 * math.cos(angle)
+            indicator_y = center_y - radius * 0.8 * math.sin(angle)  # Negative for correct orientation
+            
+            self.encoder_canvas.create_oval(
+                indicator_x - 5, indicator_y - 5,
+                indicator_x + 5, indicator_y + 5,
+                fill='red', outline='black'
+            )
+        
+    def show_controller_testing(self):
+        """Show comprehensive controller testing interface"""
+        self.clear_main_content()
+        
+        # Title
+        title = tk.Label(self.main_content, text="Controller Testing", 
+                        font=("Arial", 24, "bold"), 
+                        bg=self.colors['main_bg'], fg=self.colors['main_fg'])
+        title.pack(anchor='w', pady=(0, 20))
+        
+        # Main content frame with two columns
+        main_frame = tk.Frame(self.main_content, bg=self.colors['main_bg'])
+        main_frame.pack(fill='both', expand=True)
+        
+        # Configure grid weights for two columns
+        main_frame.grid_columnconfigure(0, weight=1)  # Left column (controls)
+        main_frame.grid_columnconfigure(1, weight=1)  # Right column (display)
+        main_frame.grid_rowconfigure(0, weight=1)
+        
+        # LEFT COLUMN - Controls
+        left_frame = tk.Frame(main_frame, bg=self.colors['main_bg'])
+        left_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        
+        # PID Configuration Section
+        pid_frame = tk.LabelFrame(left_frame, text="PID Configuration", 
+                                font=("Arial", 12, "bold"),
+                                bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                relief='solid', bd=1)
+        pid_frame.pack(fill='x', pady=(0, 10))
+        
+        # Axis selection
+        axis_frame = tk.Frame(pid_frame, bg=self.colors['main_bg'])
+        axis_frame.pack(fill='x', padx=15, pady=10)
+        
+        tk.Label(axis_frame, text="Axis:", font=("Arial", 10, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
+        
+        self.test_axis_var = tk.StringVar(value="A")
+        axis_combo = ttk.Combobox(axis_frame, textvariable=self.test_axis_var, 
+                                 values=["A", "B", "C", "D"], width=10)
+        axis_combo.pack(side='left', padx=(10, 0))
+        
+        # PID values
+        pid_values_frame = tk.Frame(pid_frame, bg=self.colors['main_bg'])
+        pid_values_frame.pack(fill='x', padx=15, pady=10)
+        
+        # KP
+        tk.Label(pid_values_frame, text="KP:", font=("Arial", 10),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).grid(row=0, column=0, sticky='w')
+        self.test_kp_entry = tk.Entry(pid_values_frame, font=("Arial", 10), width=12)
+        self.test_kp_entry.grid(row=0, column=1, padx=(10, 15))
+        self.test_kp_entry.insert(0, "10.0")
+        
+        # KI
+        tk.Label(pid_values_frame, text="KI:", font=("Arial", 10),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).grid(row=0, column=2, sticky='w')
+        self.test_ki_entry = tk.Entry(pid_values_frame, font=("Arial", 10), width=12)
+        self.test_ki_entry.grid(row=0, column=3, padx=(10, 15))
+        self.test_ki_entry.insert(0, "0.1")
+        
+        # KD
+        tk.Label(pid_values_frame, text="KD:", font=("Arial", 10),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).grid(row=0, column=4, sticky='w')
+        self.test_kd_entry = tk.Entry(pid_values_frame, font=("Arial", 10), width=12)
+        self.test_kd_entry.grid(row=0, column=5, padx=(10, 0))
+        self.test_kd_entry.insert(0, "50.0")
+        
+        # Tune button
+        tune_btn = tk.Button(pid_frame, text="Tune Axis", 
+                           font=("Arial", 10, "bold"),
+                           bg=self.colors['success_green'], fg='white',
+                           command=self.test_tune_axis)
+        tune_btn.pack(pady=10)
+        
+        # Motion Controls Section
+        motion_frame = tk.LabelFrame(left_frame, text="Motion Controls", 
+                                   font=("Arial", 12, "bold"),
+                                   bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                   relief='solid', bd=1)
+        motion_frame.pack(fill='x', pady=(0, 10))
+        
+        # Jog controls
+        jog_frame = tk.Frame(motion_frame, bg=self.colors['main_bg'])
+        jog_frame.pack(fill='x', padx=15, pady=10)
+        
+        tk.Label(jog_frame, text="Jog Distance (mm):", font=("Arial", 10, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
+        
+        self.test_jog_distance_entry = tk.Entry(jog_frame, font=("Arial", 10), width=12)
+        self.test_jog_distance_entry.pack(side='left', padx=(10, 10))
+        self.test_jog_distance_entry.insert(0, "10.0")
+        
+        # Jog buttons
+        jog_buttons_frame = tk.Frame(motion_frame, bg=self.colors['main_bg'])
+        jog_buttons_frame.pack(fill='x', padx=15, pady=10)
+        
+        tk.Button(jog_buttons_frame, text="Jog +", 
+                font=("Arial", 10, "bold"),
+                bg=self.colors['success_green'], fg='white',
+                command=lambda: self.test_jog_axis(1)).pack(side='left', padx=(0, 5))
+        
+        tk.Button(jog_buttons_frame, text="Jog -", 
+                font=("Arial", 10, "bold"),
+                bg=self.colors['error_red'], fg='white',
+                command=lambda: self.test_jog_axis(-1)).pack(side='left', padx=(0, 5))
+        
+        tk.Button(jog_buttons_frame, text="Stop", 
+                font=("Arial", 10, "bold"),
+                bg=self.colors['warning_orange'], fg='white',
+                command=self.test_stop_axis).pack(side='left')
+        
+        # Position control
+        pos_frame = tk.Frame(motion_frame, bg=self.colors['main_bg'])
+        pos_frame.pack(fill='x', padx=15, pady=10)
+        
+        tk.Label(pos_frame, text="Position (counts):", font=("Arial", 10, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
+        
+        self.test_position_entry = tk.Entry(pos_frame, font=("Arial", 10), width=12)
+        self.test_position_entry.pack(side='left', padx=(10, 10))
+        self.test_position_entry.insert(0, "10000")
+        
+        tk.Button(pos_frame, text="Move", 
+                font=("Arial", 10, "bold"),
+                bg=self.colors['accent_blue'], fg='white',
+                command=self.test_move_to_position).pack(side='left')
+        
+        # Motion Parameters Section
+        params_frame = tk.LabelFrame(left_frame, text="Motion Parameters", 
+                                   font=("Arial", 12, "bold"),
+                                   bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                   relief='solid', bd=1)
+        params_frame.pack(fill='x', pady=(0, 10))
+        
+        # Speed and acceleration
+        params_values_frame = tk.Frame(params_frame, bg=self.colors['main_bg'])
+        params_values_frame.pack(fill='x', padx=15, pady=10)
+        
+        # Speed
+        tk.Label(params_values_frame, text="Speed:", font=("Arial", 10),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).grid(row=0, column=0, sticky='w')
+        self.test_speed_entry = tk.Entry(params_values_frame, font=("Arial", 10), width=12)
+        self.test_speed_entry.grid(row=0, column=1, padx=(10, 15))
+        self.test_speed_entry.insert(0, "5000")
+        
+        # Acceleration
+        tk.Label(params_values_frame, text="Accel:", font=("Arial", 10),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).grid(row=0, column=2, sticky='w')
+        self.test_accel_entry = tk.Entry(params_values_frame, font=("Arial", 10), width=12)
+        self.test_accel_entry.grid(row=0, column=3, padx=(10, 0))
+        self.test_accel_entry.insert(0, "1000")
+        
+        # Apply button
+        apply_btn = tk.Button(params_frame, text="Apply Parameters", 
+                            font=("Arial", 10, "bold"),
+                            bg=self.colors['accent_blue'], fg='white',
+                            command=self.test_apply_motion_params)
+        apply_btn.pack(pady=10)
+        
+        # Servo Control Section
+        servo_frame = tk.LabelFrame(left_frame, text="Servo Control", 
+                                  font=("Arial", 12, "bold"),
+                                  bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                  relief='solid', bd=1)
+        servo_frame.pack(fill='x', pady=(0, 10))
+        
+        # Servo control buttons
+        servo_buttons_frame = tk.Frame(servo_frame, bg=self.colors['main_bg'])
+        servo_buttons_frame.pack(fill='x', padx=15, pady=10)
+        
+        tk.Button(servo_buttons_frame, text="Servo On", 
+                font=("Arial", 10, "bold"),
+                bg=self.colors['success_green'], fg='white',
+                command=self.test_servo_on).pack(side='left', padx=(0, 5))
+        
+        tk.Button(servo_buttons_frame, text="Servo Off", 
+                font=("Arial", 10, "bold"),
+                bg=self.colors['error_red'], fg='white',
+                command=self.test_servo_off).pack(side='left', padx=(0, 5))
+        
+        tk.Button(servo_buttons_frame, text="Stop All", 
+                font=("Arial", 10, "bold"),
+                bg=self.colors['warning_orange'], fg='white',
+                command=self.test_stop_all).pack(side='left')
+
+        # Automatic Diagnostics Section
+        auto_diag_frame = tk.LabelFrame(left_frame, text="Automatic Diagnostics", 
+                                      font=("Arial", 12, "bold"),
+                                      bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                      relief='solid', bd=1)
+        auto_diag_frame.pack(fill='x', pady=(0, 10))
+
+        auto_diag_row = tk.Frame(auto_diag_frame, bg=self.colors['main_bg'])
+        auto_diag_row.pack(fill='x', padx=15, pady=10)
+
+        self.auto_diag_running = False
+        self.auto_diag_btn = tk.Button(auto_diag_row, text="Run Automatic Diagnostics", 
+                                       font=("Arial", 10, "bold"),
+                                       bg=self.colors['accent_blue'], fg='white',
+                                       command=self.toggle_automatic_diagnostics)
+        self.auto_diag_btn.pack(side='left')
+        
+        # RIGHT COLUMN - Display
+        right_frame = tk.Frame(main_frame, bg=self.colors['main_bg'])
+        right_frame.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
+        
+        # Encoder Display Section
+        encoder_frame = tk.LabelFrame(right_frame, text="Encoder Position Display", 
+                                    font=("Arial", 12, "bold"),
+                                    bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                    relief='solid', bd=1)
+        encoder_frame.pack(fill='both', expand=True, pady=(0, 10))
+        
+        # Encoder controls
+        encoder_controls_frame = tk.Frame(encoder_frame, bg=self.colors['main_bg'])
+        encoder_controls_frame.pack(fill='x', padx=15, pady=10)
+        
+        tk.Label(encoder_controls_frame, text="Clicks per Turn:", font=("Arial", 10, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
+        
+        self.test_clicks_per_turn_entry = tk.Entry(encoder_controls_frame, font=("Arial", 10), width=12)
+        self.test_clicks_per_turn_entry.pack(side='left', padx=(10, 20))
+        self.test_clicks_per_turn_entry.insert(0, "64000")
+        
+        # Four-axis encoder displays
+        encoder_displays_frame = tk.Frame(encoder_frame, bg=self.colors['main_bg'])
+        encoder_displays_frame.pack(fill='both', expand=True, padx=15, pady=(0, 10))
+        
+        # Configure grid weights for equal spacing
+        encoder_displays_frame.grid_columnconfigure(0, weight=1)
+        encoder_displays_frame.grid_columnconfigure(1, weight=1)
+        encoder_displays_frame.grid_columnconfigure(2, weight=1)
+        encoder_displays_frame.grid_columnconfigure(3, weight=1)
+        
+        # Create individual encoder displays for each axis
+        self.encoder_displays = {}
+        self.encoder_labels = {}
+        
+        for i, axis in enumerate(['A', 'B', 'C', 'D']):
+            # Individual axis frame
+            axis_frame = tk.Frame(encoder_displays_frame, bg=self.colors['main_bg'], relief='solid', bd=1)
+            axis_frame.grid(row=0, column=i, sticky="nsew", padx=5, pady=5)
+            
+            # Axis title
+            axis_title = tk.Label(axis_frame, text=f"Axis {axis}", 
+                                font=("Arial", 11, "bold"),
+                                bg=self.colors['main_bg'], fg=self.colors['main_fg'])
+            axis_title.pack(pady=(5, 0))
+            
+            # Canvas for this axis
+            canvas = tk.Canvas(axis_frame, bg='white', height=150, width=150)
+            canvas.pack(padx=10, pady=5)
+            
+            # Position label for this axis
+            position_label = tk.Label(axis_frame, text="Not Connected", 
+                                    font=("Arial", 10),
+                                    bg=self.colors['main_bg'], fg=self.colors['main_fg'])
+            position_label.pack(pady=(0, 5))
+            
+            # Store references
+            self.encoder_displays[axis] = canvas
+            self.encoder_labels[axis] = position_label
+        
+        # Status Log Section
+        status_frame = tk.LabelFrame(right_frame, text="Status Log", 
+                                   font=("Arial", 12, "bold"),
+                                   bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                   relief='solid', bd=1)
+        status_frame.pack(fill='both', expand=True, pady=(0, 10))
+        
+        # Status text area with copy functionality
+        status_text_frame = tk.Frame(status_frame, bg=self.colors['main_bg'])
+        status_text_frame.pack(fill='both', expand=True, padx=15, pady=(15, 5))
+        
+        self.test_status_text = scrolledtext.ScrolledText(status_text_frame, height=12, font=("Consolas", 9),
+                                                        bg='white', fg='black')
+        self.test_status_text.pack(fill='both', expand=True)
+        
+        # Copy button
+        copy_btn = tk.Button(status_frame, text="📋 Copy Log", 
+                           font=("Arial", 10, "bold"),
+                           bg=self.colors['accent_blue'], fg='white',
+                           command=self.copy_status_log)
+        copy_btn.pack(side='left', padx=(0, 10), pady=(0, 15))
+        
+        # Start encoder button
+        start_encoder_btn = tk.Button(status_frame, text="▶️ Start Encoder", 
+                                    font=("Arial", 10, "bold"),
+                                    bg=self.colors['success_green'], fg='white',
+                                    command=self.start_encoder_update)
+        start_encoder_btn.pack(side='left', padx=(0, 10), pady=(0, 15))
+        
+        # Restart encoder button
+        restart_encoder_btn = tk.Button(status_frame, text="🔄 Restart Encoder", 
+                                      font=("Arial", 10, "bold"),
+                                      bg=self.colors['warning_orange'], fg='white',
+                                      command=self.restart_encoder_update)
+        restart_encoder_btn.pack(side='left', pady=(0, 15))
+        
+        # Initial status message
+        self.test_status_text.insert(tk.END, "Controller Testing Interface Ready\n")
+        self.test_status_text.insert(tk.END, "Connect to a controller to begin testing...\n")
+        
+        # Initialize encoder update variables (will start when controller connects)
+        self.test_encoder_update_running = False
+        
+    def toggle_automatic_diagnostics(self):
+        """Start/stop automatic diagnostics across all axes with real-time updates."""
+        if not self.controller:
+            messagebox.showerror("Error", "Please connect to a controller first")
+            return
+        if not self.auto_diag_running:
+            self.auto_diag_running = True
+            self.auto_diag_btn.configure(text="Stop Diagnostics", bg=self.colors['error_red'])
+            thread = threading.Thread(target=self.run_automatic_diagnostics, daemon=True)
+            thread.start()
+        else:
+            self.auto_diag_running = False
+            self.auto_diag_btn.configure(text="Run Automatic Diagnostics", bg=self.colors['accent_blue'])
+
+    def run_automatic_diagnostics(self):
+        """Run comprehensive diagnostics using absolute encoder positions"""
+        axes = ["A", "B", "C", "D"]
+        test_positions = [0, 250000, 500000, 250000, 0]  # Encoder positions to test
+        speeds = [50000, 100000]  # Test speeds
+        stop_duration = 2.0  # Seconds to wait at each position
+
+        self.append_test_log("=== AUTOMATIC DIAGNOSTICS START ===")
+        
+        # Communication check before starting
+        self.append_test_log("Checking controller communication...")
+        try:
+            # Test basic communication
+            response = self.controller.send_command("MG _BN")
+            self.append_test_log(f"Controller serial: {response.strip()}")
+            
+            # Test position read on all axes
+            for axis in axes:
+                try:
+                    pos = self.controller.send_command(f"TP {axis}").strip()
+                    self.append_test_log(f"Axis {axis} position: {pos}")
+                except Exception as e:
+                    self.append_test_log(f"WARNING: Cannot read position for axis {axis}: {e}")
+            
+            # Check servo status for all axes
+            self.append_test_log("Checking servo status...")
+            for axis in axes:
+                try:
+                    servo_status = self.controller.send_command(f"MG _MO{axis}")
+                    if servo_status.strip() == "0":
+                        self.append_test_log(f"Axis {axis}: Servo is ON")
+                    else:
+                        self.append_test_log(f"Axis {axis}: Servo is OFF - will enable during test")
+                except Exception as e:
+                    self.append_test_log(f"WARNING: Cannot check servo status for axis {axis}: {e}")
+            
+            self.append_test_log("Communication check completed")
+            
+            # Motor detection summary
+            self.append_test_log("\n=== MOTOR DETECTION SUMMARY ===")
+            motor_detected_count = 0
+            motor_detection_results = {}
+            for axis in axes:
+                motor_detected = self.detect_motor_on_axis(axis)
+                motor_detection_results[axis] = motor_detected
+                if motor_detected:
+                    self.append_test_log(f"Axis {axis}: ✓ Motor detected")
+                    motor_detected_count += 1
                 else:
-                    self.log_error("DLL installation failed")
-            else:
-                self.log_info("DLL installation cancelled by user")
+                    self.append_test_log(f"Axis {axis}: ✗ No motor detected")
+            
+            self.append_test_log(f"Total motors detected: {motor_detected_count}/{len(axes)}")
+            if motor_detected_count == 0:
+                self.append_test_log("WARNING: No motors detected on any axis!")
+                self.append_test_log("Please check motor connections and try again.")
+                self.auto_diag_running = False
+                self.root.after(0, lambda: self.auto_diag_btn.configure(text="Run Automatic Diagnostics", bg=self.colors['accent_blue']))
+                return
+                
+        except Exception as e:
+            self.append_test_log(f"ERROR: Communication check failed: {e}")
+            self.auto_diag_running = False
+            self.root.after(0, lambda: self.auto_diag_btn.configure(text="Run Automatic Diagnostics", bg=self.colors['accent_blue']))
+            return
+
+        # Run diagnostics for each axis
+        for axis in axes:
+            if not self.auto_diag_running:
+                break
+                
+            self.append_test_log(f"\n[Axis {axis}] Begin diagnostics")
+            
+            try:
+                # Check if motor is detected on this axis (from the summary)
+                if not motor_detection_results.get(axis, False):
+                    self.append_test_log(f"[Axis {axis}] SKIPPED: No motor detected on this axis")
+                    continue
+                
+                self.append_test_log(f"[Axis {axis}] ✓ Motor confirmed - proceeding with diagnostics")
+                
+                # Get initial position
+                try:
+                    pos0 = self.controller.send_command(f"TP {axis}").strip()
+                    self.append_test_log(f"[Axis {axis}] Initial position: {pos0}")
+                except Exception as e:
+                    self.append_test_log(f"[Axis {axis}] ERROR reading initial position: {e}")
+                    continue
+                
+                # Stop and servo on
+                self.controller.send_command(f"ST{axis}")
+                time.sleep(0.1)  # Brief pause after stop
+                self.controller.send_command(f"SH{axis}")
+                time.sleep(0.5)  # Give servo time to enable
+                
+                # Verify servo is on and check tuning
+                try:
+                    servo_status = self.controller.send_command(f"MG _MO{axis}").strip()
+                    if servo_status != "0":
+                        self.append_test_log(f"[Axis {axis}] WARNING: Servo may not be enabled (status: {servo_status})")
                     
-        except Exception as e:
-            self.log_error(f"Error during DLL installation: {str(e)}")
-            messagebox.showerror("Installation Error", f"Error during DLL installation: {str(e)}")
+                    # Check PID settings
+                    kp = self.controller.send_command(f"MG _KP{axis}").strip()
+                    ki = self.controller.send_command(f"MG _KI{axis}").strip()
+                    kd = self.controller.send_command(f"MG _KD{axis}").strip()
+                    self.append_test_log(f"[Axis {axis}] PID settings - KP:{kp}, KI:{ki}, KD:{kd}")
+                    
+                    # Check following error limit
+                    try:
+                        fe = self.controller.send_command(f"MG _FE{axis}").strip()
+                        self.append_test_log(f"[Axis {axis}] Following error limit: {fe}")
+                    except:
+                        pass
+                        
+                except Exception as e:
+                    self.append_test_log(f"[Axis {axis}] WARNING: Could not verify servo status: {e}")
 
-    def check_dll_status(self):
-        """Check the status of DLL files in System32 and application directory."""
-        try:
-            self.log_info("=== DLL STATUS CHECK ===")
-            
-            # Check System32 installation
-            system32_status = check_dll_installation()
-            self.log_info("System32 DLL status checked")
-            
-            # Check application directory
-            app_dir_status = []
-            dll_files = ["gclib.dll", "gclibo.dll"]
-            for dll_name in dll_files:
-                app_path = os.path.join(os.getcwd(), dll_name)
-                if os.path.exists(app_path):
-                    app_dir_status.append(f"✓ {dll_name}: Found in application directory")
-                    self.log_success(f"{dll_name} found in application directory")
-                else:
-                    app_dir_status.append(f"✗ {dll_name}: Not found in application directory")
-                    self.log_error(f"{dll_name} not found in application directory")
-            
-            # Log System32 status
-            for status in system32_status:
-                if "✓" in status:
-                    self.log_success(status)
-                else:
-                    self.log_error(status)
-            
-            # Create status report
-            status_report = "DLL FILE STATUS REPORT\n"
-            status_report += "=" * 50 + "\n\n"
-            
-            status_report += "SYSTEM32 DIRECTORY:\n"
-            status_report += "-" * 20 + "\n"
-            status_report += "\n".join(system32_status)
-            status_report += "\n\n"
-            
-            status_report += "APPLICATION DIRECTORY:\n"
-            status_report += "-" * 25 + "\n"
-            status_report += "\n".join(app_dir_status)
-            status_report += "\n\n"
-            
-            # Add recommendations
-            status_report += "RECOMMENDATIONS:\n"
-            status_report += "-" * 15 + "\n"
-            
-            system32_ok = all("✓" in status for status in system32_status)
-            app_dir_ok = all("✓" in status for status in app_dir_status)
-            
-            if system32_ok and app_dir_ok:
-                status_report += "✓ All DLL files are properly installed and available.\n"
-                status_report += "✓ The application should work correctly.\n"
-                self.log_success("All DLL files are properly installed and available")
-            elif system32_ok and not app_dir_ok:
-                status_report += "✓ DLL files are installed in System32.\n"
-                status_report += "⚠ Some DLL files missing from application directory.\n"
-                status_report += "  The application should still work.\n"
-                self.log_warning("DLL files installed in System32 but some missing from app directory")
-            elif not system32_ok and app_dir_ok:
-                status_report += "✗ DLL files are not installed in System32.\n"
-                status_report += "✓ DLL files are available in application directory.\n"
-                status_report += "  Click 'INSTALL DLL FILES' to install to System32.\n"
-                self.log_warning("DLL files available in app directory but not in System32")
-            else:
-                status_report += "✗ DLL files are missing from both locations.\n"
-                status_report += "  Please ensure DLL files are in the application directory.\n"
-                self.log_error("DLL files missing from both locations")
-            
-            # Show the status report
-            messagebox.showinfo("DLL Status Report", status_report)
-            
-        except Exception as e:
-            self.log_error(f"Error checking DLL status: {str(e)}")
-            messagebox.showerror("Status Check Error", f"Error checking DLL status: {str(e)}")
-
-    def read_network_settings(self):
-        """Read and display current network settings."""
-        try:
-            self.log_info("=== READ NETWORK SETTINGS ===")
-            
-            # Check permissions first
-            if not check_network_configuration_permissions():
-                self.log_error("Insufficient permissions - Administrator privileges required")
-                messagebox.showerror(
-                    "Permission Error",
-                    "This operation requires Administrator privileges.\n\n"
-                    "Please run the application as Administrator."
-                )
-                return
-            
-            self.log_info("Permissions check passed")
-            
-            # Get current network adapter
-            self.log_info("Detecting active network adapter...")
-            adapter = self.network_configurator.get_active_network_adapter()
-            
-            if not adapter:
-                self.log_error("No active network adapter found")
-                messagebox.showwarning(
-                    "No Active Adapter",
-                    "No active network adapter found.\n\n"
-                    "Please ensure you have a network connection."
-                )
-                return
-            
-            self.log_success(f"Active adapter found: {adapter['name']}")
-            self.log_info(f"Current IP: {adapter['ip_address']}")
-            self.log_info(f"Current Gateway: {adapter['gateway']}")
-            self.log_info(f"DHCP Enabled: {adapter['dhcp_enabled']}")
-            
-            # Format and display the status
-            status_text = self.network_configurator.format_network_status(adapter)
-            
-            # Add target settings for comparison
-            status_text += "\nTARGET SETTINGS:\n"
-            status_text += "=" * 50 + "\n"
-            status_text += f"IP Address: {self.network_configurator.target_settings['ip_address']}\n"
-            status_text += f"Subnet Mask: {self.network_configurator.target_settings['subnet_mask']}\n"
-            status_text += f"Gateway: {self.network_configurator.target_settings['gateway']}\n"
-            status_text += f"Preferred DNS: {self.network_configurator.target_settings['preferred_dns']}\n"
-            status_text += f"Alternate DNS: {self.network_configurator.target_settings['alternate_dns']}\n"
-            
-            # Log target settings
-            self.log_info("Target network settings:")
-            self.log_info(f"  IP: {self.network_configurator.target_settings['ip_address']}")
-            self.log_info(f"  Gateway: {self.network_configurator.target_settings['gateway']}")
-            self.log_info(f"  DNS: {self.network_configurator.target_settings['preferred_dns']}")
-            
-            # Show the status in a dialog
-            messagebox.showinfo("Current Network Settings", status_text)
-            
-        except Exception as e:
-            self.log_error(f"Error reading network settings: {str(e)}")
-            messagebox.showerror("Error", f"Error reading network settings: {str(e)}")
-
-    def apply_target_network_settings(self):
-        """Apply the target network settings to the computer."""
-        try:
-            # Check permissions first
-            if not check_network_configuration_permissions():
-                messagebox.showerror(
-                    "Permission Error",
-                    "This operation requires Administrator privileges.\n\n"
-                    "Please run the application as Administrator."
-                )
-                return
-            
-            # Get current network adapter
-            adapter = self.network_configurator.get_active_network_adapter()
-            
-            if not adapter:
-                messagebox.showwarning(
-                    "No Active Adapter",
-                    "No active network adapter found.\n\n"
-                    "Please ensure you have a network connection."
-                )
-                return
-            
-            # Show confirmation dialog with current and target settings
-            current_status = self.network_configurator.format_network_status(adapter)
-            
-            confirmation_text = "NETWORK CONFIGURATION CHANGE\n"
-            confirmation_text += "=" * 50 + "\n\n"
-            confirmation_text += "CURRENT SETTINGS:\n"
-            confirmation_text += current_status + "\n"
-            confirmation_text += "TARGET SETTINGS:\n"
-            confirmation_text += f"IP Address: {self.network_configurator.target_settings['ip_address']}\n"
-            confirmation_text += f"Subnet Mask: {self.network_configurator.target_settings['subnet_mask']}\n"
-            confirmation_text += f"Gateway: {self.network_configurator.target_settings['gateway']}\n"
-            confirmation_text += f"Preferred DNS: {self.network_configurator.target_settings['preferred_dns']}\n"
-            confirmation_text += f"Alternate DNS: {self.network_configurator.target_settings['alternate_dns']}\n\n"
-            confirmation_text += "WARNING: This will change your computer's network settings.\n"
-            confirmation_text += "You may lose internet connectivity temporarily.\n\n"
-            confirmation_text += "Do you want to continue?"
-            
-            result = messagebox.askyesno("Confirm Network Configuration", confirmation_text)
-            
-            if result:
-                # Apply the settings
-                success = self.network_configurator.apply_network_settings(adapter['name'])
+                # Set up position reference (home the axis at current position)
+                try:
+                    current_pos = int(self.controller.send_command(f"TP {axis}").strip())
+                    self.append_test_log(f"[Axis {axis}] Setting current position ({current_pos}) as reference point")
+                    # Use DP (Define Position) to set current position as zero reference
+                    self.controller.send_command(f"DP{axis}=0")
+                    time.sleep(0.1)
+                    new_pos = int(self.controller.send_command(f"TP {axis}").strip())
+                    self.append_test_log(f"[Axis {axis}] Reference set - position now reads: {new_pos}")
+                except Exception as e:
+                    self.append_test_log(f"[Axis {axis}] WARNING: Could not set position reference: {e}")
                 
-                if success:
-                    messagebox.showinfo(
-                        "Configuration Applied",
-                        "Network settings have been applied successfully!\n\n"
-                        "Your computer is now configured with the target settings.\n\n"
-                        "You may need to wait a moment for the network to stabilize."
+                # Test basic motion capability first
+                self.append_test_log(f"[Axis {axis}] Testing basic motion capability...")
+                try:
+                    # Try a small test move
+                    test_speed = 5000
+                    test_distance = 1000  # 1000 counts
+                    self.controller.send_command(f"SP{axis}={test_speed}")
+                    self.controller.send_command(f"AC{axis}={test_speed}")
+                    self.controller.send_command(f"DC{axis}={test_speed}")
+                    
+                    start_pos = int(self.controller.send_command(f"TP {axis}").strip())
+                    self.append_test_log(f"[Axis {axis}] Test move: {start_pos} → {start_pos + test_distance}")
+                    
+                    # Move relative
+                    self.controller.send_command(f"PR{axis}={test_distance}")
+                    self.controller.send_command(f"BG{axis}")
+                    
+                    # Wait for completion
+                    time.sleep(2.0)
+                    self.controller.send_command(f"ST{axis}")
+                    time.sleep(0.5)
+                    
+                    end_pos = int(self.controller.send_command(f"TP {axis}").strip())
+                    actual_move = end_pos - start_pos
+                    self.append_test_log(f"[Axis {axis}] Test move result: {actual_move} counts (expected: {test_distance})")
+                    
+                    if abs(actual_move) < 100:
+                        self.append_test_log(f"[Axis {axis}] WARNING: Motor may not be responding properly to motion commands")
+                    
+                    # Return to reference position
+                    self.controller.send_command(f"PA{axis}=0")
+                    self.controller.send_command(f"BG{axis}")
+                    time.sleep(2.0)
+                    self.controller.send_command(f"ST{axis}")
+                    time.sleep(0.5)
+                    
+                except Exception as e:
+                    self.append_test_log(f"[Axis {axis}] ERROR in basic motion test: {e}")
+                
+                # Run two speed tests
+                for i, speed in enumerate(speeds):
+                    if not self.auto_diag_running:
+                        break
+                    
+                    # Set acceleration based on speed test
+                    if speed == 50000:
+                        accel = 40000
+                    elif speed == 100000:
+                        accel = 80000
+                    else:
+                        accel = speed * 2  # Fallback calculation
+                        
+                    self.append_test_log(f"[Axis {axis}] Speed test at {speed} with acceleration {accel}")
+                    
+                    # Test each position in sequence
+                    for j, target_pos in enumerate(test_positions):
+                        if not self.auto_diag_running:
+                            break
+                            
+                        self.append_test_log(f"[Axis {axis}] Moving to position {target_pos} (step {j+1}/{len(test_positions)})")
+                        
+                        try:
+                            # Apply motion parameters directly before movement
+                            self.controller.send_command(f"SP{axis}={speed}")
+                            self.controller.send_command(f"AC{axis}={accel}")
+                            self.controller.send_command(f"DC{axis}={accel * 2}")  # Deceleration = 2x acceleration
+                            
+                            # Verify parameters were applied
+                            actual_speed = self.controller.send_command(f"MG _SP{axis}").strip()
+                            actual_accel = self.controller.send_command(f"MG _AC{axis}").strip()
+                            self.append_test_log(f"[Axis {axis}] Applied SP={actual_speed}, AC={actual_accel}")
+                            
+                            # Get current position for logging
+                            current_pos = int(self.controller.send_command(f"TP {axis}").strip())
+                            self.append_test_log(f"[Axis {axis}] Current: {current_pos}, Target: {target_pos}")
+                            
+                            # Use absolute positioning (should work now that we've homed)
+                            self.controller.send_command(f"PA{axis}={target_pos}")
+                            self.controller.send_command(f"BG{axis}")
+                            
+                        except Exception as e:
+                            self.append_test_log(f"[Axis {axis}] ERROR moving to position {target_pos}: {e}")
+                            continue
+                        
+                        # Wait for motion to complete
+                        self.append_test_log(f"[Axis {axis}] Waiting for motion to complete...")
+                        initial_pos = self.controller.send_command(f"TP {axis}").strip()
+                        self.append_test_log(f"[Axis {axis}] Position at start of motion: {initial_pos}")
+                        
+                        # Monitor motion progress
+                        start_time = time.time()
+                        last_pos = int(initial_pos)
+                        stuck_count = 0
+                        motion_progress = True
+                        
+                        while time.time() - start_time < 20.0:  # 20 second timeout
+                            try:
+                                # Check if motion is still active
+                                motion_status = self.controller.send_command("MG _BG").strip()
+                                try:
+                                    bg_value = int(float(motion_status))  # Handle float responses
+                                except ValueError:
+                                    bg_value = 0  # Default to no motion if parse fails
+                                axis_bits = {"A": 1, "B": 2, "C": 4, "D": 8}
+                                motion_active = (bg_value & axis_bits[axis]) != 0
+                                
+                                # Get current position
+                                current_pos = int(self.controller.send_command(f"TP {axis}").strip())
+                                
+                                # Check if position is changing
+                                if abs(current_pos - last_pos) < 2:
+                                    stuck_count += 1
+                                    if stuck_count > 10:  # Stuck for 1 second
+                                        self.append_test_log(f"[Axis {axis}] WARNING: Motion appears stuck at position {current_pos}")
+                                        motion_progress = False
+                                        break
+                                else:
+                                    stuck_count = 0
+                                    last_pos = current_pos
+                                
+                                # Check if we're close to target
+                                if abs(current_pos - target_pos) < 50:
+                                    self.append_test_log(f"[Axis {axis}] Close to target: {current_pos} (target: {target_pos})")
+                                
+                                # If motion stopped and we're close enough, consider it complete
+                                if not motion_active and abs(current_pos - target_pos) < 100:
+                                    self.append_test_log(f"[Axis {axis}] Motion completed near target")
+                                    break
+                                
+                                time.sleep(0.1)
+                                
+                            except Exception as e:
+                                self.append_test_log(f"[Axis {axis}] Error monitoring motion: {e}")
+                                break
+                        
+                        # Force stop and get final position
+                        self.controller.send_command(f"ST{axis}")
+                        time.sleep(0.5)
+                        final_pos = int(self.controller.send_command(f"TP {axis}").strip())
+                        self.append_test_log(f"[Axis {axis}] Position at end of motion: {final_pos}")
+                        
+                        # Check if we need a position correction
+                        position_error = abs(final_pos - target_pos)
+                        if position_error > 50:  # If more than 50 counts off
+                            self.append_test_log(f"[Axis {axis}] Large position error: {position_error} counts, attempting correction...")
+                            try:
+                                # Try a slower, more careful correction
+                                correction_speed = min(speed//8, 5000)  # Very slow correction
+                                galil_functions.move_to_position(self.controller, axis, target_pos, correction_speed, correction_speed//2)
+                                time.sleep(2.0)  # Longer wait for correction
+                                self.controller.send_command(f"ST{axis}")
+                                time.sleep(0.5)
+                                corrected_pos = int(self.controller.send_command(f"TP {axis}").strip())
+                                self.append_test_log(f"[Axis {axis}] Corrected position: {corrected_pos}")
+                                final_pos = corrected_pos
+                            except Exception as e:
+                                self.append_test_log(f"[Axis {axis}] Position correction failed: {e}")
+                        
+                        time.sleep(0.2)
+                        
+                        # Wait at position for specified duration
+                        self.append_test_log(f"[Axis {axis}] Waiting {stop_duration} seconds at position {target_pos}...")
+                        time.sleep(stop_duration)
+                        
+                        # Verify final position
+                        try:
+                            current_pos = self.controller.send_command(f"TP {axis}").strip()
+                            position_accuracy = abs(int(current_pos) - target_pos)
+                            self.append_test_log(f"[Axis {axis}] Final position: {current_pos} (error: {position_accuracy} counts)")
+                        except Exception as e:
+                            self.append_test_log(f"[Axis {axis}] ERROR reading final position: {e}")
+                    
+                    self.append_test_log(f"[Axis {axis}] Speed {speed} test completed")
+
+                self.append_test_log(f"[Axis {axis}] All diagnostics completed successfully")
+                
+            except Exception as e:
+                self.append_test_log(f"[Axis {axis}] ERROR: {e}")
+
+        self.append_test_log("=== AUTOMATIC DIAGNOSTICS END ===")
+        self.auto_diag_running = False
+        self.root.after(0, lambda: self.auto_diag_btn.configure(text="Run Automatic Diagnostics", bg=self.colors['accent_blue']))
+
+    def auto_connect_to_controller(self):
+        """Automatically detect and connect to the Galil controller on startup"""
+        def auto_connect_thread():
+            try:
+                self.append_test_log("=== AUTO-CONNECTION START ===")
+                
+                # Try to connect via IP first (10.1.0.21)
+                self.append_test_log("Trying IP connection to 10.1.0.21...")
+                
+                # Test IP connection with ping
+                if ping_controller("10.1.0.21"):
+                    self.append_test_log("✓ IP ping successful, attempting connection...")
+                    try:
+                        self.controller = GalilController()
+                        self.controller.connect("10.1.0.21")
+                        
+                        # Test if it's actually a Galil controller
+                        try:
+                            response = self.controller.send_command("MG _BN")
+                            if response and response.strip() != "?":
+                                self.append_test_log("✓ Successfully connected to controller at 10.1.0.21")
+                                self.append_test_log(f"Controller serial: {response.strip()}")
+                                
+                                # Update UI to show connected state
+                                self.root.after(0, self.update_connection_status, True)
+                                self.append_test_log("=== AUTO-CONNECTION SUCCESS ===")
+                                return
+                            else:
+                                self.append_test_log("✗ Controller at 10.1.0.21 is not responding to Galil commands")
+                                self.controller.disconnect()
+                                self.controller = None
+                        except Exception as e:
+                            self.append_test_log(f"✗ Controller validation failed: {e}")
+                            if self.controller:
+                                self.controller.disconnect()
+                                self.controller = None
+                                
+                    except Exception as e:
+                        self.append_test_log(f"✗ Failed to connect via IP 10.1.0.21: {e}")
+                else:
+                    self.append_test_log("✗ IP ping failed for 10.1.0.21")
+                
+                # If IP fails, try COM port discovery
+                self.append_test_log("IP connection failed, searching COM ports...")
+                
+                # Common COM ports to check
+                com_ports = ["COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8"]
+                
+                for com_port in com_ports:
+                    if not self.auto_connect_running:
+                        break
+                        
+                    try:
+                        self.append_test_log(f"Trying {com_port}...")
+                        self.controller = GalilController()
+                        self.controller.connect(com_port)
+                        
+                        # Test if it's actually a Galil controller
+                        try:
+                            response = self.controller.send_command("MG _BN")
+                            if response and response.strip() != "?":
+                                self.append_test_log(f"✓ Successfully connected to Galil controller on {com_port}")
+                                self.append_test_log(f"Controller serial: {response.strip()}")
+                                
+                                # Update UI to show connected state
+                                self.root.after(0, self.update_connection_status, True)
+                                self.append_test_log("=== AUTO-CONNECTION SUCCESS ===")
+                                return
+                            else:
+                                self.append_test_log(f"✗ {com_port} is not a Galil controller")
+                                self.controller.disconnect()
+                                self.controller = None
+                        except Exception as e:
+                            self.append_test_log(f"✗ {com_port} validation failed: {e}")
+                            if self.controller:
+                                self.controller.disconnect()
+                                self.controller = None
+                                
+                    except Exception as e:
+                        self.append_test_log(f"✗ {com_port}: {str(e)[:50]}...")
+                        continue
+                
+                self.append_test_log("✗ No Galil controller found on any COM port")
+                self.append_test_log("Please connect to a controller manually")
+                
+                # Update UI to show disconnected state
+                self.root.after(0, self.update_connection_status, False)
+                self.append_test_log("=== AUTO-CONNECTION FAILED ===")
+                
+            except Exception as e:
+                self.append_test_log(f"✗ Auto-connection failed: {e}")
+                self.root.after(0, self.update_connection_status, False)
+                self.append_test_log("=== AUTO-CONNECTION FAILED ===")
+        
+        # Start auto-connection in background thread
+        self.auto_connect_running = True
+        self.auto_connect_thread = threading.Thread(target=auto_connect_thread, daemon=True)
+        self.auto_connect_thread.start()
+
+    def update_connection_status(self, connected):
+        """Update UI elements to reflect connection status"""
+        if connected:
+            # Update any connection status indicators
+            if hasattr(self, 'connection_status_label'):
+                self.connection_status_label.config(text="Connected", fg=self.colors['success_green'])
+            
+            # Start encoder update loop
+            self.start_encoder_update()
+                
+        else:
+            if hasattr(self, 'connection_status_label'):
+                self.connection_status_label.config(text="Disconnected", fg=self.colors['error_red'])
+            
+            # Update all position labels to show disconnected
+            if hasattr(self, 'encoder_labels'):
+                for axis in ['A', 'B', 'C', 'D']:
+                    if axis in self.encoder_labels and self.encoder_labels[axis].winfo_exists():
+                        self.encoder_labels[axis].configure(text="Not Connected", fg=self.colors['error_red'])
+                        # Clear the canvas
+                        if axis in self.encoder_displays and self.encoder_displays[axis].winfo_exists():
+                            self.encoder_displays[axis].delete("all")
+                            self.encoder_displays[axis].create_oval(10, 10, 140, 140, outline='gray', width=1)
+                            self.encoder_displays[axis].create_text(75, 75, text="?", fill='gray', font=("Arial", 20))
+
+    def detect_motor_on_axis(self, axis):
+        """Detect if a motor is connected and responding on the specified axis"""
+        if not self.controller:
+            return False
+            
+        try:
+            # Method 1: Try to read position - if it returns "?" or fails, no motor
+            try:
+                pos_response = self.controller.send_command(f"TP {axis}").strip()
+                if pos_response == "?" or pos_response == "":
+                    self.append_test_log(f"Motor detection: Axis {axis} position returns '{pos_response}' - no motor")
+                    return False
+                # Try to convert to int to ensure it's a valid position
+                int(pos_response)
+            except (ValueError, TypeError):
+                self.append_test_log(f"Motor detection: Axis {axis} position not a valid number - no motor")
+                return False
+            
+            # Method 2: Try to enable servo and see if it actually enables
+            try:
+                # Get initial servo status
+                initial_servo = self.controller.send_command(f"MG _MO{axis}").strip()
+                if initial_servo == "?":
+                    self.append_test_log(f"Motor detection: Axis {axis} initial servo status returns '?' - no motor")
+                    return False
+                
+                # Try to enable servo
+                self.controller.send_command(f"SH{axis}")
+                time.sleep(0.2)  # Give more time for servo to enable
+                
+                # Check if servo actually enabled
+                enabled_servo = self.controller.send_command(f"MG _MO{axis}").strip()
+                if enabled_servo == "?" or enabled_servo == "":
+                    self.append_test_log(f"Motor detection: Axis {axis} servo enable failed - no motor")
+                    return False
+                
+                # Try to set a small speed and see if it accepts it
+                try:
+                    self.controller.send_command(f"SP{axis}=1000")
+                    speed_response = self.controller.send_command(f"MG _SP{axis}").strip()
+                    if speed_response == "?" or speed_response == "":
+                        self.append_test_log(f"Motor detection: Axis {axis} speed setting failed - no motor")
+                        self.controller.send_command(f"MO{axis}")  # Disable servo
+                        return False
+                except Exception as e:
+                    self.append_test_log(f"Motor detection: Axis {axis} speed test failed - no motor: {e}")
+                    self.controller.send_command(f"MO{axis}")  # Disable servo
+                    return False
+                
+                # Try a very small test movement to see if motor responds
+                try:
+                    initial_pos = int(self.controller.send_command(f"TP {axis}").strip())
+                    
+                    # Try a small relative move (50 encoder counts for better detection)
+                    self.controller.send_command(f"PR{axis}=50")
+                    self.controller.send_command(f"BG{axis}")
+                    time.sleep(1.0)  # Longer wait for movement
+                    
+                    # Check if position changed
+                    final_pos = int(self.controller.send_command(f"TP {axis}").strip())
+                    position_change = abs(final_pos - initial_pos)
+                    
+                    # Stop any motion and disable servo
+                    self.controller.send_command(f"ST{axis}")
+                    self.controller.send_command(f"MO{axis}")
+                    
+                    # More forgiving detection - any movement counts as motor presence
+                    if position_change < 1:
+                        self.append_test_log(f"Motor detection: Axis {axis} movement test failed (pos {initial_pos}→{final_pos}) - no motor")
+                        return False
+                    elif position_change < 20:
+                        self.append_test_log(f"Motor detection: Axis {axis} limited movement detected (pos {initial_pos}→{final_pos}, moved {position_change} counts)")
+                        
+                        # Check for following error or limits
+                        try:
+                            fe = int(float(self.controller.send_command(f"MG _FE{axis}").strip()))
+                            if fe > 100:
+                                self.append_test_log(f"Motor detection: Axis {axis} following error detected: {fe} counts")
+                            
+                            # Check limit switch status
+                            lf = self.controller.send_command(f"MG _LF{axis}").strip()
+                            if lf != "0" and lf != "0.0000":
+                                self.append_test_log(f"Motor detection: Axis {axis} limit switch status: {lf}")
+                        except:
+                            pass
+                        
+                        self.append_test_log(f"Motor detection: Axis {axis} ✓ Motor confirmed (limited movement may indicate mechanical constraint)")
+                        return True
+                    else:
+                        self.append_test_log(f"Motor detection: Axis {axis} ✓ Motor confirmed (good movement: {position_change} counts)")
+                        return True
+                        
+                except Exception as e:
+                    self.append_test_log(f"Motor detection: Axis {axis} movement test failed - no motor: {e}")
+                    self.controller.send_command(f"ST{axis}")
+                    self.controller.send_command(f"MO{axis}")
+                    return False
+                
+            except Exception as e:
+                self.append_test_log(f"Motor detection: Axis {axis} servo test failed - no motor: {e}")
+                return False
+            
+            self.append_test_log(f"Motor detection: Axis {axis} ✓ Motor confirmed (responds to commands and moves)")
+            return True
+            
+        except Exception as e:
+            self.append_test_log(f"Motor detection error on axis {axis}: {e}")
+            return False
+
+    def append_test_log(self, line: str):
+        """Append a line to the testing status log in a thread-safe way."""
+        ts = datetime.now().strftime("%H:%M:%S")
+        self.root.after(0, lambda: (self.test_status_text.insert(tk.END, f"[{ts}] {line}\n"), self.test_status_text.see(tk.END)))
+
+    def copy_status_log(self):
+        """Copy the entire status log to clipboard"""
+        try:
+            # Get all text from the status log
+            log_content = self.test_status_text.get(1.0, tk.END)
+            
+            # Clear the clipboard and copy the content
+            self.root.clipboard_clear()
+            self.root.clipboard_append(log_content)
+            
+            # Show confirmation message
+            messagebox.showinfo("Copy Success", "Status log copied to clipboard!")
+            
+        except Exception as e:
+            messagebox.showerror("Copy Error", f"Failed to copy log: {e}")
+
+    def restart_encoder_update(self):
+        """Restart the encoder position update loop"""
+        try:
+            # Stop existing encoder update loop
+            self.test_encoder_update_running = False
+            if hasattr(self, 'test_encoder_update_thread') and self.test_encoder_update_thread.is_alive():
+                self.test_encoder_update_thread.join(timeout=1.0)
+            
+            # Start new encoder update loop
+            self.test_encoder_update_running = True
+            self.test_encoder_update_thread = threading.Thread(target=self.test_encoder_update_loop, daemon=True)
+            self.test_encoder_update_thread.start()
+            
+            self.append_test_log("Encoder position update restarted")
+            messagebox.showinfo("Success", "Encoder position update restarted!")
+            
+        except Exception as e:
+            self.append_test_log(f"Failed to restart encoder update: {e}")
+            messagebox.showerror("Error", f"Failed to restart encoder update: {e}")
+
+    def start_encoder_update(self):
+        """Start the encoder position update loop if controller is connected"""
+        if not self.controller:
+            self.append_test_log("Cannot start encoder update: No controller connected")
+            return False
+            
+        try:
+            # Stop existing encoder update loop if running
+            self.test_encoder_update_running = False
+            if hasattr(self, 'test_encoder_update_thread') and self.test_encoder_update_thread.is_alive():
+                self.test_encoder_update_thread.join(timeout=1.0)
+            
+            # Start new encoder update loop
+            self.test_encoder_update_running = True
+            self.test_encoder_update_thread = threading.Thread(target=self.test_encoder_update_loop, daemon=True)
+            self.test_encoder_update_thread.start()
+            
+            self.append_test_log("Encoder position update started")
+            return True
+            
+        except Exception as e:
+            self.append_test_log(f"Failed to start encoder update: {e}")
+            return False
+
+    def test_tune_axis(self):
+        """Tune the selected axis with PID values"""
+        if not self.controller:
+            messagebox.showerror("Error", "Please connect to a controller first")
+            return
+            
+        try:
+            axis = self.test_axis_var.get()
+            kp = float(self.test_kp_entry.get())
+            ki = float(self.test_ki_entry.get())
+            kd = float(self.test_kd_entry.get())
+            
+            self.test_status_text.insert(tk.END, f"Tuning axis {axis} with KP={kp}, KI={ki}, KD={kd}...\n")
+            
+            # Use the galil_functions module function
+            galil_functions.tune_axis(self.controller, axis, kp, ki, kd)
+            
+            self.test_status_text.insert(tk.END, f"Axis {axis} tuning completed successfully!\n")
+            self.test_status_text.see(tk.END)
+            
+        except Exception as e:
+            error_msg = f"Tuning error: {str(e)}"
+            self.test_status_text.insert(tk.END, f"ERROR: {error_msg}\n")
+            self.test_status_text.see(tk.END)
+            messagebox.showerror("Tuning Error", error_msg)
+            
+    def test_jog_axis(self, direction):
+        """Jog the selected axis by the specified distance"""
+        if not self.controller:
+            messagebox.showerror("Error", "Please connect to a controller first")
+            return
+            
+        try:
+            axis = self.test_axis_var.get()
+            distance = float(self.test_jog_distance_entry.get()) * direction
+            
+            self.test_status_text.insert(tk.END, f"Jogging axis {axis} by {abs(distance)}mm...\n")
+            
+            # Use the galil_functions module function
+            # Assuming 0.2 turns per mm and 64000 clicks per turn (default values)
+            turns_per_mm = 0.2
+            clicks_per_turn = 64000
+            
+            # Get speed from the test speed entry field
+            speed = int(self.test_speed_entry.get())
+            galil_functions.jog_distance(self.controller, axis, distance, turns_per_mm, clicks_per_turn, speed)
+            
+            self.test_status_text.insert(tk.END, f"Jog command sent successfully!\n")
+            self.test_status_text.see(tk.END)
+            
+        except Exception as e:
+            error_msg = f"Jog error: {str(e)}"
+            self.test_status_text.insert(tk.END, f"ERROR: {error_msg}\n")
+            self.test_status_text.see(tk.END)
+            messagebox.showerror("Jog Error", error_msg)
+            
+    def test_stop_axis(self):
+        """Stop the selected axis"""
+        if not self.controller:
+            messagebox.showerror("Error", "Please connect to a controller first")
+            return
+            
+        try:
+            axis = self.test_axis_var.get()
+            
+            self.test_status_text.insert(tk.END, f"Stopping axis {axis}...\n")
+            
+            # Stop the axis
+            self.controller.send_command(f"ST{axis}")
+            
+            self.test_status_text.insert(tk.END, f"Axis {axis} stopped successfully!\n")
+            self.test_status_text.see(tk.END)
+            
+        except Exception as e:
+            error_msg = f"Stop error: {str(e)}"
+            self.test_status_text.insert(tk.END, f"ERROR: {error_msg}\n")
+            self.test_status_text.see(tk.END)
+            messagebox.showerror("Stop Error", error_msg)
+            
+    def test_move_to_position(self):
+        """Move the selected axis to the specified position"""
+        if not self.controller:
+            messagebox.showerror("Error", "Please connect to a controller first")
+            return
+            
+        try:
+            axis = self.test_axis_var.get()
+            position = int(self.test_position_entry.get())
+            
+            self.test_status_text.insert(tk.END, f"Moving axis {axis} to position {position}...\n")
+            
+            # Use the galil_functions module function
+            # Get speed from the test speed entry field
+            speed = int(self.test_speed_entry.get())
+            galil_functions.move_to_position(self.controller, axis, position, speed)
+            
+            self.test_status_text.insert(tk.END, f"Move command sent successfully!\n")
+            self.test_status_text.see(tk.END)
+            
+        except Exception as e:
+            error_msg = f"Move error: {str(e)}"
+            self.test_status_text.insert(tk.END, f"ERROR: {error_msg}\n")
+            self.test_status_text.see(tk.END)
+            messagebox.showerror("Move Error", error_msg)
+            
+    def test_apply_motion_params(self):
+        """Apply motion parameters to the selected axis"""
+        if not self.controller:
+            messagebox.showerror("Error", "Please connect to a controller first")
+            return
+            
+        try:
+            axis = self.test_axis_var.get()
+            speed = int(self.test_speed_entry.get())
+            accel = int(self.test_accel_entry.get())
+            
+            self.test_status_text.insert(tk.END, f"Applying motion parameters to axis {axis}...\n")
+            self.test_status_text.insert(tk.END, f"Speed: {speed}, Acceleration: {accel}\n")
+
+            # Stop the axis first
+            self.controller.send_command(f"ST{axis}")
+            
+            # Apply speed parameter
+            resp = self.controller.send_command(f"SP{axis}={speed}")
+            if resp.strip() == "?":
+                self.test_status_text.insert(tk.END, f"WARNING: Controller rejected speed value {speed}\n")
+            else:
+                self.test_status_text.insert(tk.END, f"Speed parameter applied successfully\n")
+            
+            # Apply acceleration parameter
+            resp = self.controller.send_command(f"AC{axis}={accel}")
+            if resp.strip() == "?":
+                self.test_status_text.insert(tk.END, f"WARNING: Controller rejected acceleration value {accel}\n")
+            else:
+                self.test_status_text.insert(tk.END, f"Acceleration parameter applied successfully\n")
+            
+            # Apply deceleration parameter (typically 2x acceleration)
+            decel = accel * 2
+            resp = self.controller.send_command(f"DC{axis}={decel}")
+            if resp.strip() == "?":
+                self.test_status_text.insert(tk.END, f"WARNING: Controller rejected deceleration value {decel}\n")
+            else:
+                self.test_status_text.insert(tk.END, f"Deceleration parameter applied successfully\n")
+
+            # Verify via MG _SP/_AC/_DC
+            try:
+                actual_speed = self.controller.send_command(f"MG _SP{axis}").strip()
+                actual_accel = self.controller.send_command(f"MG _AC{axis}").strip()
+                actual_decel = self.controller.send_command(f"MG _DC{axis}").strip()
+                self.test_status_text.insert(tk.END, "Motion parameters applied successfully!\n")
+                self.test_status_text.insert(tk.END, f"Current SP: {actual_speed}, AC: {actual_accel}, DC: {actual_decel}\n")
+            except Exception as e:
+                self.test_status_text.insert(tk.END, f"Parameters applied, but verification failed: {e}\n")
+            
+            self.test_status_text.see(tk.END)
+            
+        except Exception as e:
+            error_msg = f"Parameter application error: {str(e)}"
+            self.test_status_text.insert(tk.END, f"ERROR: {error_msg}\n")
+            self.test_status_text.see(tk.END)
+            messagebox.showerror("Parameter Error", error_msg)
+            
+
+            
+    def test_encoder_update_loop(self):
+        """Encoder position update loop for all axes"""
+        while self.test_encoder_update_running:
+            try:
+                if not self.controller:
+                    break
+                
+                # Read positions from all axes
+                axis_positions = {}
+                for axis in ["A", "B", "C", "D"]:
+                    try:
+                        pos_str = self.controller.send_command(f"TP {axis}")
+                        position = int(pos_str.strip())
+                        axis_positions[axis] = position
+                    except Exception as e:
+                        # If axis doesn't respond, mark as error
+                        axis_positions[axis] = None
+                
+                # Update all encoder displays in main thread
+                self.root.after(0, self.test_update_all_encoder_displays, axis_positions)
+                
+                # Sleep for update interval
+                time.sleep(0.1)  # 100ms updates
+                
+            except Exception as e:
+                # Update UI with error in main thread
+                self.root.after(0, self.test_update_all_encoder_displays, None, str(e))
+                time.sleep(1)  # Wait longer before retrying on error
+                
+    def test_update_all_encoder_displays(self, axis_positions, error=None):
+        """Update all encoder displays with positions for each axis"""
+        if not self.test_encoder_update_running:
+            return
+            
+        # Check if widgets still exist before trying to update them
+        try:
+            if not hasattr(self, 'encoder_displays') or not hasattr(self, 'encoder_labels'):
+                return
+        except tk.TclError:
+            # Widget was destroyed, stop updates
+            self.test_encoder_update_running = False
+            return
+            
+        if error:
+            # Show error on all displays
+            for axis in ['A', 'B', 'C', 'D']:
+                if axis in self.encoder_labels and self.encoder_labels[axis].winfo_exists():
+                    self.encoder_labels[axis].configure(text=f"Error: {error}")
+            return
+            
+        # Update each axis display
+        for axis in ['A', 'B', 'C', 'D']:
+            try:
+                if axis not in self.encoder_displays or axis not in self.encoder_labels:
+                    continue
+                    
+                canvas = self.encoder_displays[axis]
+                label = self.encoder_labels[axis]
+                
+                if not canvas.winfo_exists() or not label.winfo_exists():
+                    continue
+                
+                position = axis_positions.get(axis)
+                
+                if position is None:
+                    # Axis not responding
+                    label.configure(text="No Response", fg=self.colors['error_red'])
+                    canvas.delete("all")
+                    # Draw empty circle
+                    canvas.create_oval(10, 10, 140, 140, outline='gray', width=1)
+                    canvas.create_text(75, 75, text="?", fill='gray', font=("Arial", 20))
+                else:
+                    # Update position label
+                    label.configure(text=f"Position: {position}", fg=self.colors['main_fg'])
+                    
+                    # Update visual display
+                    canvas.delete("all")
+                    
+                    # Draw encoder circle
+                    canvas.create_oval(10, 10, 140, 140, outline='black', width=2)
+                    
+                    # Calculate angle from position
+                    clicks_per_turn = int(self.test_clicks_per_turn_entry.get())
+                    angle = (position % clicks_per_turn) / clicks_per_turn * 2 * 3.14159
+                    
+                    # Draw position indicator
+                    center_x = 75
+                    center_y = 75
+                    radius = 50
+                    
+                    indicator_x = center_x + radius * 0.8 * math.cos(angle)
+                    indicator_y = center_y - radius * 0.8 * math.sin(angle)  # Negative for correct orientation
+                    
+                    canvas.create_oval(
+                        indicator_x - 5, indicator_y - 5,
+                        indicator_x + 5, indicator_y + 5,
+                        fill='red', outline='black'
                     )
                     
-                    # Optionally test connectivity
-                    self.test_network_connectivity()
-                else:
-                    messagebox.showerror("Configuration Failed", "Failed to apply network settings.")
+            except Exception as e:
+                # Individual axis update failed, continue with others
+                continue
+             
+    def test_servo_on(self):
+        """Enable servo for the selected axis"""
+        if not self.controller:
+            messagebox.showerror("Error", "Please connect to a controller first")
+            return
+            
+        try:
+            axis = self.test_axis_var.get()
+            
+            self.test_status_text.insert(tk.END, f"Enabling servo for axis {axis}...\n")
+            
+            # Enable servo
+            self.controller.send_command(f"SH{axis}")
+            
+            self.test_status_text.insert(tk.END, f"Servo enabled for axis {axis}\n")
+            self.test_status_text.see(tk.END)
             
         except Exception as e:
-            messagebox.showerror("Error", f"Error applying network settings: {str(e)}")
-
-    def reset_network_to_dhcp(self):
-        """Reset the network adapter to use DHCP."""
+            error_msg = f"Servo enable error: {str(e)}"
+            self.test_status_text.insert(tk.END, f"ERROR: {error_msg}\n")
+            self.test_status_text.see(tk.END)
+            messagebox.showerror("Servo Error", error_msg)
+            
+    def test_servo_off(self):
+        """Disable servo for the selected axis"""
+        if not self.controller:
+            messagebox.showerror("Error", "Please connect to a controller first")
+            return
+            
         try:
-            # Check permissions first
-            if not check_network_configuration_permissions():
-                messagebox.showerror(
-                    "Permission Error",
-                    "This operation requires Administrator privileges.\n\n"
-                    "Please run the application as Administrator."
-                )
+            axis = self.test_axis_var.get()
+            
+            self.test_status_text.insert(tk.END, f"Disabling servo for axis {axis}...\n")
+            
+            # Stop motion first
+            self.controller.send_command(f"ST{axis}")
+            
+            # Disable servo
+            self.controller.send_command(f"MO{axis}")
+            
+            self.test_status_text.insert(tk.END, f"Servo disabled for axis {axis}\n")
+            self.test_status_text.see(tk.END)
+            
+        except Exception as e:
+            error_msg = f"Servo disable error: {str(e)}"
+            self.test_status_text.insert(tk.END, f"ERROR: {error_msg}\n")
+            self.test_status_text.see(tk.END)
+            messagebox.showerror("Servo Error", error_msg)
+            
+    def test_stop_all(self):
+        """Stop all axes"""
+        if not self.controller:
+            messagebox.showerror("Error", "Please connect to a controller first")
+            return
+            
+        try:
+            self.test_status_text.insert(tk.END, "Stopping all axes...\n")
+            
+            # Stop all axes
+            self.controller.send_command("ST")
+            
+            self.test_status_text.insert(tk.END, "All axes stopped\n")
+            self.test_status_text.see(tk.END)
+            
+        except Exception as e:
+            error_msg = f"Stop all error: {str(e)}"
+            self.test_status_text.insert(tk.END, f"ERROR: {error_msg}\n")
+            self.test_status_text.see(tk.END)
+            messagebox.showerror("Stop Error", error_msg)
+    
+    def save_configuration(self):
+        """Save current configuration to a file"""
+        try:
+            # Get file path from user
+            file_path = filedialog.asksaveasfilename(
+                title="Save Configuration",
+                defaultextension=".json",
+                filetypes=[("JSON files", "*.json"), ("All files", "*.*")]
+            )
+            
+            if not file_path:
                 return
-            
-            # Get current network adapter
-            adapter = self.network_configurator.get_active_network_adapter()
-            
-            if not adapter:
-                messagebox.showwarning(
-                    "No Active Adapter",
-                    "No active network adapter found.\n\n"
-                    "Please ensure you have a network connection."
-                )
-                return
-            
-            # Show confirmation dialog
-            confirmation_text = "RESET TO DHCP\n"
-            confirmation_text += "=" * 50 + "\n\n"
-            confirmation_text += "This will reset your network adapter to use DHCP.\n"
-            confirmation_text += "Your computer will obtain network settings automatically.\n\n"
-            confirmation_text += "Current adapter: " + adapter['name'] + "\n\n"
-            confirmation_text += "Do you want to continue?"
-            
-            result = messagebox.askyesno("Confirm DHCP Reset", confirmation_text)
-            
-            if result:
-                # Reset to DHCP
-                success = self.network_configurator.reset_to_dhcp(adapter['name'])
                 
-                if success:
-                    messagebox.showinfo(
-                        "DHCP Reset Complete",
-                        "Network adapter has been reset to use DHCP.\n\n"
-                        "Your computer will now obtain network settings automatically."
-                    )
-                else:
-                    messagebox.showerror("Reset Failed", "Failed to reset network adapter to DHCP.")
+            # Collect current configuration
+            config = {
+                'default_ip': "10.1.0.21",  # Default IP from the application
+                'motion_parameters': {
+                    'default_speed': 5000,
+                    'default_acceleration': 1000,
+                    'default_deceleration': 2000,
+                    'default_jog_distance': 10.0,
+                    'default_position': 10000
+                },
+                'pid_parameters': {
+                    'default_kp': 10.0,
+                    'default_ki': 0.1,
+                    'default_kd': 50.0
+                },
+                'encoder_settings': {
+                    'default_clicks_per_turn': 64000,
+                    'update_interval_ms': 100
+                },
+                'network_settings': {
+                    'default_subnet': "255.255.255.0",
+                    'default_gateway': "10.1.0.1"
+                },
+                'saved_timestamp': datetime.now().isoformat()
+            }
+            
+            # Save to file
+            with open(file_path, 'w') as f:
+                json.dump(config, f, indent=4)
+                
+            self.settings_status_text.insert(tk.END, f"Configuration saved successfully to: {file_path}\n")
+            self.settings_status_text.see(tk.END)
+            messagebox.showinfo("Success", f"Configuration saved to:\n{file_path}")
             
         except Exception as e:
-            messagebox.showerror("Error", f"Error resetting to DHCP: {str(e)}")
-
-    def test_network_connectivity(self):
-        """Test network connectivity after configuration."""
+            error_msg = f"Error saving configuration: {str(e)}"
+            self.settings_status_text.insert(tk.END, f"ERROR: {error_msg}\n")
+            self.settings_status_text.see(tk.END)
+            messagebox.showerror("Save Error", error_msg)
+            
+    def load_configuration(self):
+        """Load configuration from a file"""
         try:
-            # Test connectivity
-            results = self.network_configurator.test_network_connectivity()
+            # Get file path from user
+            file_path = filedialog.askopenfilename(
+                title="Load Configuration",
+                filetypes=[("JSON files", "*.json"), ("All files", "*.*")]
+            )
             
-            # Format results
-            status_text = "NETWORK CONNECTIVITY TEST\n"
-            status_text += "=" * 50 + "\n\n"
+            if not file_path:
+                return
+                
+            # Load configuration from file
+            with open(file_path, 'r') as f:
+                config = json.load(f)
+                
+            # Display loaded configuration
+            self.settings_status_text.insert(tk.END, f"Configuration loaded from: {file_path}\n")
+            self.settings_status_text.insert(tk.END, "Loaded settings:\n")
             
-            for detail in results['details']:
-                status_text += detail + "\n"
-            
-            status_text += "\n" + "=" * 50 + "\n"
-            
-            # Overall status
-            if results['gateway_ping'] and results['dns_ping']:
-                status_text += "✓ Network configuration appears to be working correctly.\n"
-            elif results['gateway_ping']:
-                status_text += "⚠ Gateway is reachable but DNS may have issues.\n"
-            else:
-                status_text += "✗ Network connectivity issues detected.\n"
-            
-            messagebox.showinfo("Connectivity Test Results", status_text)
+            if 'motion_parameters' in config:
+                motion = config['motion_parameters']
+                self.settings_status_text.insert(tk.END, f"  Motion: Speed={motion.get('default_speed', 'N/A')}, "
+                                                       f"Accel={motion.get('default_acceleration', 'N/A')}, "
+                                                       f"Decel={motion.get('default_deceleration', 'N/A')}\n")
+                                                       
+            if 'pid_parameters' in config:
+                pid = config['pid_parameters']
+                self.settings_status_text.insert(tk.END, f"  PID: KP={pid.get('default_kp', 'N/A')}, "
+                                                       f"KI={pid.get('default_ki', 'N/A')}, "
+                                                       f"KD={pid.get('default_kd', 'N/A')}\n")
+                                                       
+            if 'saved_timestamp' in config:
+                self.settings_status_text.insert(tk.END, f"  Saved: {config['saved_timestamp']}\n")
+                
+            self.settings_status_text.see(tk.END)
+            messagebox.showinfo("Success", f"Configuration loaded from:\n{file_path}")
             
         except Exception as e:
-            messagebox.showerror("Error", f"Error testing connectivity: {str(e)}")
+            error_msg = f"Error loading configuration: {str(e)}"
+            self.settings_status_text.insert(tk.END, f"ERROR: {error_msg}\n")
+            self.settings_status_text.see(tk.END)
+            messagebox.showerror("Load Error", error_msg)
+            
+    def reset_to_defaults(self):
+        """Reset all settings to their default values"""
+        try:
+            # Confirm with user
+            result = messagebox.askyesno(
+                "Reset to Defaults",
+                "Are you sure you want to reset all settings to their default values?\n\n"
+                "This will reset:\n"
+                "- Default IP address to 10.1.0.21\n"
+                "- Motion parameters to default values\n"
+                "- PID parameters to default values\n"
+                "- All other settings to defaults\n\n"
+                "This action cannot be undone."
+            )
+            
+            if not result:
+                return
+                
+            # Define default configuration
+            default_config = {
+                'default_ip': "10.1.0.21",
+                'motion_parameters': {
+                    'default_speed': 5000,
+                    'default_acceleration': 1000,
+                    'default_deceleration': 2000,
+                    'default_jog_distance': 10.0,
+                    'default_position': 10000
+                },
+                'pid_parameters': {
+                    'default_kp': 10.0,
+                    'default_ki': 0.1,
+                    'default_kd': 50.0
+                },
+                'encoder_settings': {
+                    'default_clicks_per_turn': 64000,
+                    'update_interval_ms': 100
+                },
+                'network_settings': {
+                    'default_subnet': "255.255.255.0",
+                    'default_gateway': "10.1.0.1"
+                }
+            }
+            
+            # Update any visible entry fields if they exist
+            try:
+                if hasattr(self, 'ip_entry') and self.ip_entry.winfo_exists():
+                    self.ip_entry.delete(0, tk.END)
+                    self.ip_entry.insert(0, default_config['default_ip'])
+                    
+                if hasattr(self, 'test_speed_entry') and self.test_speed_entry.winfo_exists():
+                    self.test_speed_entry.delete(0, tk.END)
+                    self.test_speed_entry.insert(0, str(default_config['motion_parameters']['default_speed']))
+                    
+                if hasattr(self, 'test_accel_entry') and self.test_accel_entry.winfo_exists():
+                    self.test_accel_entry.delete(0, tk.END)
+                    self.test_accel_entry.insert(0, str(default_config['motion_parameters']['default_acceleration']))
+                    
+                if hasattr(self, 'test_kp_entry') and self.test_kp_entry.winfo_exists():
+                    self.test_kp_entry.delete(0, tk.END)
+                    self.test_kp_entry.insert(0, str(default_config['pid_parameters']['default_kp']))
+                    
+                if hasattr(self, 'test_ki_entry') and self.test_ki_entry.winfo_exists():
+                    self.test_ki_entry.delete(0, tk.END)
+                    self.test_ki_entry.insert(0, str(default_config['pid_parameters']['default_ki']))
+                    
+                if hasattr(self, 'test_kd_entry') and self.test_kd_entry.winfo_exists():
+                    self.test_kd_entry.delete(0, tk.END)
+                    self.test_kd_entry.insert(0, str(default_config['pid_parameters']['default_kd']))
+                    
+            except Exception as e:
+                self.settings_status_text.insert(tk.END, f"Note: Some UI elements could not be updated: {e}\n")
+                
+            self.settings_status_text.insert(tk.END, "All settings have been reset to default values.\n")
+            self.settings_status_text.insert(tk.END, "Default configuration:\n")
+            self.settings_status_text.insert(tk.END, f"  IP: {default_config['default_ip']}\n")
+            self.settings_status_text.insert(tk.END, f"  Speed: {default_config['motion_parameters']['default_speed']}\n")
+            self.settings_status_text.insert(tk.END, f"  KP: {default_config['pid_parameters']['default_kp']}\n")
+            self.settings_status_text.insert(tk.END, f"  KI: {default_config['pid_parameters']['default_ki']}\n")
+            self.settings_status_text.insert(tk.END, f"  KD: {default_config['pid_parameters']['default_kd']}\n")
+            self.settings_status_text.see(tk.END)
+            
+            messagebox.showinfo("Success", "All settings have been reset to their default values.")
+            
+        except Exception as e:
+            error_msg = f"Error resetting to defaults: {str(e)}"
+            self.settings_status_text.insert(tk.END, f"ERROR: {error_msg}\n")
+            self.settings_status_text.see(tk.END)
+            messagebox.showerror("Reset Error", error_msg)
+    
+    def wait_for_motion_complete(self, axis, timeout=15.0):
+        """Wait for motion to complete on the specified axis with timeout"""
+        start_time = time.time()
+        check_interval = 0.1  # Check every 100ms for better responsiveness
+        last_position = None
+        position_stable_count = 0
+        motion_stopped_time = None
+        
+        while time.time() - start_time < timeout:
+            try:
+                # Method 1: Check if axis is still moving using _BG
+                motion_active = False
+                try:
+                    motion_status = self.controller.send_command("MG _BG").strip()
+                    bg_value = int(motion_status)
+                    axis_bits = {"A": 1, "B": 2, "C": 4, "D": 8}
+                    if axis in axis_bits:
+                        motion_active = (bg_value & axis_bits[axis]) != 0
+                except:
+                    motion_active = True  # Assume motion if we can't read status
+                
+                # Method 2: Check position stability
+                try:
+                    current_pos = int(self.controller.send_command(f"TP {axis}").strip())
+                    if last_position is not None:
+                        position_change = abs(current_pos - last_position)
+                        if position_change < 2:  # Position is very stable (within 2 counts)
+                            position_stable_count += 1
+                        else:
+                            position_stable_count = 0
+                    last_position = current_pos
+                except:
+                    position_stable_count = 0
+                
+                # Combined logic: motion must be stopped AND position stable
+                if not motion_active:
+                    if motion_stopped_time is None:
+                        motion_stopped_time = time.time()
+                    elif (time.time() - motion_stopped_time) > 0.3:  # Motion stopped for 300ms
+                        if position_stable_count >= 3:  # AND position stable for 3 checks
+                            return True
+                else:
+                    motion_stopped_time = None
+                    position_stable_count = 0
+                    
+                time.sleep(check_interval)
+                
+            except Exception as e:
+                # If we can't read anything, wait a bit more then assume complete
+                time.sleep(0.5)
+                return True
+                
+        # Timeout reached
+        return False
+    
+    def cleanup(self):
+        """Clean up resources when application is closing"""
+        try:
+            # Stop auto-connect thread
+            self.auto_connect_running = False
+            if hasattr(self, 'auto_connect_thread') and self.auto_connect_thread.is_alive():
+                self.auto_connect_thread.join(timeout=1.0)
+            
+            # Stop encoder update thread
+            self.test_encoder_update_running = False
+            if hasattr(self, 'test_encoder_update_thread') and self.test_encoder_update_thread.is_alive():
+                self.test_encoder_update_thread.join(timeout=1.0)
+            
+            # Stop any ongoing motion
+            if self.controller:
+                try:
+                    self.controller.send_command("ST")
+                except:
+                    pass
+                
+                # Close controller connection
+                try:
+                    self.controller.disconnect()
+                except:
+                    pass
+        except Exception as e:
+            print(f"Cleanup error: {e}")
 
-if __name__ == "__main__":
+def main():
     root = tk.Tk()
     app = GalilSetupApp(root)
+    
+    # Set up cleanup when window is closed
+    def on_closing():
+        app.cleanup()
+        root.destroy()
+    
+    root.protocol("WM_DELETE_WINDOW", on_closing)
     root.mainloop()
+
+if __name__ == "__main__":
+    main()

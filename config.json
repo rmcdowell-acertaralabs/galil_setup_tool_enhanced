@@ -1,6 +1,6 @@
 {
-    "ip_address": "10.1.0.21",
-    "jog_speed": 128000,
+    "ip_address": "10.1.0.24",
+    "jog_speed": 5000,
     "axis_presets": {
         "A": {
             "jog_speed": 128000,
