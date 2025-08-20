@@ -774,12 +774,25 @@ class GalilSetupApp:
                               command=self.connect_to_controller)
         connect_btn.pack(side='left', padx=(10, 0))
         
+        # Disconnect button
+        disconnect_btn = tk.Button(ip_frame, text="Disconnect", 
+                                font=("Arial", 10, "bold"),
+                                bg=self.colors['error_red'], fg='white',
+                                command=self.disconnect_controller)
+        disconnect_btn.pack(side='left', padx=(10, 0))
+        
         # Discover button
         discover_btn = tk.Button(ip_frame, text="Discover Controllers", 
                                font=("Arial", 10, "bold"),
                                bg=self.colors['warning_orange'], fg='white',
                                command=self.discover_controllers)
         discover_btn.pack(side='left', padx=(10, 0))
+        
+        # Connection status label
+        self.connection_status_label = tk.Label(ip_frame, text="Not Connected", 
+                                              font=("Arial", 10, "bold"),
+                                              bg=self.colors['main_bg'], fg=self.colors['error_red'])
+        self.connection_status_label.pack(side='right', padx=(10, 0))
         
         # Network configuration section
         config_frame = tk.LabelFrame(network_frame, text="Network Configuration", 
@@ -902,6 +915,36 @@ class GalilSetupApp:
         except Exception as e:
             self.log_error(f"Connection error: {str(e)}")
             messagebox.showerror("Error", f"Connection error: {str(e)}")
+            
+    def disconnect_controller(self):
+        """Disconnect from the Galil controller"""
+        try:
+            if self.controller:
+                # Stop any ongoing motion
+                try:
+                    self.controller.send_command("ST")
+                except:
+                    pass
+                
+                # Close controller connection
+                try:
+                    self.controller.disconnect()
+                except:
+                    pass
+                
+                self.controller = None
+                self.log_info("Disconnected from controller")
+                
+                # Update UI to show disconnected state
+                self.update_connection_status(False)
+                
+                messagebox.showinfo("Success", "Disconnected from controller")
+            else:
+                messagebox.showinfo("Info", "No controller connected")
+                
+        except Exception as e:
+            self.log_error(f"Disconnect error: {str(e)}")
+            messagebox.showerror("Error", f"Disconnect error: {str(e)}")
             
     def discover_controllers(self):
         """Discover Galil controllers on the network"""
@@ -1512,6 +1555,11 @@ class GalilSetupApp:
                 bg=self.colors['accent_blue'], fg='white',
                 command=self.test_move_to_position).pack(side='left')
         
+        tk.Button(pos_frame, text="Test Move", 
+                font=("Arial", 10, "bold"),
+                bg=self.colors['warning_orange'], fg='white',
+                command=self.test_simple_move).pack(side='left', padx=(5, 0))
+        
         # Motion Parameters Section
         params_frame = tk.LabelFrame(left_frame, text="Motion Parameters", 
                                    font=("Arial", 12, "bold"),
@@ -1569,6 +1617,16 @@ class GalilSetupApp:
                 font=("Arial", 10, "bold"),
                 bg=self.colors['warning_orange'], fg='white',
                 command=self.test_stop_all).pack(side='left')
+        
+        tk.Button(servo_buttons_frame, text="Status Check", 
+                font=("Arial", 10, "bold"),
+                bg=self.colors['accent_blue'], fg='white',
+                command=self.check_controller_status).pack(side='left', padx=(5, 0))
+        
+        tk.Button(servo_buttons_frame, text="Enable All Servos", 
+                font=("Arial", 10, "bold"),
+                bg=self.colors['success_green'], fg='white',
+                command=self.enable_all_servos).pack(side='left', padx=(5, 0))
 
         # Automatic Diagnostics Section
         auto_diag_frame = tk.LabelFrame(left_frame, text="Automatic Diagnostics", 
@@ -2126,6 +2184,11 @@ class GalilSetupApp:
             self.start_encoder_update()
                 
         else:
+            # Stop encoder update loop
+            self.test_encoder_update_running = False
+            if hasattr(self, 'test_encoder_update_thread') and self.test_encoder_update_thread.is_alive():
+                self.test_encoder_update_thread.join(timeout=1.0)
+            
             if hasattr(self, 'connection_status_label'):
                 self.connection_status_label.config(text="Disconnected", fg=self.colors['error_red'])
             
@@ -2251,8 +2314,14 @@ class GalilSetupApp:
 
     def append_test_log(self, line: str):
         """Append a line to the testing status log in a thread-safe way."""
-        ts = datetime.now().strftime("%H:%M:%S")
-        self.root.after(0, lambda: (self.test_status_text.insert(tk.END, f"[{ts}] {line}\n"), self.test_status_text.see(tk.END)))
+        try:
+            ts = datetime.now().strftime("%H:%M:%S")
+            # Check if widget still exists before updating
+            if hasattr(self, 'test_status_text') and self.test_status_text.winfo_exists():
+                self.root.after(0, lambda: (self.test_status_text.insert(tk.END, f"[{ts}] {line}\n"), self.test_status_text.see(tk.END)))
+        except tk.TclError:
+            # Widget was destroyed, ignore the update
+            pass
 
     def copy_status_log(self):
         """Copy the entire status log to clipboard"""
@@ -2350,7 +2419,14 @@ class GalilSetupApp:
             axis = self.test_axis_var.get()
             distance = float(self.test_jog_distance_entry.get()) * direction
             
-            self.test_status_text.insert(tk.END, f"Jogging axis {axis} by {abs(distance)}mm...\n")
+            self.append_test_log(f"Jogging axis {axis} by {abs(distance)}mm...")
+            
+            # Ensure servo is enabled first
+            try:
+                self.controller.send_command(f"SH{axis}")
+                time.sleep(0.1)  # Wait for servo to stabilize
+            except Exception as e:
+                self.append_test_log(f"Warning: Could not enable servo for axis {axis}: {e}")
             
             # Use the galil_functions module function
             # Assuming 0.2 turns per mm and 64000 clicks per turn (default values)
@@ -2361,13 +2437,11 @@ class GalilSetupApp:
             speed = int(self.test_speed_entry.get())
             galil_functions.jog_distance(self.controller, axis, distance, turns_per_mm, clicks_per_turn, speed)
             
-            self.test_status_text.insert(tk.END, f"Jog command sent successfully!\n")
-            self.test_status_text.see(tk.END)
+            self.append_test_log(f"Jog command sent successfully!")
             
         except Exception as e:
             error_msg = f"Jog error: {str(e)}"
-            self.test_status_text.insert(tk.END, f"ERROR: {error_msg}\n")
-            self.test_status_text.see(tk.END)
+            self.append_test_log(f"ERROR: {error_msg}")
             messagebox.showerror("Jog Error", error_msg)
             
     def test_stop_axis(self):
@@ -2403,21 +2477,302 @@ class GalilSetupApp:
             axis = self.test_axis_var.get()
             position = int(self.test_position_entry.get())
             
-            self.test_status_text.insert(tk.END, f"Moving axis {axis} to position {position}...\n")
+            self.append_test_log(f"Moving axis {axis} to position {position}...")
             
-            # Use the galil_functions module function
+            # Ensure servo is enabled first and stays enabled
+            try:
+                self.controller.send_command(f"SH{axis}")
+                time.sleep(0.2)  # Wait longer for servo to stabilize
+                
+                # Verify servo is enabled
+                servo_status = self.controller.send_command(f"MG _MO{axis}").strip()
+                if servo_status == "0":
+                    # Try again
+                    self.controller.send_command(f"SH{axis}")
+                    time.sleep(0.3)
+                    servo_status = self.controller.send_command(f"MG _MO{axis}").strip()
+                
+                self.append_test_log(f"Servo status after enable: {servo_status}")
+            except Exception as e:
+                self.append_test_log(f"Warning: Could not enable servo for axis {axis}: {e}")
+            
+            # Get current position and servo status
+            try:
+                current_pos = int(self.controller.send_command(f"TP {axis}").strip())
+                servo_status = self.controller.send_command(f"MG _MO{axis}").strip()
+                self.append_test_log(f"Current position: {current_pos}, Servo status: {servo_status}")
+            except Exception as e:
+                self.append_test_log(f"Warning: Could not read current status: {e}")
+            
             # Get speed from the test speed entry field
             speed = int(self.test_speed_entry.get())
+            
+            # Use the galil_functions module function
             galil_functions.move_to_position(self.controller, axis, position, speed)
             
-            self.test_status_text.insert(tk.END, f"Move command sent successfully!\n")
-            self.test_status_text.see(tk.END)
+            # Monitor the movement and ensure servo stays enabled
+            self.append_test_log(f"Monitoring movement...")
+            start_time = time.time()
+            last_pos = current_pos
+            
+            while time.time() - start_time < 10.0:  # 10 second timeout
+                try:
+                    # Check if motion is still active
+                    motion_status = self.controller.send_command("MG _BG").strip()
+                    try:
+                        bg_value = int(float(motion_status))
+                    except ValueError:
+                        bg_value = 0
+                    
+                    axis_bits = {"A": 1, "B": 2, "C": 4, "D": 8}
+                    motion_active = (bg_value & axis_bits[axis]) != 0
+                    
+                    # Get current position
+                    current_pos = int(self.controller.send_command(f"TP {axis}").strip())
+                    
+                    # Check servo status
+                    servo_status = self.controller.send_command(f"MG _MO{axis}").strip()
+                    if servo_status == "0":
+                        self.append_test_log(f"WARNING: Servo disabled during motion, re-enabling...")
+                        self.controller.send_command(f"SH{axis}")
+                        time.sleep(0.1)
+                    
+                    # Check if position is changing
+                    if abs(current_pos - last_pos) > 5:
+                        self.append_test_log(f"Position: {current_pos} (motion active: {motion_active})")
+                        last_pos = current_pos
+                    
+                    # Check if we're close to target
+                    if abs(current_pos - position) < 50:
+                        self.append_test_log(f"Close to target: {current_pos} (target: {position})")
+                    
+                    # If motion stopped and we're close enough, consider it complete
+                    if not motion_active and abs(current_pos - position) < 100:
+                        self.append_test_log(f"Motion completed near target")
+                        break
+                    
+                    time.sleep(0.2)
+                    
+                except Exception as e:
+                    self.append_test_log(f"Error monitoring motion: {e}")
+                    break
+            
+            # Final servo check and re-enable if needed
+            try:
+                servo_status = self.controller.send_command(f"MG _MO{axis}").strip()
+                if servo_status == "0":
+                    self.append_test_log(f"Re-enabling servo after motion...")
+                    self.controller.send_command(f"SH{axis}")
+            except Exception as e:
+                self.append_test_log(f"Error checking final servo status: {e}")
+            
+            self.append_test_log(f"Move command completed!")
             
         except Exception as e:
             error_msg = f"Move error: {str(e)}"
-            self.test_status_text.insert(tk.END, f"ERROR: {error_msg}\n")
-            self.test_status_text.see(tk.END)
+            self.append_test_log(f"ERROR: {error_msg}")
             messagebox.showerror("Move Error", error_msg)
+            
+    def test_simple_move(self):
+        """Test a simple small movement to verify the system is working"""
+        if not self.controller:
+            messagebox.showerror("Error", "Please connect to a controller first")
+            return
+            
+        try:
+            axis = self.test_axis_var.get()
+            
+            self.append_test_log(f"Testing simple movement on axis {axis}...")
+            
+            # Get current position
+            try:
+                current_pos = int(self.controller.send_command(f"TP {axis}").strip())
+                self.append_test_log(f"Current position: {current_pos}")
+            except Exception as e:
+                self.append_test_log(f"Error reading position: {e}")
+                return
+            
+            # Try a small relative move (100 counts)
+            target_pos = current_pos + 100
+            
+            self.append_test_log(f"Attempting small move: {current_pos} → {target_pos}")
+            
+            # Use conservative parameters
+            speed = 1000
+            accel = 500
+            
+            # Stop any existing motion
+            self.controller.send_command(f"ST{axis}")
+            time.sleep(0.1)
+            
+            # Enable servo
+            self.controller.send_command(f"SH{axis}")
+            time.sleep(0.2)
+            
+            # Set conservative parameters
+            self.controller.send_command(f"SP{axis}={speed}")
+            self.controller.send_command(f"AC{axis}={accel}")
+            self.controller.send_command(f"DC{axis}={accel*2}")
+            
+            # Move to target position
+            self.controller.send_command(f"PA{axis}={target_pos}")
+            self.controller.send_command(f"BG{axis}")
+            
+            self.append_test_log(f"Simple move command sent successfully!")
+            
+        except Exception as e:
+            error_msg = f"Simple move error: {str(e)}"
+            self.append_test_log(f"ERROR: {error_msg}")
+            messagebox.showerror("Simple Move Error", error_msg)
+            
+    def check_controller_status(self):
+        """Check detailed controller status and provide diagnostics"""
+        if not self.controller:
+            messagebox.showerror("Error", "Please connect to a controller first")
+            return
+            
+        try:
+            axis = self.test_axis_var.get()
+            
+            self.append_test_log(f"=== CONTROLLER STATUS CHECK FOR AXIS {axis} ===")
+            
+            # Check basic controller info
+            try:
+                serial = self.controller.send_command("MG _BN").strip()
+                self.append_test_log(f"Controller serial: {serial}")
+            except Exception as e:
+                self.append_test_log(f"Error reading serial: {e}")
+            
+            # Check axis position
+            try:
+                position = self.controller.send_command(f"TP {axis}").strip()
+                self.append_test_log(f"Axis {axis} position: {position}")
+            except Exception as e:
+                self.append_test_log(f"Error reading position: {e}")
+            
+            # Check servo status
+            try:
+                servo_status = self.controller.send_command(f"MG _MO{axis}").strip()
+                self.append_test_log(f"Axis {axis} servo status: {servo_status}")
+            except Exception as e:
+                self.append_test_log(f"Error reading servo status: {e}")
+            
+            # Check motion status
+            try:
+                motion_status = self.controller.send_command("MG _BG").strip()
+                self.append_test_log(f"Motion status: {motion_status}")
+            except Exception as e:
+                self.append_test_log(f"Error reading motion status: {e}")
+            
+            # Check current motion parameters
+            try:
+                speed = self.controller.send_command(f"MG _SP{axis}").strip()
+                accel = self.controller.send_command(f"MG _AC{axis}").strip()
+                decel = self.controller.send_command(f"MG _DC{axis}").strip()
+                self.append_test_log(f"Current parameters - Speed: {speed}, Accel: {accel}, Decel: {decel}")
+            except Exception as e:
+                self.append_test_log(f"Error reading parameters: {e}")
+            
+            # Check PID settings
+            try:
+                kp = self.controller.send_command(f"MG _KP{axis}").strip()
+                ki = self.controller.send_command(f"MG _KI{axis}").strip()
+                kd = self.controller.send_command(f"MG _KD{axis}").strip()
+                self.append_test_log(f"PID settings - KP: {kp}, KI: {ki}, KD: {kd}")
+            except Exception as e:
+                self.append_test_log(f"Error reading PID: {e}")
+            
+            # Check for errors
+            try:
+                error_status = self.controller.send_command("MG _TC").strip()
+                if error_status != "0":
+                    self.append_test_log(f"WARNING: Controller error status: {error_status}")
+                else:
+                    self.append_test_log("No controller errors detected")
+            except Exception as e:
+                self.append_test_log(f"Error reading error status: {e}")
+            
+            # Test individual commands to see which ones fail
+            self.append_test_log(f"=== TESTING INDIVIDUAL COMMANDS ===")
+            
+            # Test stop command
+            try:
+                response = self.controller.send_command(f"ST{axis}")
+                self.append_test_log(f"ST{axis} response: '{response}'")
+            except Exception as e:
+                self.append_test_log(f"ST{axis} failed: {e}")
+            
+            # Test servo on command
+            try:
+                response = self.controller.send_command(f"SH{axis}")
+                self.append_test_log(f"SH{axis} response: '{response}'")
+            except Exception as e:
+                self.append_test_log(f"SH{axis} failed: {e}")
+            
+            # Test speed command
+            try:
+                response = self.controller.send_command(f"SP{axis}=100")
+                self.append_test_log(f"SP{axis}=100 response: '{response}'")
+            except Exception as e:
+                self.append_test_log(f"SP{axis}=100 failed: {e}")
+            
+            # Test acceleration command
+            try:
+                response = self.controller.send_command(f"AC{axis}=100")
+                self.append_test_log(f"AC{axis}=100 response: '{response}'")
+            except Exception as e:
+                self.append_test_log(f"AC{axis}=100 failed: {e}")
+            
+            # Test position command
+            try:
+                current_pos = int(self.controller.send_command(f"TP {axis}").strip())
+                response = self.controller.send_command(f"PA{axis}={current_pos}")
+                self.append_test_log(f"PA{axis}={current_pos} response: '{response}'")
+            except Exception as e:
+                self.append_test_log(f"PA{axis} failed: {e}")
+            
+            # Test begin command
+            try:
+                response = self.controller.send_command(f"BG{axis}")
+                self.append_test_log(f"BG{axis} response: '{response}'")
+            except Exception as e:
+                self.append_test_log(f"BG{axis} failed: {e}")
+            
+            # Test alternative servo status commands
+            self.append_test_log(f"=== TESTING ALTERNATIVE SERVO COMMANDS ===")
+            
+            # Try different servo status commands
+            try:
+                servo_status_alt1 = self.controller.send_command(f"MG _SS{axis}").strip()
+                self.append_test_log(f"Alternative servo status _SS{axis}: {servo_status_alt1}")
+            except Exception as e:
+                self.append_test_log(f"Alternative servo status _SS{axis} failed: {e}")
+            
+            try:
+                servo_status_alt2 = self.controller.send_command(f"MG _SV{axis}").strip()
+                self.append_test_log(f"Alternative servo status _SV{axis}: {servo_status_alt2}")
+            except Exception as e:
+                self.append_test_log(f"Alternative servo status _SV{axis} failed: {e}")
+            
+            # Test servo enable with different commands
+            try:
+                response = self.controller.send_command(f"MO{axis}")
+                self.append_test_log(f"MO{axis} (servo off) response: '{response}'")
+                time.sleep(0.1)
+                response = self.controller.send_command(f"SH{axis}")
+                self.append_test_log(f"SH{axis} (servo on) response: '{response}'")
+                time.sleep(0.2)
+                servo_status_after = self.controller.send_command(f"MG _MO{axis}").strip()
+                self.append_test_log(f"Servo status after SH{axis}: {servo_status_after}")
+            except Exception as e:
+                self.append_test_log(f"Servo enable/disable test failed: {e}")
+            
+            self.append_test_log("=== STATUS CHECK COMPLETE ===")
+            
+        except Exception as e:
+            error_msg = f"Status check error: {str(e)}"
+            self.append_test_log(f"ERROR: {error_msg}")
+            messagebox.showerror("Status Check Error", error_msg)
             
     def test_apply_motion_params(self):
         """Apply motion parameters to the selected axis"""
@@ -2480,10 +2835,12 @@ class GalilSetupApp:
             
     def test_encoder_update_loop(self):
         """Encoder position update loop for all axes"""
+        servo_maintenance_counter = 0
         while self.test_encoder_update_running:
             try:
                 if not self.controller:
-                    break
+                    time.sleep(0.5)  # Wait longer when no controller
+                    continue
                 
                 # Read positions from all axes
                 axis_positions = {}
@@ -2497,14 +2854,22 @@ class GalilSetupApp:
                         axis_positions[axis] = None
                 
                 # Update all encoder displays in main thread
-                self.root.after(0, self.test_update_all_encoder_displays, axis_positions)
+                if self.test_encoder_update_running:  # Double-check before updating UI
+                    self.root.after(0, self.test_update_all_encoder_displays, axis_positions)
+                
+                # Perform servo maintenance every 50 updates (5 seconds)
+                servo_maintenance_counter += 1
+                if servo_maintenance_counter >= 50:
+                    self.maintain_servo_status()
+                    servo_maintenance_counter = 0
                 
                 # Sleep for update interval
                 time.sleep(0.1)  # 100ms updates
                 
             except Exception as e:
                 # Update UI with error in main thread
-                self.root.after(0, self.test_update_all_encoder_displays, None, str(e))
+                if self.test_encoder_update_running:  # Double-check before updating UI
+                    self.root.after(0, self.test_update_all_encoder_displays, None, str(e))
                 time.sleep(1)  # Wait longer before retrying on error
                 
     def test_update_all_encoder_displays(self, axis_positions, error=None):
@@ -2590,18 +2955,81 @@ class GalilSetupApp:
         try:
             axis = self.test_axis_var.get()
             
-            self.test_status_text.insert(tk.END, f"Enabling servo for axis {axis}...\n")
+            self.append_test_log(f"Enabling servo for axis {axis}...")
             
-            # Enable servo
+            # Enable servo with verification
             self.controller.send_command(f"SH{axis}")
+            time.sleep(0.2)
             
-            self.test_status_text.insert(tk.END, f"Servo enabled for axis {axis}\n")
-            self.test_status_text.see(tk.END)
+            # Verify servo is enabled
+            servo_status = self.controller.send_command(f"MG _MO{axis}").strip()
+            if servo_status == "0":
+                # Try again
+                self.controller.send_command(f"SH{axis}")
+                time.sleep(0.3)
+                servo_status = self.controller.send_command(f"MG _MO{axis}").strip()
+            
+            if servo_status != "0":
+                self.append_test_log(f"Servo enabled for axis {axis} (status: {servo_status})")
+            else:
+                self.append_test_log(f"WARNING: Servo may not be enabled (status: {servo_status})")
             
         except Exception as e:
             error_msg = f"Servo enable error: {str(e)}"
-            self.test_status_text.insert(tk.END, f"ERROR: {error_msg}\n")
-            self.test_status_text.see(tk.END)
+            self.append_test_log(f"ERROR: {error_msg}")
+            messagebox.showerror("Servo Error", error_msg)
+            
+    def maintain_servo_status(self):
+        """Continuously monitor and maintain servo status for all axes"""
+        if not self.controller:
+            return
+            
+        try:
+            for axis in ["A", "B", "C", "D"]:
+                try:
+                    # Check servo status
+                    servo_status = self.controller.send_command(f"MG _MO{axis}").strip()
+                    if servo_status == "0":
+                        # Re-enable servo
+                        self.controller.send_command(f"SH{axis}")
+                        time.sleep(0.1)
+                except Exception as e:
+                    # Ignore errors for individual axes
+                    pass
+        except Exception as e:
+            # Ignore errors in servo maintenance
+            pass
+            
+    def enable_all_servos(self):
+        """Enable servos for all axes"""
+        if not self.controller:
+            messagebox.showerror("Error", "Please connect to a controller first")
+            return
+            
+        try:
+            self.append_test_log("Enabling servos for all axes...")
+            
+            for axis in ["A", "B", "C", "D"]:
+                try:
+                    # Enable servo
+                    self.controller.send_command(f"SH{axis}")
+                    time.sleep(0.2)
+                    
+                    # Verify servo is enabled
+                    servo_status = self.controller.send_command(f"MG _MO{axis}").strip()
+                    if servo_status != "0":
+                        self.append_test_log(f"Axis {axis}: Servo enabled (status: {servo_status})")
+                    else:
+                        self.append_test_log(f"Axis {axis}: WARNING - Servo may not be enabled (status: {servo_status})")
+                        
+                except Exception as e:
+                    self.append_test_log(f"Axis {axis}: Error enabling servo - {e}")
+            
+            self.append_test_log("Servo enable operation completed")
+            
+        except Exception as e:
+            error_msg = f"Enable all servos error: {str(e)}"
+            self.append_test_log(f"ERROR: {error_msg}")
             messagebox.showerror("Servo Error", error_msg)
             
     def test_servo_off(self):
@@ -2903,7 +3331,7 @@ class GalilSetupApp:
             # Stop encoder update thread
             self.test_encoder_update_running = False
             if hasattr(self, 'test_encoder_update_thread') and self.test_encoder_update_thread.is_alive():
-                self.test_encoder_update_thread.join(timeout=1.0)
+                self.test_encoder_update_thread.join(timeout=2.0)  # Give more time for thread to stop
             
             # Stop any ongoing motion
             if self.controller:

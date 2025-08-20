@@ -94,9 +94,21 @@ def jog_distance(controller, axis, distance_mm, turns_per_mm, clicks_per_turn, s
     try:
         # Stop any existing motion
         controller.send_command(f"ST{axis}")
+        time.sleep(0.1)  # Wait for stop to take effect
         
         # Ensure servo is on
         controller.send_command(f"SH{axis}")
+        time.sleep(0.1)  # Wait for servo to stabilize
+        
+        # Check servo status
+        servo_status = controller.send_command(f"MG _MO{axis}").strip()
+        if servo_status == "0":
+            # Try to enable servo again
+            controller.send_command(f"SH{axis}")
+            time.sleep(0.2)
+            servo_status = controller.send_command(f"MG _MO{axis}").strip()
+            if servo_status == "0":
+                raise RuntimeError(f"Could not enable servo for axis {axis}")
         
         # Use provided acceleration/deceleration or calculate based on speed
         if accel is None:
@@ -104,27 +116,36 @@ def jog_distance(controller, axis, distance_mm, turns_per_mm, clicks_per_turn, s
         if decel is None:
             decel = speed * 4  # 4x speed for deceleration
         
-        # Apply speed/accel/decel parameters
+        # Apply speed/accel/decel parameters with more conservative fallbacks
         sp_response = controller.send_command(f"SP{axis}={speed}")
         if sp_response.strip() == "?":
-            # Fallback to conservative values if speed-based calculation is rejected
-            sp_response = controller.send_command(f"SP{axis}=1000")
+            # Try more conservative values
+            for fallback_speed in [1000, 500, 100]:
+                sp_response = controller.send_command(f"SP{axis}={fallback_speed}")
+                if sp_response.strip() != "?":
+                    break
             if sp_response.strip() == "?":
-                raise RuntimeError(f"Invalid speed value {speed} for axis {axis}")
+                raise RuntimeError(f"Could not set speed for axis {axis}")
         
         ac_response = controller.send_command(f"AC{axis}={accel}")
         if ac_response.strip() == "?":
-            # Fallback to conservative acceleration
-            ac_response = controller.send_command(f"AC{axis}=1000")
+            # Try more conservative acceleration values
+            for fallback_accel in [1000, 500, 100]:
+                ac_response = controller.send_command(f"AC{axis}={fallback_accel}")
+                if ac_response.strip() != "?":
+                    break
             if ac_response.strip() == "?":
-                raise RuntimeError(f"Invalid acceleration value {accel} for axis {axis}")
+                raise RuntimeError(f"Could not set acceleration for axis {axis}")
         
         dc_response = controller.send_command(f"DC{axis}={decel}")
         if dc_response.strip() == "?":
-            # Fallback to conservative deceleration
-            dc_response = controller.send_command(f"DC{axis}=2000")
+            # Try more conservative deceleration values
+            for fallback_decel in [2000, 1000, 200]:
+                dc_response = controller.send_command(f"DC{axis}={fallback_decel}")
+                if dc_response.strip() != "?":
+                    break
             if dc_response.strip() == "?":
-                raise RuntimeError(f"Invalid deceleration value {decel} for axis {axis}")
+                raise RuntimeError(f"Could not set deceleration for axis {axis}")
 
         # Calculate relative distance in counts using provided kinematics
         turns = distance_mm * turns_per_mm
@@ -148,9 +169,24 @@ def move_to_position(controller, axis, position_counts, speed=5000, accel=None, 
     try:
         # Stop any existing motion
         controller.send_command(f"ST{axis}")
+        time.sleep(0.1)  # Wait for stop to take effect
         
-        # Ensure servo is on
+        # Ensure servo is on and stays on
         controller.send_command(f"SH{axis}")
+        time.sleep(0.2)  # Wait longer for servo to stabilize
+        
+        # Verify servo is enabled
+        servo_status = controller.send_command(f"MG _MO{axis}").strip()
+        if servo_status == "0":
+            # Try to enable servo again with more attempts
+            for attempt in range(3):
+                controller.send_command(f"SH{axis}")
+                time.sleep(0.3)
+                servo_status = controller.send_command(f"MG _MO{axis}").strip()
+                if servo_status != "0":
+                    break
+            if servo_status == "0":
+                raise RuntimeError(f"Could not enable servo for axis {axis}")
         
         # Use provided acceleration/deceleration or calculate based on speed
         if accel is None:
@@ -158,27 +194,36 @@ def move_to_position(controller, axis, position_counts, speed=5000, accel=None, 
         if decel is None:
             decel = speed * 4  # 4x speed for deceleration
         
-        # Apply speed/accel/decel parameters
+        # Apply speed/accel/decel parameters with more conservative fallbacks
         sp_response = controller.send_command(f"SP{axis}={speed}")
         if sp_response.strip() == "?":
-            # Fallback to conservative values if speed-based calculation is rejected
-            sp_response = controller.send_command(f"SP{axis}=1000")
+            # Try more conservative values
+            for fallback_speed in [1000, 500, 100]:
+                sp_response = controller.send_command(f"SP{axis}={fallback_speed}")
+                if sp_response.strip() != "?":
+                    break
             if sp_response.strip() == "?":
-                raise RuntimeError(f"Invalid speed value {speed} for axis {axis}")
+                raise RuntimeError(f"Could not set speed for axis {axis}")
         
         ac_response = controller.send_command(f"AC{axis}={accel}")
         if ac_response.strip() == "?":
-            # Fallback to conservative acceleration
-            ac_response = controller.send_command(f"AC{axis}=1000")
+            # Try more conservative acceleration values
+            for fallback_accel in [1000, 500, 100]:
+                ac_response = controller.send_command(f"AC{axis}={fallback_accel}")
+                if ac_response.strip() != "?":
+                    break
             if ac_response.strip() == "?":
-                raise RuntimeError(f"Invalid acceleration value {accel} for axis {axis}")
+                raise RuntimeError(f"Could not set acceleration for axis {axis}")
         
         dc_response = controller.send_command(f"DC{axis}={decel}")
         if dc_response.strip() == "?":
-            # Fallback to conservative deceleration
-            dc_response = controller.send_command(f"DC{axis}=2000")
+            # Try more conservative deceleration values
+            for fallback_decel in [2000, 1000, 200]:
+                dc_response = controller.send_command(f"DC{axis}={fallback_decel}")
+                if dc_response.strip() != "?":
+                    break
             if dc_response.strip() == "?":
-                raise RuntimeError(f"Invalid deceleration value {decel} for axis {axis}")
+                raise RuntimeError(f"Could not set deceleration for axis {axis}")
         
         # Get current position first
         try:
@@ -194,6 +239,13 @@ def move_to_position(controller, axis, position_counts, speed=5000, accel=None, 
         bg_response = controller.send_command(f"BG{axis}")
         if bg_response.strip() == "?":
             raise RuntimeError(f"Invalid begin command for axis {axis}")
+        
+        # Wait for motion to complete and ensure servo stays on
+        time.sleep(0.1)
+        servo_status = controller.send_command(f"MG _MO{axis}").strip()
+        if servo_status == "0":
+            # Re-enable servo if it got disabled
+            controller.send_command(f"SH{axis}")
             
     except Exception as e:
         raise RuntimeError(f"Move to position error on axis {axis}: {e}")

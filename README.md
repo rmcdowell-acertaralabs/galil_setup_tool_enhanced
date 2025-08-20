@@ -6,19 +6,22 @@ A comprehensive GUI application for configuring, testing, and controlling Galil 
 
 ### Core Functionality
 - **Network Configuration**: Set IP, subnet mask, gateway, and hostname
-- **Motor Control**: Jogging, absolute/relative positioning, speed control
+- **Motor Control**: Smooth jogging, absolute/relative positioning, speed control
 - **PID Tuning**: Real-time servo loop tuning with live feedback
 - **Diagnostics**: Comprehensive motor testing and position accuracy verification
-- **Real-time Monitoring**: Live encoder position display for all axes
+- **Real-time Monitoring**: Live encoder position display for all axes with automatic updates
 - **Configuration Management**: Save/load settings with external config file support
+- **Auto-Servo Management**: Continuous servo status monitoring and automatic recovery
 
 ### Advanced Features
 - **Auto-Connection**: Automatic controller detection and connection
-- **Motor Detection**: Intelligent detection of connected motors
-- **Position Accuracy**: High-precision positioning with automatic corrections
+- **Motor Detection**: Intelligent detection of connected motors with movement testing
+- **Position Accuracy**: High-precision positioning with automatic corrections (0-3 counts error)
 - **Multi-Axis Support**: Full support for 4-axis controllers (A, B, C, D)
-- **Error Handling**: Robust error detection and recovery
+- **Error Handling**: Robust error detection and recovery with thread-safe operations
 - **Logging**: Comprehensive status logging with clipboard export
+- **Servo Maintenance**: Automatic servo status monitoring and re-enablement
+- **Movement Monitoring**: Real-time motion tracking and completion verification
 
 ## 📋 Requirements
 
@@ -142,6 +145,27 @@ The tool can also read from external `config.txt` files located at `C:\AMS\confi
 
 ## 🔍 Diagnostics Features
 
+### Recent Improvements (v1.1.0)
+The latest version includes significant improvements to motor control and system stability:
+
+#### Motor Movement Fixes
+- **Smooth Movement**: Fixed jerky motor movement with enhanced servo enablement
+- **Continuous Monitoring**: Real-time servo status monitoring and automatic recovery
+- **Conservative Parameters**: Intelligent fallback to conservative motion parameters
+- **Thread Safety**: Robust thread management preventing application crashes
+
+#### Enhanced Diagnostics
+- **Motor Detection**: Improved motor detection with movement testing
+- **Position Accuracy**: High-precision positioning with 0-3 counts typical error
+- **Auto-Correction**: Automatic position error correction during diagnostics
+- **Comprehensive Testing**: Full range testing from 0 to 500,000 counts
+
+#### System Stability
+- **Widget Safety**: Proper widget existence checks preventing Tkinter crashes
+- **Auto-Connection**: Reliable automatic controller connection on startup
+- **Encoder Updates**: Automatic encoder position updates with proper cleanup
+- **Error Recovery**: Graceful error handling and automatic system recovery
+
 ### Automatic Diagnostics
 The diagnostics system performs comprehensive testing:
 
@@ -182,16 +206,19 @@ The diagnostics system performs comprehensive testing:
 - **Firewall**: Ensure firewall allows communication on controller port
 
 #### Motor Not Responding
-- **Servo Status**: Check if servo is enabled (SH command)
+- **Servo Status**: Check if servo is enabled (SH command) - use "Enable All Servos" button
 - **Motor Detection**: Run diagnostics to verify motor presence
 - **PID Tuning**: Adjust PID parameters for better response
 - **Following Error**: Check following error limits
+- **Auto-Recovery**: Application automatically monitors and re-enables servos
 
 #### Position Accuracy Issues
 - **Position Reference**: Ensure axis is properly homed (DP command)
 - **PID Tuning**: Fine-tune PID parameters for better accuracy
 - **Speed Settings**: Reduce speed for more precise positioning
 - **Mechanical Issues**: Check for mechanical constraints or backlash
+- **Auto-Correction**: Application automatically corrects positioning errors
+- **High Accuracy**: Typical position errors are 0-3 encoder counts
 
 ### Error Messages
 
@@ -279,7 +306,17 @@ For support and questions:
 
 ## 🔄 Version History
 
-### v1.0.0 (Current)
+### v1.1.0 (Latest)
+- **Fixed jerky motor movement** - Enhanced servo enablement and continuous monitoring
+- **Improved encoder updates** - Real-time position updates with automatic start
+- **Enhanced error handling** - Robust widget destruction handling and thread management
+- **Better diagnostics** - Comprehensive motor detection and position accuracy testing
+- **Auto-servo maintenance** - Continuous servo status monitoring and auto-recovery
+- **Improved movement commands** - Conservative parameter fallbacks and better servo verification
+- **Enhanced status monitoring** - Detailed controller status checks and individual command testing
+- **Fixed Tkinter crashes** - Proper widget existence checks and thread cleanup
+
+### v1.0.0
 - Initial release with full GUI functionality
 - Network configuration and motor control
 - PID tuning and diagnostics
