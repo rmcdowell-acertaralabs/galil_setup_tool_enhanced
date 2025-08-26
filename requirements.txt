@@ -8,3 +8,4 @@
 # Optional dependencies for development
 # pyinstaller>=4.0  # For building executables
 # pytest>=6.0      # For testing (optional)
+psutil>=5.8.0      # For process management (GDK launch feature)

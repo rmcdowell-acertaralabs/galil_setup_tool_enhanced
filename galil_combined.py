@@ -1,12 +1,39 @@
+import gclib
 import logging
 import math
 import time
+import json
+import os
+import re
+from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
 # Constants
 SERVO_BITS = {"A": 1, "B": 2, "C": 4, "D": 8}
 VALID_AXES = ["A", "B", "C", "D"]
+
+# ============================================================================
+# GALIL CONTROLLER INTERFACE CLASS
+# ============================================================================
+
+class GalilController:
+    def __init__(self):
+        self.g = None
+
+    def connect(self, address):
+        self.g = gclib.py()
+        self.g.GOpen(f"{address}")
+
+    def send_command(self, command):
+        if not self.g:
+            raise ConnectionError("Controller not connected.")
+        return self.g.GCommand(command)
+
+    def disconnect(self):
+        if self.g:
+            self.g.GClose()
+            self.g = None
 
 # ============================================================================
 # MOTOR SETUP FUNCTIONS
@@ -330,11 +357,7 @@ def get_diagnostics(controller):
 # MOTOR SETTINGS FROM EXTERNAL CONFIG
 # ============================================================================
 
-import re
-from typing import Dict, List
-
 _AXIS_TO_INDEX = {"A": 0, "B": 1, "C": 2, "D": 3}
-
 
 def _parse_float_list(value_str: str) -> List[float]:
     """Parse a bracketed list of numbers (supports scientific notation, floats)."""
@@ -351,7 +374,6 @@ def _parse_float_list(value_str: str) -> List[float]:
             # Ignore unparsable entries silently
             continue
     return out
-
 
 def load_motor_settings_from_config(config_path: str = r"C:\\AMS\\config.txt") -> Dict[str, List[float]]:
     """Load motor settings arrays from the given config file.
@@ -389,7 +411,6 @@ def load_motor_settings_from_config(config_path: str = r"C:\\AMS\\config.txt") -
             parsed[key] = []
 
     return parsed
-
 
 def apply_axis_settings_from_config(
     controller,
@@ -430,7 +451,6 @@ def apply_axis_settings_from_config(
                 raise RuntimeError(f"Controller rejected DC for axis {axis} with value {decel_val}")
     except Exception as e:
         raise RuntimeError(f"Failed applying settings from config for axis {axis}: {e}")
-
 
 def get_axis_kinematics_from_config(
     axis: str, config_path: str = r"C:\\AMS\\config.txt"
@@ -501,9 +521,6 @@ class EncoderOverlay:
 # ============================================================================
 # CONFIGURATION FUNCTIONS
 # ============================================================================
-
-import json
-import os
 
 # Default configuration for all four axes
 default_config = {

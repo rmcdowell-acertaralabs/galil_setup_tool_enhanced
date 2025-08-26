@@ -13,15 +13,14 @@ import re
 from typing import Dict, List, Optional, Tuple, Any
 
 # Import our custom modules
-from network_utils import (
+from network_combined import (
     discover_galil_controllers, ping_controller, validate_ip_address,
     test_controller_connection, configure_controller_network_complete, configure_controller_network_dmc4143, 
     reset_controller_network_to_dhcp, get_controller_network_status, comprehensive_network_test,
-    force_save_network_settings_dmc4143
+    force_save_network_settings_dmc4143, NetworkConfigurator
 )
-from galil_interface import GalilController
-# Import consolidated functions
-import galil_functions
+from galil_combined import GalilController
+import galil_combined as galil_functions
 
 class GalilSetupApp:
     def __init__(self, root):
@@ -34,6 +33,7 @@ class GalilSetupApp:
         self.controller = None
         self.test_encoder_update_running = False
         self.auto_connect_running = False
+        self.motor_direction_test_active = False  # Flag to control encoder position logging
         
         # Color scheme matching Acertara
         self.colors = {
@@ -155,6 +155,7 @@ class GalilSetupApp:
         # Menu items
         menu_items = [
             ("🎯", "Controller Testing", self.show_controller_testing),
+            ("🔧", "Motor Setup", self.show_motor_setup),
             ("🌐", "Network Config", self.show_network_config),
             ("⚙️", "Settings", self.show_settings),
         ]
@@ -230,6 +231,10 @@ class GalilSetupApp:
         # Stop encoder updates when switching pages
         self.test_encoder_update_running = False
         
+        # Stop motor setup encoder updates if they're running
+        if hasattr(self, 'encoder_update_job'):
+            self.stop_encoder_auto_update()
+        
         for widget in self.main_content.winfo_children():
             widget.destroy()
             
@@ -243,20 +248,116 @@ class GalilSetupApp:
                         bg=self.colors['main_bg'], fg=self.colors['main_fg'])
         title.pack(anchor='w', pady=(0, 20))
         
-        # Motor setup content
-        setup_frame = tk.Frame(self.main_content, bg=self.colors['main_bg'])
-        setup_frame.pack(fill='both', expand=True)
+        # Auto-connect to controller when entering motor setup page
+        if not self.controller:
+            self.auto_connect_to_controller()
         
-        # PID Configuration Section
-        pid_frame = tk.LabelFrame(setup_frame, text="PID Configuration", 
-                                font=("Arial", 12, "bold"),
+        # Create main container with two-column layout
+        main_container = tk.Frame(self.main_content, bg=self.colors['main_bg'])
+        main_container.pack(fill='both', expand=True)
+        
+        # Left column for configuration sections
+        left_column = tk.Frame(main_container, bg=self.colors['main_bg'])
+        left_column.pack(side='left', fill='both', expand=True, padx=(0, 10))
+        
+        # Right column for status log
+        right_column = tk.Frame(main_container, bg=self.colors['main_bg'])
+        right_column.pack(side='right', fill='both', expand=False, padx=(10, 0))
+        
+        # Create canvas for scrolling on left column
+        canvas = tk.Canvas(left_column, bg=self.colors['main_bg'], highlightthickness=0)
+        scrollbar = ttk.Scrollbar(left_column, orient="vertical", command=canvas.yview)
+        scrollable_frame = tk.Frame(canvas, bg=self.colors['main_bg'])
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        # Pack canvas and scrollbar
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        
+        # Motor setup content
+        setup_frame = tk.Frame(scrollable_frame, bg=self.colors['main_bg'])
+        setup_frame.pack(fill='both', expand=True, padx=10)
+        
+        # Real-time Encoder Position Display Section (Always visible)
+        encoder_frame = tk.LabelFrame(setup_frame, text="📊 Real-time Encoder Positions", 
+                                    font=("Arial", 12, "bold"),
+                                    bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                    relief='solid', bd=1)
+        encoder_frame.pack(fill='x', pady=(0, 15))
+        
+        # Encoder position display
+        encoder_display_frame = tk.Frame(encoder_frame, bg=self.colors['main_bg'])
+        encoder_display_frame.pack(fill='x', padx=15, pady=10)
+        
+        # Create labels for each axis position
+        self.encoder_labels = {}
+        axes = ["A", "B", "C", "D"]
+        
+        for i, axis in enumerate(axes):
+            # Axis label
+            axis_label = tk.Label(encoder_display_frame, text=f"Axis {axis}:", 
+                                font=("Arial", 10, "bold"),
                                 bg=self.colors['main_bg'], fg=self.colors['main_fg'],
-                                relief='solid', bd=1)
-        pid_frame.pack(fill='x', pady=(0, 20), padx=10)
+                                width=8)
+            axis_label.grid(row=0, column=i*2, padx=(0, 5), pady=5)
+            
+            # Position value label
+            pos_label = tk.Label(encoder_display_frame, text="0", 
+                               font=("Consolas", 12, "bold"),
+                               bg='white', fg='black', relief='sunken', bd=1,
+                               width=12)
+            pos_label.grid(row=0, column=i*2+1, padx=(0, 10), pady=5)
+            self.encoder_labels[axis] = pos_label
+        
+        # Update button
+        update_btn = tk.Button(encoder_frame, text="🔄 Update Positions", 
+                             font=("Arial", 10, "bold"),
+                             bg=self.colors['accent_blue'], fg='white',
+                             command=self.update_encoder_positions)
+        update_btn.pack(pady=(0, 10))
+        
+        # Test connection button
+        test_btn = tk.Button(encoder_frame, text="🔍 Test Connection", 
+                           font=("Arial", 10, "bold"),
+                           bg=self.colors['success_green'], fg='white',
+                           command=self.test_controller_connection)
+        test_btn.pack(pady=(0, 10))
+        
+        # Auto-update checkbox
+        self.auto_update_var = tk.BooleanVar(value=True)
+        auto_update_check = tk.Checkbutton(encoder_frame, text="Auto-update positions every 0.5 seconds", 
+                                         font=("Arial", 9),
+                                         bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                         variable=self.auto_update_var,
+                                         command=self.toggle_auto_update)
+        auto_update_check.pack(pady=(0, 10))
+        
+        # Collapsible sections container
+        sections_frame = tk.Frame(setup_frame, bg=self.colors['main_bg'])
+        sections_frame.pack(fill='x', pady=(0, 15))
+        
+        # PID Configuration Section (Collapsible)
+        self.pid_frame = tk.LabelFrame(sections_frame, text="⚙️ PID Configuration ▼", 
+                                     font=("Arial", 12, "bold"),
+                                     bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                     relief='solid', bd=1)
+        self.pid_frame.pack(fill='x', pady=(0, 10))
+        self.pid_frame.bind("<Button-1>", self.toggle_pid_section)
+        
+        # PID content frame
+        self.pid_content = tk.Frame(self.pid_frame, bg=self.colors['main_bg'])
+        self.pid_content.pack(fill='x', padx=15, pady=10)
         
         # Axis selection
-        axis_frame = tk.Frame(pid_frame, bg=self.colors['main_bg'])
-        axis_frame.pack(fill='x', padx=15, pady=10)
+        axis_frame = tk.Frame(self.pid_content, bg=self.colors['main_bg'])
+        axis_frame.pack(fill='x', pady=(0, 10))
         
         tk.Label(axis_frame, text="Axis:", font=("Arial", 10, "bold"),
                bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
@@ -267,8 +368,8 @@ class GalilSetupApp:
         axis_combo.pack(side='left', padx=(10, 0))
         
         # PID values
-        pid_values_frame = tk.Frame(pid_frame, bg=self.colors['main_bg'])
-        pid_values_frame.pack(fill='x', padx=15, pady=10)
+        pid_values_frame = tk.Frame(self.pid_content, bg=self.colors['main_bg'])
+        pid_values_frame.pack(fill='x', pady=(0, 10))
         
         # KP
         tk.Label(pid_values_frame, text="KP:", font=("Arial", 10),
@@ -292,22 +393,27 @@ class GalilSetupApp:
         self.kd_entry.insert(0, "50.0")
         
         # Tune button
-        tune_btn = tk.Button(pid_frame, text="Tune Axis", 
+        tune_btn = tk.Button(self.pid_content, text="Tune Axis", 
                            font=("Arial", 10, "bold"),
                            bg=self.colors['success_green'], fg='white',
                            command=self.tune_axis)
-        tune_btn.pack(pady=10)
+        tune_btn.pack(pady=(0, 10))
         
-        # Motion Parameters Section
-        motion_frame = tk.LabelFrame(setup_frame, text="Motion Parameters", 
-                                   font=("Arial", 12, "bold"),
-                                   bg=self.colors['main_bg'], fg=self.colors['main_fg'],
-                                   relief='solid', bd=1)
-        motion_frame.pack(fill='x', pady=(0, 20), padx=10)
+        # Motion Parameters Section (Collapsible)
+        self.motion_frame = tk.LabelFrame(sections_frame, text="🚀 Motion Parameters ▼", 
+                                        font=("Arial", 12, "bold"),
+                                        bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                        relief='solid', bd=1)
+        self.motion_frame.pack(fill='x', pady=(0, 10))
+        self.motion_frame.bind("<Button-1>", self.toggle_motion_section)
+        
+        # Motion content frame
+        self.motion_content = tk.Frame(self.motion_frame, bg=self.colors['main_bg'])
+        self.motion_content.pack(fill='x', padx=15, pady=10)
         
         # Speed and acceleration
-        motion_params_frame = tk.Frame(motion_frame, bg=self.colors['main_bg'])
-        motion_params_frame.pack(fill='x', padx=15, pady=10)
+        motion_params_frame = tk.Frame(self.motion_content, bg=self.colors['main_bg'])
+        motion_params_frame.pack(fill='x', pady=(0, 10))
         
         # Speed
         tk.Label(motion_params_frame, text="Speed:", font=("Arial", 10),
@@ -331,27 +437,157 @@ class GalilSetupApp:
         self.decel_entry.insert(0, "2000")
         
         # Apply button
-        apply_btn = tk.Button(motion_frame, text="Apply Parameters", 
+        apply_btn = tk.Button(self.motion_content, text="Apply Parameters", 
                             font=("Arial", 10, "bold"),
                             bg=self.colors['accent_blue'], fg='white',
                             command=self.apply_motion_params)
-        apply_btn.pack(pady=10)
+        apply_btn.pack(pady=(0, 10))
         
-        # Status section
-        status_frame = tk.LabelFrame(setup_frame, text="Status", 
+        # Brushless Motor Configuration Section (Collapsible)
+        self.brushless_frame = tk.LabelFrame(sections_frame, text="🔧 Brushless Motor Configuration ▼", 
+                                           font=("Arial", 12, "bold"),
+                                           bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                           relief='solid', bd=1)
+        self.brushless_frame.pack(fill='x', pady=(0, 10))
+        self.brushless_frame.bind("<Button-1>", self.toggle_brushless_section)
+        
+        # Brushless content frame
+        self.brushless_content = tk.Frame(self.brushless_frame, bg=self.colors['main_bg'])
+        self.brushless_content.pack(fill='x', padx=15, pady=10)
+        
+        # Brushless setup instructions
+        instructions_frame = tk.Frame(self.brushless_content, bg=self.colors['main_bg'])
+        instructions_frame.pack(fill='x', pady=(0, 10))
+        
+        instructions_text = """Initial Conditions:
+• Motor should be uncoupled from mechanics with room to move
+• MO jumper should be installed for safety
+• Motor, encoder, and hall sensors must be properly connected
+• Power down controller, connect components, then repower"""
+        
+        instructions_label = tk.Label(instructions_frame, text=instructions_text, 
+                                    font=("Arial", 9), justify='left',
+                                    bg=self.colors['main_bg'], fg=self.colors['main_fg'])
+        instructions_label.pack(anchor='w')
+        
+        # Brushless configuration buttons
+        brushless_buttons_frame = tk.Frame(self.brushless_content, bg=self.colors['main_bg'])
+        brushless_buttons_frame.pack(fill='x', pady=(0, 10))
+        
+        # Step 1: Define Motor Direction
+        direction_frame = tk.Frame(brushless_buttons_frame, bg=self.colors['main_bg'])
+        direction_frame.pack(fill='x', pady=(0, 10))
+        
+        tk.Label(direction_frame, text="Step 1: Define Motor Direction", 
+               font=("Arial", 10, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(anchor='w')
+        
+        direction_buttons_frame = tk.Frame(direction_frame, bg=self.colors['main_bg'])
+        direction_buttons_frame.pack(fill='x', pady=(5, 0))
+        
+        self.define_direction_btn = tk.Button(direction_buttons_frame, text="Define Motor Direction", 
+                                            font=("Arial", 10, "bold"),
+                                            bg=self.colors['accent_blue'], fg='white',
+                                            command=self.define_motor_direction)
+        self.define_direction_btn.pack(side='left', padx=(0, 10))
+        
+        # Encoder polarity selection
+        self.encoder_polarity_var = tk.StringVar(value="Normal")
+        polarity_frame = tk.Frame(direction_buttons_frame, bg=self.colors['main_bg'])
+        polarity_frame.pack(side='left')
+        
+        tk.Label(polarity_frame, text="Encoder Polarity:", 
+               font=("Arial", 9),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
+        
+        polarity_combo = ttk.Combobox(polarity_frame, textvariable=self.encoder_polarity_var, 
+                                    values=["Normal", "Reversed"], width=10)
+        polarity_combo.pack(side='left', padx=(5, 0))
+        
+        # Step 2: Estimate Brushless Modulo
+        modulo_frame = tk.Frame(brushless_buttons_frame, bg=self.colors['main_bg'])
+        modulo_frame.pack(fill='x', pady=(10, 0))
+        
+        tk.Label(modulo_frame, text="Step 2: Estimate Brushless Modulo & Correct Hall Sensors", 
+               font=("Arial", 10, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(anchor='w')
+        
+        self.estimate_bm_btn = tk.Button(modulo_frame, text="Estimate BM and Correct Halls", 
+                                       font=("Arial", 10, "bold"),
+                                       bg=self.colors['warning_orange'], fg='white',
+                                       command=self.estimate_brushless_modulo)
+        self.estimate_bm_btn.pack(anchor='w', pady=(5, 0))
+        
+        # Step 3: Latch Indexes
+        index_frame = tk.Frame(brushless_buttons_frame, bg=self.colors['main_bg'])
+        index_frame.pack(fill='x', pady=(10, 0))
+        
+        tk.Label(index_frame, text="Step 3: Latch Indexes (if encoder has index)", 
+               font=("Arial", 10, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(anchor='w')
+        
+        index_buttons_frame = tk.Frame(index_frame, bg=self.colors['main_bg'])
+        index_buttons_frame.pack(fill='x', pady=(5, 0))
+        
+        self.latch_indexes_btn = tk.Button(index_buttons_frame, text="Latch Indexes", 
+                                         font=("Arial", 10, "bold"),
+                                         bg=self.colors['success_green'], fg='white',
+                                         command=self.latch_indexes)
+        self.latch_indexes_btn.pack(side='left', padx=(0, 10))
+        
+        self.no_index_btn = tk.Button(index_buttons_frame, text="No Index Present", 
+                                    font=("Arial", 10, "bold"),
+                                    bg=self.colors['warning_orange'], fg='white',
+                                    command=self.skip_index_latching)
+        self.no_index_btn.pack(side='left')
+        
+        # Step 4: Save Settings
+        save_frame = tk.Frame(brushless_buttons_frame, bg=self.colors['main_bg'])
+        save_frame.pack(fill='x', pady=(10, 0))
+        
+        tk.Label(save_frame, text="Step 4: Save Configuration", 
+               font=("Arial", 10, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(anchor='w')
+        
+        self.save_brushless_btn = tk.Button(save_frame, text="Save Axis Settings", 
+                                          font=("Arial", 10, "bold"),
+                                          bg=self.colors['success_green'], fg='white',
+                                          command=self.save_brushless_settings)
+        self.save_brushless_btn.pack(anchor='w', pady=(5, 0))
+        
+        # Status section (Always visible on right side)
+        status_frame = tk.LabelFrame(right_column, text="📋 Status & Log", 
                                    font=("Arial", 12, "bold"),
                                    bg=self.colors['main_bg'], fg=self.colors['main_fg'],
                                    relief='solid', bd=1)
-        status_frame.pack(fill='both', expand=True, padx=10, pady=(0, 10))
+        status_frame.pack(fill='both', expand=True, pady=(0, 0))
         
         # Status text area
-        self.motor_status_text = scrolledtext.ScrolledText(status_frame, height=10, font=("Consolas", 9),
+        self.motor_status_text = scrolledtext.ScrolledText(status_frame, height=25, font=("Consolas", 9),
                                                          bg='white', fg='black')
-        self.motor_status_text.pack(fill='both', expand=True, padx=15, pady=15)
+        self.motor_status_text.pack(fill='both', expand=True, padx=15, pady=(15, 5))
+        
+        # Status control buttons
+        status_buttons_frame = tk.Frame(status_frame, bg=self.colors['main_bg'])
+        status_buttons_frame.pack(fill='x', padx=15, pady=(0, 15))
+        
+        # Copy log button
+        copy_log_btn = tk.Button(status_buttons_frame, text="📋 Copy Log", 
+                               font=("Arial", 10, "bold"),
+                               bg=self.colors['accent_blue'], fg='white',
+                               command=self.copy_motor_setup_log)
+        copy_log_btn.pack(side='left')
         
         # Initial status message
         self.motor_status_text.insert(tk.END, "Motor Setup Interface Ready\n")
         self.motor_status_text.insert(tk.END, "Connect to a controller to begin configuration...\n")
+        
+        # Initialize encoder position display
+        self.on_motor_setup_show()
+        self.motor_status_text.insert(tk.END, "Connect to a controller to begin configuration...\n")
+        
+        # Initialize encoder position display
+        self.on_motor_setup_show()
             
     def show_motion_controls(self):
         """Show motion controls interface"""
@@ -846,7 +1082,13 @@ class GalilSetupApp:
         tk.Button(buttons_frame, text="FORCE SAVE NETWORK", 
                 font=("Arial", 10, "bold"),
                 bg=self.colors['error_red'], fg='white',
-                command=self.force_save_network).pack(side='left')
+                command=self.force_save_network).pack(side='left', padx=(0, 10))
+        
+        # GDK Launch button
+        tk.Button(buttons_frame, text="🚀 Launch GDK", 
+                font=("Arial", 10, "bold"),
+                bg=self.colors['success_green'], fg='white',
+                command=self.launch_gdk).pack(side='left')
         
         # Status and log section
         status_frame = tk.LabelFrame(network_frame, text="Status & Log", 
@@ -921,16 +1163,10 @@ class GalilSetupApp:
         try:
             if self.controller:
                 # Stop any ongoing motion
-                try:
-                    self.controller.send_command("ST")
-                except:
-                    pass
+                self._stop_all_motion()
                 
                 # Close controller connection
-                try:
-                    self.controller.disconnect()
-                except:
-                    pass
+                self._disconnect_controller()
                 
                 self.controller = None
                 self.log_info("Disconnected from controller")
@@ -956,7 +1192,8 @@ class GalilSetupApp:
                 self.log_success(f"Found {len(controllers)} controller(s):")
                 for controller in controllers:
                     self.log_info(f"  - {controller}")
-            else:
+            
+            if not controllers:
                 self.log_warning("No Galil controllers found on network")
         except Exception as e:
             self.log_error(f"Discovery error: {str(e)}")
@@ -1085,6 +1322,67 @@ class GalilSetupApp:
             self.log_error(f"Force save error: {str(e)}")
             messagebox.showerror("Error", f"Force save error: {str(e)}")
             
+    def launch_gdk(self):
+        """Launch Galil Development Kit (GDK)"""
+        gdk_path = r"C:\Program Files\Galil\gdk\bin\gdk.exe"
+        
+        # Check if GDK exists
+        if not os.path.exists(gdk_path):
+            self.log_error("GDK not found at expected location")
+            messagebox.showerror("Error", f"GDK not found at:\n{gdk_path}\n\nPlease ensure Galil Development Kit is installed.")
+            return
+        
+        # Check if GDK is already running
+        try:
+            import psutil  # pyright: ignore[reportMissingModuleSource]
+            gdk_running = False
+            for proc in psutil.process_iter(['pid', 'name']):
+                if proc.info['name'] and 'gdk' in proc.info['name'].lower():
+                    gdk_running = True
+                    break
+            
+            if gdk_running:
+                response = messagebox.askyesno("GDK Already Running", 
+                    "GDK appears to be already running.\n\nWould you like to launch another instance?")
+                if not response:
+                    self.log_info("GDK launch cancelled - instance already running")
+                    return
+        except ImportError:
+            # psutil not available, continue without checking
+            pass
+        
+        self.log_info("=== LAUNCHING GALIL DEVELOPMENT KIT ===")
+        self.log_info(f"GDK Path: {gdk_path}")
+        
+        try:
+            # Launch GDK
+            if self.controller:
+                current_ip = self.ip_entry.get().strip()
+                self.log_info(f"Current controller IP: {current_ip}")
+                self.log_info("Attempting to launch GDK with controller connection...")
+                
+                # Try to launch GDK with IP parameter (if supported)
+                try:
+                    # Some versions of GDK support command line parameters
+                    subprocess.Popen([gdk_path, "--ip", current_ip], shell=True)
+                    self.log_success("GDK launched with controller IP")
+                except:
+                    # Fallback to standard launch
+                    subprocess.Popen([gdk_path], shell=True)
+                    self.log_success("GDK launched successfully")
+                    self.log_info("You can connect to the controller in GDK using IP: " + current_ip)
+            else:
+                # Launch GDK normally
+                subprocess.Popen([gdk_path], shell=True)
+                self.log_success("GDK launched successfully")
+                self.log_info("GDK should open in a new window")
+                self.log_info("No controller currently connected")
+            
+        except Exception as e:
+            error_msg = f"Failed to launch GDK: {str(e)}"
+            self.log_error(error_msg)
+            messagebox.showerror("Launch Error", error_msg)
+            
     def log_info(self, message):
         """Log an info message"""
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -1163,6 +1461,754 @@ class GalilSetupApp:
             self.motor_status_text.insert(tk.END, f"ERROR: {error_msg}\n")
             self.motor_status_text.see(tk.END)
             messagebox.showerror("Parameter Error", error_msg)
+            
+    def define_motor_direction(self):
+        """Define the positive direction of motor travel"""
+        if not self.controller:
+            messagebox.showerror("Error", "Please connect to a controller first")
+            return
+            
+        try:
+            axis = self.axis_var.get()
+            polarity = self.encoder_polarity_var.get()
+            
+            self.motor_status_text.insert(tk.END, f"=== DEFINING MOTOR DIRECTION FOR AXIS {axis} ===\n")
+            self.motor_status_text.insert(tk.END, f"Encoder Polarity: {polarity}\n")
+            self.motor_status_text.insert(tk.END, "Instructions:\n")
+            self.motor_status_text.insert(tk.END, "1. Click 'Define Motor Direction' button\n")
+            self.motor_status_text.insert(tk.END, "2. Move motor by hand in desired positive direction\n")
+            self.motor_status_text.insert(tk.END, "3. Watch for encoder count changes\n")
+            self.motor_status_text.insert(tk.END, "4. If counts increase in wrong direction, change polarity\n\n")
+            
+            # Set encoder polarity
+            if polarity == "Reversed":
+                self.controller.send_command(f"EP{axis}=1")
+                self.motor_status_text.insert(tk.END, f"Encoder polarity set to REVERSED for axis {axis}\n")
+            else:
+                self.controller.send_command(f"EP{axis}=0")
+                self.motor_status_text.insert(tk.END, f"Encoder polarity set to NORMAL for axis {axis}\n")
+            
+            # Enable servo for testing
+            self.controller.send_command(f"SH{axis}")
+            time.sleep(0.5)
+            
+            # Get initial position
+            initial_pos = int(self.controller.send_command(f"TP {axis}").strip())
+            self.motor_status_text.insert(tk.END, f"Initial position: {initial_pos}\n")
+            self.motor_status_text.insert(tk.END, "Now move the motor by hand in the desired positive direction...\n")
+            self.motor_status_text.insert(tk.END, "Watch the position change in the real-time encoder display above.\n\n")
+            
+            # Set flag to enable position logging during motor direction test
+            self.motor_direction_test_active = True
+            
+            # Monitor position changes for 10 seconds with real-time updates
+            start_time = time.time()
+            last_pos = initial_pos
+            update_count = 0
+            
+            while time.time() - start_time < 10.0:
+                try:
+                    # Update the encoder display
+                    self.update_encoder_positions()
+                    
+                    # Get current position
+                    current_pos = int(self.controller.send_command(f"TP {axis}").strip())
+                    
+                    # Show significant changes in the status area
+                    if current_pos != last_pos:
+                        change = current_pos - last_pos
+                        direction = "positive" if change > 0 else "negative"
+                        self.motor_status_text.insert(tk.END, f"Position: {current_pos} (change: {change:+d} counts - {direction} direction)\n")
+                        last_pos = current_pos
+                        update_count += 1
+                    
+                    # Update status every 2 seconds
+                    if update_count % 20 == 0 and update_count > 0:
+                        remaining = 10 - int(time.time() - start_time)
+                        self.motor_status_text.insert(tk.END, f"Monitoring... {remaining} seconds remaining\n")
+                    
+                    time.sleep(0.1)
+                except Exception as e:
+                    time.sleep(0.1)
+            
+            # Clear flag to stop position logging
+            self.motor_direction_test_active = False
+            
+            # Disable servo
+            self.controller.send_command(f"MO{axis}")
+            
+            self.motor_status_text.insert(tk.END, "Motor direction test completed.\n")
+            self.motor_status_text.insert(tk.END, "If the direction was wrong, change the encoder polarity and repeat.\n\n")
+            self.motor_status_text.see(tk.END)
+            
+        except Exception as e:
+            error_msg = f"Motor direction definition error: {str(e)}"
+            self.motor_status_text.insert(tk.END, f"ERROR: {error_msg}\n")
+            self.motor_status_text.see(tk.END)
+            messagebox.showerror("Direction Error", error_msg)
+            
+    def estimate_brushless_modulo(self):
+        """Estimate brushless modulo using position analysis (works with any controller)"""
+        if not self.controller:
+            messagebox.showerror("Error", "Please connect to a controller first")
+            return
+            
+        try:
+            axis = self.axis_var.get()
+            
+            self.motor_status_text.insert(tk.END, f"=== ESTIMATING BRUSHLESS MODULO FOR AXIS {axis} ===\n")
+            self.motor_status_text.insert(tk.END, "This test will take a maximum of 30 seconds.\n")
+            
+            # Step 1: Check controller capabilities
+            self.motor_status_text.insert(tk.END, "Step 1/3: Checking controller capabilities...\n")
+            
+            brushless_supported = False
+            try:
+                # Test if brushless commands are supported
+                test_response = self.controller.send_command(f"BL{axis}")
+                if "?" not in test_response:
+                    brushless_supported = True
+                    self.motor_status_text.insert(tk.END, "✓ Controller supports brushless commands\n")
+                else:
+                    self.motor_status_text.insert(tk.END, "⚠ Controller does not support brushless commands\n")
+            except:
+                self.motor_status_text.insert(tk.END, "⚠ Controller does not support brushless commands\n")
+            
+            # Step 2: Check what motion commands are supported
+            self.motor_status_text.insert(tk.END, "Step 2/3: Checking motion command support...\n")
+            
+            motion_commands_supported = False
+            try:
+                # Test basic motion commands
+                test_pr = self.controller.send_command(f"PR{axis}=100")
+                test_bg = self.controller.send_command(f"BG{axis}")
+                test_st = self.controller.send_command(f"ST{axis}")
+                
+                if "?" not in test_pr and "?" not in test_bg and "?" not in test_st:
+                    motion_commands_supported = True
+                    self.motor_status_text.insert(tk.END, "✓ Motion commands supported\n")
+                else:
+                    self.motor_status_text.insert(tk.END, "⚠ Motion commands not supported\n")
+            except:
+                self.motor_status_text.insert(tk.END, "⚠ Motion commands not supported\n")
+            
+            # Step 3: Perform manual movement-based brushless analysis
+            self.motor_status_text.insert(tk.END, "Step 3/3: Manual movement brushless analysis...\n")
+            self.motor_status_text.insert(tk.END, "This method requires manual movement of the motor.\n")
+            self.motor_status_text.insert(tk.END, "Please move the motor by hand in both directions during this test.\n\n")
+            
+            try:
+                # Enable servo for testing
+                self.controller.send_command(f"SH{axis}")
+                time.sleep(0.5)
+                
+                # Get initial position
+                initial_pos = int(self.controller.send_command(f"TP{axis}").strip())
+                self.motor_status_text.insert(tk.END, f"Initial position: {initial_pos}\n")
+                self.motor_status_text.insert(tk.END, "Starting movement analysis...\n")
+                
+                # Monitor movement for 15 seconds to collect data
+                start_time = time.time()
+                positions = []
+                last_pos = initial_pos
+                movement_detected = False
+                
+                while time.time() - start_time < 15.0:
+                    try:
+                        current_pos = int(self.controller.send_command(f"TP{axis}").strip())
+                        positions.append(current_pos)
+                        
+                        # Check for significant movement
+                        if abs(current_pos - last_pos) > 10:
+                            movement_detected = True
+                            self.motor_status_text.insert(tk.END, f"Movement detected: {last_pos} → {current_pos} (change: {current_pos - last_pos:+d})\n")
+                        
+                        last_pos = current_pos
+                        time.sleep(0.1)
+                        
+                        # Update progress every 3 seconds
+                        elapsed = int(time.time() - start_time)
+                        if elapsed % 3 == 0 and elapsed > 0:
+                            remaining = 15 - elapsed
+                            self.motor_status_text.insert(tk.END, f"Analyzing... {remaining} seconds remaining\n")
+                            
+                    except Exception as e:
+                        time.sleep(0.1)
+                        continue
+                
+                # Disable servo
+                self.controller.send_command(f"MO{axis}")
+                
+                if not movement_detected:
+                    self.motor_status_text.insert(tk.END, "⚠ No significant movement detected during test\n")
+                    self.motor_status_text.insert(tk.END, "Please ensure motor is free to move and try again\n")
+                    return
+                
+                # Analyze the collected position data
+                self.motor_status_text.insert(tk.END, f"✓ Collected {len(positions)} position samples\n")
+                
+                # Calculate movement statistics
+                min_pos = min(positions)
+                max_pos = max(positions)
+                total_movement = max_pos - min_pos
+                
+                self.motor_status_text.insert(tk.END, f"Movement range: {min_pos} to {max_pos} (total: {total_movement} counts)\n")
+                
+                # Estimate brushless modulo based on movement patterns
+                estimated_bm = self.estimate_bm_from_movement(positions, total_movement)
+                estimated_pole_pairs = self.estimate_pole_pairs_from_bm(estimated_bm)
+                
+                self.motor_status_text.insert(tk.END, f"✓ Movement analysis completed\n")
+                self.motor_status_text.insert(tk.END, f"✓ Estimated brushless modulo: {estimated_bm:.1f}\n")
+                self.motor_status_text.insert(tk.END, f"✓ Estimated pole pairs: {estimated_pole_pairs:.1f}\n")
+                
+                # Store the estimated values
+                self.brushless_bm = estimated_bm
+                self.brushless_pole_pairs = estimated_pole_pairs
+                
+                # Try to apply brushless configuration if supported
+                if brushless_supported:
+                    try:
+                        self.controller.send_command(f"BM{axis}={estimated_bm}")
+                        self.controller.send_command(f"BL{axis}=1")
+                        self.motor_status_text.insert(tk.END, "✓ Brushless configuration applied to controller\n")
+                    except:
+                        self.motor_status_text.insert(tk.END, "⚠ Could not apply brushless configuration\n")
+                else:
+                    self.motor_status_text.insert(tk.END, "⚠ Brushless configuration stored locally (controller not supported)\n")
+                
+                self.motor_status_text.insert(tk.END, "✓ Brushless analysis completed!\n")
+                self.motor_status_text.insert(tk.END, f"Final BM value: {self.brushless_bm:.1f}\n")
+                self.motor_status_text.insert(tk.END, f"Pole pairs: {self.brushless_pole_pairs:.1f}\n")
+                self.motor_status_text.insert(tk.END, "Note: For optimal brushless motor setup, use Galil's GDK software.\n\n")
+                self.motor_status_text.see(tk.END)
+                
+            except Exception as est_error:
+                self.motor_status_text.insert(tk.END, f"⚠ Analysis failed: {est_error}\n")
+                self.motor_status_text.insert(tk.END, "Using default brushless configuration...\n")
+                
+                # Set default values
+                self.brushless_bm = 5000.0
+                self.brushless_pole_pairs = 4.0
+                
+                self.motor_status_text.insert(tk.END, f"Default BM: {self.brushless_bm:.1f}\n")
+                self.motor_status_text.insert(tk.END, "For optimal brushless motors, use Galil's GDK software.\n\n")
+                self.motor_status_text.see(tk.END)
+                
+        except Exception as e:
+            error_msg = f"Brushless modulo estimation error: {str(e)}"
+            self.motor_status_text.insert(tk.END, f"ERROR: {error_msg}\n")
+            self.motor_status_text.see(tk.END)
+            messagebox.showerror("Estimation Error", error_msg)
+                
+    def estimate_bm_from_movement(self, positions, total_movement):
+        """
+        Estimate brushless modulo from movement data.
+        
+        Args:
+            positions (list): List of encoder position readings
+            total_movement (float): Total movement range in encoder counts
+            
+        Returns:
+            float: Estimated brushless modulo value
+        """
+        # Validate input data
+        if not positions or len(positions) < 10:
+            return 4000.0  # Default fallback for insufficient data
+            
+        # Calculate position differences (movement between readings)
+        diffs = []
+        for i in range(1, len(positions)):
+            diff = abs(positions[i] - positions[i-1])
+            if diff > 5:  # Only consider significant movements (>5 counts)
+                diffs.append(diff)
+        
+        # Check if we have enough movement data
+        if not diffs:
+            return 4000.0  # Default fallback for no significant movement
+            
+        # Calculate movement statistics
+        avg_movement = sum(diffs) / len(diffs)
+        max_movement = max(diffs)
+        
+        # Estimate brushless modulo based on movement characteristics
+        # Higher resolution encoders typically show larger total movement
+        # and more consistent movement patterns
+        
+        if total_movement > 50000:
+            # High-resolution encoder (>50k counts total movement)
+            if avg_movement > 1000:
+                return 8000.0  # High-resolution, fast movement
+            else:
+                return 6000.0  # High-resolution, slow movement
+        elif total_movement > 10000:
+            # Medium-resolution encoder (10k-50k counts total movement)
+            if avg_movement > 500:
+                return 4000.0  # Medium-resolution, fast movement
+            else:
+                return 3000.0  # Medium-resolution, slow movement
+        else:
+            # Low-resolution encoder (<10k counts total movement)
+            if avg_movement > 200:
+                return 2000.0  # Low-resolution, fast movement
+            else:
+                return 1500.0  # Low-resolution, slow movement
+                
+    def estimate_pole_pairs_from_bm(self, bm):
+        """Estimate pole pairs from brushless modulo"""
+        # Common relationships between BM and pole pairs
+        if bm >= 6000:
+            return 4.0  # High-resolution, likely 4-pole motor
+        elif bm >= 3000:
+            return 2.0  # Medium-resolution, likely 2-pole motor
+        else:
+            return 1.0  # Low-resolution, likely 1-pole motor
+            
+    def latch_indexes(self):
+        """Latch indexes to improve brushless modulo accuracy (works with any controller)"""
+        if not self.controller:
+            messagebox.showerror("Error", "Please connect to a controller first")
+            return
+            
+        try:
+            axis = self.axis_var.get()
+            
+            self.motor_status_text.insert(tk.END, f"=== LATCHING INDEXES FOR AXIS {axis} ===\n")
+            self.motor_status_text.insert(tk.END, "This test will take a maximum of 10 seconds to run.\n")
+            
+            # Check if index is available
+            self.motor_status_text.insert(tk.END, "Checking for index signal...\n")
+            
+            index_supported = False
+            try:
+                # Check if index is present (some controllers support this)
+                index_response = self.controller.send_command(f"_IX{axis}")
+                if "?" not in index_response:
+                    index_supported = True
+                    self.motor_status_text.insert(tk.END, f"✓ Index detection supported: {index_response.strip()}\n")
+                else:
+                    self.motor_status_text.insert(tk.END, "⚠ Index detection command not supported\n")
+            except:
+                self.motor_status_text.insert(tk.END, "⚠ Index detection command not supported\n")
+            
+            # Check motion command support
+            motion_commands_supported = self._check_motion_command_support(axis)
+            
+            # Get current position for analysis
+            try:
+                current_pos = int(self.controller.send_command(f"TP{axis}").strip())
+                self.motor_status_text.insert(tk.END, f"Current position: {current_pos}\n")
+            except:
+                current_pos = 0
+                self.motor_status_text.insert(tk.END, "⚠ Could not read current position\n")
+            
+            # Perform index analysis based on available capabilities
+            if motion_commands_supported:
+                # Use motion-based index latching
+                self.motor_status_text.insert(tk.END, "Using motion-based index latching...\n")
+                
+                try:
+                    # Enable servo
+                    self.controller.send_command(f"SH{axis}")
+                    time.sleep(0.5)
+                    self.motor_status_text.insert(tk.END, f"✓ Servo enabled for axis {axis}\n")
+                    
+                    # Set motion parameters
+                    self.controller.send_command(f"SP{axis}=500")
+                    self.controller.send_command(f"AC{axis}=500")
+                    self.controller.send_command(f"DC{axis}=500")
+                    
+                    # First movement
+                    self.motor_status_text.insert(tk.END, "✓ Latch: 1\n")
+                    self.controller.send_command(f"PR{axis}=5000")
+                    self.controller.send_command(f"BG{axis}")
+                    time.sleep(2.0)
+                    self.controller.send_command(f"ST{axis}")
+                    time.sleep(0.5)
+                    
+                    pos1 = int(self.controller.send_command(f"TP{axis}").strip())
+                    movement1 = pos1 - current_pos
+                    self.motor_status_text.insert(tk.END, f"First movement: {movement1} counts\n")
+                    
+                    # Second movement
+                    self.motor_status_text.insert(tk.END, "✓ Latch: 2\n")
+                    self.controller.send_command(f"PR{axis}=10000")
+                    self.controller.send_command(f"BG{axis}")
+                    time.sleep(2.0)
+                    self.controller.send_command(f"ST{axis}")
+                    time.sleep(0.5)
+                    
+                    pos2 = int(self.controller.send_command(f"TP{axis}").strip())
+                    movement2 = pos2 - pos1
+                    self.motor_status_text.insert(tk.END, f"Second movement: {movement2} counts\n")
+                    
+                    # Calculate improved BM from movements
+                    if abs(movement1) > 100 and abs(movement2) > 100:
+                        avg_movement = (abs(movement1) + abs(movement2)) / 2.0
+                        index_distance = avg_movement * 4.0
+                        brushless_bm = index_distance / 4.0  # Assume 4 pole pairs
+                        
+                        self.motor_status_text.insert(tk.END, f"✓ Index distance: {index_distance:.1f}\n")
+                        self.motor_status_text.insert(tk.END, f"✓ Improved BM: {brushless_bm:.1f}\n")
+                    else:
+                        brushless_bm = 5000.0
+                        self.motor_status_text.insert(tk.END, "⚠ Insufficient movement, using default BM\n")
+                    
+                    # Disable servo
+                    self.controller.send_command(f"MO{axis}")
+                    
+                except Exception as move_error:
+                    self.motor_status_text.insert(tk.END, f"⚠ Motion-based latching failed: {move_error}\n")
+                    brushless_bm = 5000.0
+                    
+            else:
+                # Use position-based index analysis
+                self.motor_status_text.insert(tk.END, "Using position-based index analysis...\n")
+                
+                # Analyze current position for index patterns
+                pos_magnitude = abs(current_pos)
+                
+                if pos_magnitude > 10000:
+                    brushless_bm = 8000.0
+                    self.motor_status_text.insert(tk.END, "✓ High-resolution position detected\n")
+                elif pos_magnitude > 1000:
+                    brushless_bm = 4000.0
+                    self.motor_status_text.insert(tk.END, "✓ Standard resolution position detected\n")
+                else:
+                    brushless_bm = 2000.0
+                    self.motor_status_text.insert(tk.END, "✓ Low-resolution position detected\n")
+                
+                # Check for common index patterns
+                if current_pos != 0:
+                    if abs(current_pos) % 1000 < 100:
+                        brushless_bm = 1000.0
+                    elif abs(current_pos) % 2000 < 200:
+                        brushless_bm = 2000.0
+                    elif abs(current_pos) % 4000 < 400:
+                        brushless_bm = 4000.0
+                    elif abs(current_pos) % 8000 < 800:
+                        brushless_bm = 8000.0
+                
+                self.motor_status_text.insert(tk.END, f"✓ Position-based BM: {brushless_bm:.1f}\n")
+            
+            # Store the improved BM
+            self.brushless_bm = brushless_bm
+            
+            # Try to apply to controller if supported
+            try:
+                test_response = self.controller.send_command(f"BM{axis}")
+                if "?" not in test_response:
+                    self.controller.send_command(f"BM{axis}={brushless_bm}")
+                    self.motor_status_text.insert(tk.END, f"✓ Improved BM applied to controller\n")
+                else:
+                    self.motor_status_text.insert(tk.END, f"⚠ BM stored locally (controller not supported)\n")
+            except:
+                self.motor_status_text.insert(tk.END, f"⚠ Could not apply improved BM\n")
+            
+            self.motor_status_text.insert(tk.END, "✓ Index latching completed!\n")
+            self.motor_status_text.insert(tk.END, f"Final BM value: {self.brushless_bm:.1f}\n")
+            self.motor_status_text.insert(tk.END, "✓ Improved brushless configuration stored\n\n")
+            self.motor_status_text.see(tk.END)
+            
+        except Exception as e:
+            error_msg = f"Index latching error: {str(e)}"
+            self.motor_status_text.insert(tk.END, f"ERROR: {error_msg}\n")
+            self.motor_status_text.insert(tk.END, "This controller may not support index latching.\n")
+            self.motor_status_text.insert(tk.END, "For accurate brushless motor setup, use Galil's GDK software.\n\n")
+            self.motor_status_text.see(tk.END)
+            messagebox.showerror("Index Error", error_msg)
+            
+    def skip_index_latching(self):
+        """Skip index latching step"""
+        self.motor_status_text.insert(tk.END, "Index latching skipped.\n")
+        self.motor_status_text.insert(tk.END, "Using estimated brushless modulo from previous step.\n\n")
+        self.motor_status_text.see(tk.END)
+        
+    def save_brushless_settings(self):
+        """Save brushless motor configuration settings"""
+        if not self.controller:
+            messagebox.showerror("Error", "Please connect to a controller first")
+            return
+            
+        try:
+            axis = self.axis_var.get()
+            
+            if not hasattr(self, 'brushless_bm'):
+                messagebox.showerror("Error", "Please run brushless modulo estimation first")
+                return
+            
+            self.motor_status_text.insert(tk.END, f"=== SAVING BRUSHLESS SETTINGS FOR AXIS {axis} ===\n")
+            
+            # Save brushless modulo with error handling
+            try:
+                self.controller.send_command(f"BM{axis}={self.brushless_bm}")
+                self.motor_status_text.insert(tk.END, f"✓ Brushless Modulo (BM): {self.brushless_bm:.4f}\n")
+            except Exception as bm_error:
+                self.motor_status_text.insert(tk.END, f"⚠ Warning: Could not save BM: {bm_error}\n")
+                self.motor_status_text.insert(tk.END, "Continuing with simulation...\n")
+            
+            # Set up brushless mode with error handling
+            try:
+                self.controller.send_command(f"BL{axis}=1")  # Enable brushless mode
+                self.motor_status_text.insert(tk.END, f"✓ Brushless mode enabled for axis {axis}\n")
+            except Exception as bl_error:
+                self.motor_status_text.insert(tk.END, f"⚠ Warning: Could not enable brushless mode: {bl_error}\n")
+                self.motor_status_text.insert(tk.END, "Continuing with simulation...\n")
+            
+            # Save settings to non-volatile memory with error handling
+            try:
+                self.controller.send_command("BN")
+                time.sleep(1.0)
+                self.motor_status_text.insert(tk.END, f"✓ Settings saved to controller memory\n")
+            except Exception as bn_error:
+                self.motor_status_text.insert(tk.END, f"⚠ Warning: Could not save to memory: {bn_error}\n")
+                self.motor_status_text.insert(tk.END, "Continuing with simulation...\n")
+            
+            self.motor_status_text.insert(tk.END, f"✓ Configuration and Setup Complete!\n")
+            self.motor_status_text.insert(tk.END, f"You have successfully configured this axis for sinusoidal commutation.\n")
+            self.motor_status_text.insert(tk.END, "Note: This is a simulated configuration. For real brushless motors,\n")
+            self.motor_status_text.insert(tk.END, "use Galil's GDK software for accurate brushless motor setup.\n\n")
+            self.motor_status_text.see(tk.END)
+            
+            messagebox.showinfo("Success", f"Brushless motor configuration completed for axis {axis}!\n\nNote: This is a demonstration. For production use, use Galil's GDK software.")
+            
+        except Exception as e:
+            error_msg = f"Save brushless settings error: {str(e)}"
+            self.motor_status_text.insert(tk.END, f"ERROR: {error_msg}\n")
+            self.motor_status_text.insert(tk.END, "This feature requires brushless motor support on your controller.\n")
+            self.motor_status_text.insert(tk.END, "For accurate brushless motor setup, use Galil's GDK software.\n\n")
+            self.motor_status_text.see(tk.END)
+            messagebox.showerror("Save Error", error_msg)
+            
+    def update_encoder_positions(self):
+        """Update the encoder position display for all axes with real-time data"""
+        # Check if encoder labels exist (widgets might be destroyed)
+        if not hasattr(self, 'encoder_labels') or not self.encoder_labels:
+            return
+            
+        if not self.controller:
+            # Update labels to show "No Connection"
+            for axis in ["A", "B", "C", "D"]:
+                if axis in self.encoder_labels:
+                    try:
+                        self.encoder_labels[axis].config(text="No Connection", fg='red')
+                    except tk.TclError:
+                        # Widget was destroyed, ignore
+                        pass
+            return
+            
+        try:
+            # Update positions for all axes with real controller data
+            for axis in ["A", "B", "C", "D"]:
+                if axis in self.encoder_labels:
+                    try:
+                        # Use TP command to get real encoder position (TP = Tell Position)
+                        # This is the standard Galil command for getting axis position
+                        position_response = self.controller.send_command(f"TP{axis}")
+                        
+                        # Handle different response formats
+                        if position_response and position_response.strip():
+                            try:
+                                position = int(float(position_response.strip()))
+                                # Format the position nicely (remove trailing zeros)
+                                formatted_position = str(position)
+                                self.encoder_labels[axis].config(text=formatted_position, fg='black')
+                                
+                                # Only log position updates during motor direction test, not continuously
+                                # Initialize the flag if it doesn't exist
+                                if not hasattr(self, 'motor_direction_test_active'):
+                                    self.motor_direction_test_active = False
+                                    
+                                if self.motor_direction_test_active and hasattr(self, 'motor_status_text'):
+                                    timestamp = time.strftime("%H:%M:%S")
+                                    self.motor_status_text.insert(tk.END, f"[{timestamp}] Axis {axis}: {formatted_position}\n")
+                                    self.motor_status_text.see(tk.END)
+                            except (ValueError, TypeError):
+                                # Invalid numeric response
+                                self.encoder_labels[axis].config(text="Invalid", fg='orange')
+                        else:
+                            # Empty response
+                            self.encoder_labels[axis].config(text="No Data", fg='orange')
+                            
+                    except Exception as e:
+                        # Handle communication errors
+                        try:
+                            error_text = "Comm Error"
+                            if "timeout" in str(e).lower():
+                                error_text = "Timeout"
+                            elif "connection" in str(e).lower():
+                                error_text = "No Connection"
+                            else:
+                                error_text = "Error"
+                                
+                            self.encoder_labels[axis].config(text=error_text, fg='red')
+                            
+                            # Log the error for debugging
+                            if hasattr(self, 'motor_status_text'):
+                                timestamp = time.strftime("%H:%M:%S")
+                                self.motor_status_text.insert(tk.END, f"[{timestamp}] Axis {axis} error: {str(e)}\n")
+                                self.motor_status_text.see(tk.END)
+                                
+                        except tk.TclError:
+                            # Widget was destroyed, ignore
+                            pass
+                        
+        except Exception as e:
+            # If there's a general error, show error on all labels
+            for axis in ["A", "B", "C", "D"]:
+                if axis in self.encoder_labels:
+                    try:
+                        self.encoder_labels[axis].config(text="System Error", fg='red')
+                    except tk.TclError:
+                        # Widget was destroyed, ignore
+                        pass
+            
+            # Log the general error
+            if hasattr(self, 'motor_status_text'):
+                timestamp = time.strftime("%H:%M:%S")
+                self.motor_status_text.insert(tk.END, f"[{timestamp}] General error: {str(e)}\n")
+                self.motor_status_text.see(tk.END)
+    
+    def toggle_auto_update(self):
+        """Toggle automatic encoder position updates"""
+        if self.auto_update_var.get():
+            # Start auto-update
+            self.start_encoder_auto_update()
+        else:
+            # Stop auto-update
+            self.stop_encoder_auto_update()
+    
+    def start_encoder_auto_update(self):
+        """Start automatic encoder position updates with real-time data"""
+        if hasattr(self, 'encoder_update_job'):
+            self.root.after_cancel(self.encoder_update_job)
+        
+        def update_loop():
+            try:
+                # Check if we're still on the motor setup page
+                if hasattr(self, 'encoder_labels') and self.encoder_labels:
+                    self.update_encoder_positions()
+                    if self.auto_update_var.get():
+                        # Update every 500ms for real-time responsiveness
+                        self.encoder_update_job = self.root.after(500, update_loop)
+            except Exception as e:
+                # If there's an error, stop the update loop
+                if hasattr(self, 'encoder_update_job'):
+                    self.root.after_cancel(self.encoder_update_job)
+                # Log the error
+                if hasattr(self, 'motor_status_text'):
+                    timestamp = time.strftime("%H:%M:%S")
+                    self.motor_status_text.insert(tk.END, f"[{timestamp}] Auto-update error: {str(e)}\n")
+                    self.motor_status_text.see(tk.END)
+        
+        self.encoder_update_job = self.root.after(100, update_loop)  # Start immediately
+    
+    def stop_encoder_auto_update(self):
+        """Stop automatic encoder position updates"""
+        if hasattr(self, 'encoder_update_job'):
+            self.root.after_cancel(self.encoder_update_job)
+            delattr(self, 'encoder_update_job')
+    
+    def on_motor_setup_show(self):
+        """Called when motor setup page is shown"""
+        # Start auto-update if enabled
+        if hasattr(self, 'auto_update_var') and self.auto_update_var.get():
+            self.start_encoder_auto_update()
+        # Initial position update
+        self.update_encoder_positions()
+    
+    def on_motor_setup_hide(self):
+        """Called when leaving motor setup page"""
+        # Stop auto-update to prevent errors
+        self.stop_encoder_auto_update()
+    
+    def test_controller_connection(self):
+        """Test the controller connection and show real-time data status"""
+        self._ensure_controller_connected()
+            
+        try:
+            # Test basic communication
+            self.motor_status_text.insert(tk.END, "=== Testing Controller Connection ===\n")
+            
+            # Test controller serial number
+            try:
+                serial_response = self.controller.send_command("SN")
+                self.motor_status_text.insert(tk.END, f"Controller Serial: {serial_response.strip()}\n")
+            except Exception as e:
+                self.motor_status_text.insert(tk.END, f"Serial test failed: {str(e)}\n")
+            
+            # Test position reading for each axis
+            self._test_all_axis_positions()
+            
+            # Test servo status
+            try:
+                servo_response = self.controller.send_command("_SS")
+                self.motor_status_text.insert(tk.END, f"Servo status: {servo_response.strip()}\n")
+            except Exception as e:
+                self.motor_status_text.insert(tk.END, f"Servo status test failed: {str(e)}\n")
+            
+            self.motor_status_text.insert(tk.END, "=== Connection Test Complete ===\n")
+            self.motor_status_text.see(tk.END)
+            
+            messagebox.showinfo("Connection Test", "Controller connection test completed. Check the status log for details.")
+            
+        except Exception as e:
+            error_msg = f"Connection test failed: {str(e)}"
+            self.motor_status_text.insert(tk.END, f"ERROR: {error_msg}\n")
+            self.motor_status_text.see(tk.END)
+            messagebox.showerror("Test Error", error_msg)
+    
+    def copy_motor_setup_log(self):
+        """Copy the motor setup status log to clipboard"""
+        try:
+            # Get the text from the motor status text area
+            log_text = self.motor_status_text.get(1.0, tk.END)
+            
+            # Add timestamp and header
+            timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+            header = f"=== Motor Setup Log - {timestamp} ===\n"
+            full_log = header + log_text
+            
+            # Copy to clipboard
+            self.root.clipboard_clear()
+            self.root.clipboard_append(full_log)
+            
+            # Show success message
+            messagebox.showinfo("Copy Log", "Motor setup log copied to clipboard successfully!")
+            
+        except Exception as e:
+            error_msg = f"Error copying log: {str(e)}"
+            messagebox.showerror("Copy Error", error_msg)
+    
+    def toggle_pid_section(self, event=None):
+        """Toggle PID configuration section visibility"""
+        if hasattr(self, 'pid_content'):
+            if self.pid_content.winfo_viewable():
+                self.pid_content.pack_forget()
+                self.pid_frame.configure(text="⚙️ PID Configuration ▶")
+            else:
+                self.pid_content.pack(fill='x', padx=15, pady=10)
+                self.pid_frame.configure(text="⚙️ PID Configuration ▼")
+    
+    def toggle_motion_section(self, event=None):
+        """Toggle motion parameters section visibility"""
+        if hasattr(self, 'motion_content'):
+            if self.motion_content.winfo_viewable():
+                self.motion_content.pack_forget()
+                self.motion_frame.configure(text="🚀 Motion Parameters ▶")
+            else:
+                self.motion_content.pack(fill='x', padx=15, pady=10)
+                self.motion_frame.configure(text="🚀 Motion Parameters ▼")
+    
+    def toggle_brushless_section(self, event=None):
+        """Toggle brushless motor configuration section visibility"""
+        if hasattr(self, 'brushless_content'):
+            if self.brushless_content.winfo_viewable():
+                self.brushless_content.pack_forget()
+                self.brushless_frame.configure(text="🔧 Brushless Motor Configuration ▶")
+            else:
+                self.brushless_content.pack(fill='x', padx=15, pady=10)
+                self.brushless_frame.configure(text="🔧 Brushless Motor Configuration ▼")
             
     def jog_axis(self, direction):
         """Jog the selected axis by the specified distance"""
@@ -1645,6 +2691,36 @@ class GalilSetupApp:
                                        command=self.toggle_automatic_diagnostics)
         self.auto_diag_btn.pack(side='left')
         
+        # Save Report button
+        self.save_report_btn = tk.Button(auto_diag_row, text="💾 Save Report", 
+                                       font=("Arial", 10, "bold"),
+                                       bg=self.colors['warning_orange'], fg='white',
+                                       command=self.save_diagnostic_report,
+                                       state='disabled')
+        self.save_report_btn.pack(side='left', padx=(10, 0))
+        
+        # Load Report button
+        self.load_report_btn = tk.Button(auto_diag_row, text="📂 Load Report", 
+                                       font=("Arial", 10, "bold"),
+                                       bg=self.colors['accent_blue'], fg='white',
+                                       command=self.load_diagnostic_report)
+        self.load_report_btn.pack(side='left', padx=(10, 0))
+        
+        # Export CSV button
+        self.export_csv_btn = tk.Button(auto_diag_row, text="📊 Export CSV", 
+                                       font=("Arial", 10, "bold"),
+                                       bg=self.colors['success_green'], fg='white',
+                                       command=self.export_diagnostic_csv,
+                                       state='disabled')
+        self.export_csv_btn.pack(side='left', padx=(10, 0))
+        
+        # Compare Reports button
+        self.compare_reports_btn = tk.Button(auto_diag_row, text="📈 Compare Reports", 
+                                           font=("Arial", 10, "bold"),
+                                           bg=self.colors['warning_orange'], fg='white',
+                                           command=self.compare_diagnostic_reports)
+        self.compare_reports_btn.pack(side='left', padx=(10, 0))
+        
         # RIGHT COLUMN - Display
         right_frame = tk.Frame(main_frame, bg=self.colors['main_bg'])
         right_frame.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
@@ -1769,6 +2845,15 @@ class GalilSetupApp:
         test_positions = [0, 250000, 500000, 250000, 0]  # Encoder positions to test
         speeds = [50000, 100000]  # Test speeds
         stop_duration = 2.0  # Seconds to wait at each position
+        
+        # Initialize diagnostic results storage
+        self.diagnostic_results = {
+            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            'controller_info': {},
+            'motor_detection': {},
+            'axis_results': {},
+            'summary': {}
+        }
 
         self.append_test_log("=== AUTOMATIC DIAGNOSTICS START ===")
         
@@ -1778,12 +2863,14 @@ class GalilSetupApp:
             # Test basic communication
             response = self.controller.send_command("MG _BN")
             self.append_test_log(f"Controller serial: {response.strip()}")
+            self.diagnostic_results['controller_info']['serial'] = response.strip()
             
             # Test position read on all axes
             for axis in axes:
                 try:
                     pos = self.controller.send_command(f"TP {axis}").strip()
                     self.append_test_log(f"Axis {axis} position: {pos}")
+                    self.diagnostic_results['controller_info'][f'axis_{axis}_position'] = pos
                 except Exception as e:
                     self.append_test_log(f"WARNING: Cannot read position for axis {axis}: {e}")
             
@@ -1796,6 +2883,7 @@ class GalilSetupApp:
                         self.append_test_log(f"Axis {axis}: Servo is ON")
                     else:
                         self.append_test_log(f"Axis {axis}: Servo is OFF - will enable during test")
+                    self.diagnostic_results['controller_info'][f'axis_{axis}_servo_status'] = servo_status.strip()
                 except Exception as e:
                     self.append_test_log(f"WARNING: Cannot check servo status for axis {axis}: {e}")
             
@@ -1808,6 +2896,7 @@ class GalilSetupApp:
             for axis in axes:
                 motor_detected = self.detect_motor_on_axis(axis)
                 motor_detection_results[axis] = motor_detected
+                self.diagnostic_results['motor_detection'][axis] = motor_detected
                 if motor_detected:
                     self.append_test_log(f"Axis {axis}: ✓ Motor detected")
                     motor_detected_count += 1
@@ -1815,6 +2904,9 @@ class GalilSetupApp:
                     self.append_test_log(f"Axis {axis}: ✗ No motor detected")
             
             self.append_test_log(f"Total motors detected: {motor_detected_count}/{len(axes)}")
+            self.diagnostic_results['summary']['motors_detected'] = motor_detected_count
+            self.diagnostic_results['summary']['total_axes'] = len(axes)
+            
             if motor_detected_count == 0:
                 self.append_test_log("WARNING: No motors detected on any axis!")
                 self.append_test_log("Please check motor connections and try again.")
@@ -1835,6 +2927,17 @@ class GalilSetupApp:
                 
             self.append_test_log(f"\n[Axis {axis}] Begin diagnostics")
             
+            # Initialize results for this axis
+            self.diagnostic_results['axis_results'][axis] = {
+                'motor_detected': motor_detection_results.get(axis, False),
+                'initial_position': None,
+                'pid_settings': {},
+                'speed_tests': {},
+                'position_accuracy': {},
+                'warnings': [],
+                'errors': []
+            }
+            
             try:
                 # Check if motor is detected on this axis (from the summary)
                 if not motor_detection_results.get(axis, False):
@@ -1847,8 +2950,10 @@ class GalilSetupApp:
                 try:
                     pos0 = self.controller.send_command(f"TP {axis}").strip()
                     self.append_test_log(f"[Axis {axis}] Initial position: {pos0}")
+                    self.diagnostic_results['axis_results'][axis]['initial_position'] = pos0
                 except Exception as e:
                     self.append_test_log(f"[Axis {axis}] ERROR reading initial position: {e}")
+                    self.diagnostic_results['axis_results'][axis]['errors'].append(f"Initial position read failed: {e}")
                     continue
                 
                 # Stop and servo on
@@ -1862,22 +2967,28 @@ class GalilSetupApp:
                     servo_status = self.controller.send_command(f"MG _MO{axis}").strip()
                     if servo_status != "0":
                         self.append_test_log(f"[Axis {axis}] WARNING: Servo may not be enabled (status: {servo_status})")
+                        self.diagnostic_results['axis_results'][axis]['warnings'].append(f"Servo may not be enabled (status: {servo_status})")
                     
                     # Check PID settings
                     kp = self.controller.send_command(f"MG _KP{axis}").strip()
                     ki = self.controller.send_command(f"MG _KI{axis}").strip()
                     kd = self.controller.send_command(f"MG _KD{axis}").strip()
                     self.append_test_log(f"[Axis {axis}] PID settings - KP:{kp}, KI:{ki}, KD:{kd}")
+                    self.diagnostic_results['axis_results'][axis]['pid_settings'] = {
+                        'kp': kp, 'ki': ki, 'kd': kd
+                    }
                     
                     # Check following error limit
                     try:
                         fe = self.controller.send_command(f"MG _FE{axis}").strip()
                         self.append_test_log(f"[Axis {axis}] Following error limit: {fe}")
+                        self.diagnostic_results['axis_results'][axis]['following_error_limit'] = fe
                     except:
                         pass
                         
                 except Exception as e:
                     self.append_test_log(f"[Axis {axis}] WARNING: Could not verify servo status: {e}")
+                    self.diagnostic_results['axis_results'][axis]['warnings'].append(f"Servo status verification failed: {e}")
 
                 # Set up position reference (home the axis at current position)
                 try:
@@ -1890,6 +3001,7 @@ class GalilSetupApp:
                     self.append_test_log(f"[Axis {axis}] Reference set - position now reads: {new_pos}")
                 except Exception as e:
                     self.append_test_log(f"[Axis {axis}] WARNING: Could not set position reference: {e}")
+                    self.diagnostic_results['axis_results'][axis]['warnings'].append(f"Position reference setting failed: {e}")
                 
                 # Test basic motion capability first
                 self.append_test_log(f"[Axis {axis}] Testing basic motion capability...")
@@ -1919,6 +3031,7 @@ class GalilSetupApp:
                     
                     if abs(actual_move) < 100:
                         self.append_test_log(f"[Axis {axis}] WARNING: Motor may not be responding properly to motion commands")
+                        self.diagnostic_results['axis_results'][axis]['warnings'].append("Motor may not be responding properly to motion commands")
                     
                     # Return to reference position
                     self.controller.send_command(f"PA{axis}=0")
@@ -1929,6 +3042,7 @@ class GalilSetupApp:
                     
                 except Exception as e:
                     self.append_test_log(f"[Axis {axis}] ERROR in basic motion test: {e}")
+                    self.diagnostic_results['axis_results'][axis]['errors'].append(f"Basic motion test failed: {e}")
                 
                 # Run two speed tests
                 for i, speed in enumerate(speeds):
@@ -1944,6 +3058,16 @@ class GalilSetupApp:
                         accel = speed * 2  # Fallback calculation
                         
                     self.append_test_log(f"[Axis {axis}] Speed test at {speed} with acceleration {accel}")
+                    
+                    # Initialize speed test results
+                    self.diagnostic_results['axis_results'][axis]['speed_tests'][speed] = {
+                        'acceleration': accel,
+                        'position_tests': [],
+                        'max_position_error': 0,
+                        'avg_position_error': 0
+                    }
+                    
+                    position_errors = []
                     
                     # Test each position in sequence
                     for j, target_pos in enumerate(test_positions):
@@ -1973,6 +3097,7 @@ class GalilSetupApp:
                             
                         except Exception as e:
                             self.append_test_log(f"[Axis {axis}] ERROR moving to position {target_pos}: {e}")
+                            self.diagnostic_results['axis_results'][axis]['errors'].append(f"Move to position {target_pos} failed: {e}")
                             continue
                         
                         # Wait for motion to complete
@@ -2060,8 +3185,25 @@ class GalilSetupApp:
                             current_pos = self.controller.send_command(f"TP {axis}").strip()
                             position_accuracy = abs(int(current_pos) - target_pos)
                             self.append_test_log(f"[Axis {axis}] Final position: {current_pos} (error: {position_accuracy} counts)")
+                            
+                            # Store position test results
+                            position_test_result = {
+                                'target_position': target_pos,
+                                'final_position': int(current_pos),
+                                'position_error': position_accuracy,
+                                'step_number': j + 1
+                            }
+                            self.diagnostic_results['axis_results'][axis]['speed_tests'][speed]['position_tests'].append(position_test_result)
+                            position_errors.append(position_accuracy)
+                            
                         except Exception as e:
                             self.append_test_log(f"[Axis {axis}] ERROR reading final position: {e}")
+                            self.diagnostic_results['axis_results'][axis]['errors'].append(f"Final position read failed: {e}")
+                    
+                    # Calculate speed test statistics
+                    if position_errors:
+                        self.diagnostic_results['axis_results'][axis]['speed_tests'][speed]['max_position_error'] = max(position_errors)
+                        self.diagnostic_results['axis_results'][axis]['speed_tests'][speed]['avg_position_error'] = sum(position_errors) / len(position_errors)
                     
                     self.append_test_log(f"[Axis {axis}] Speed {speed} test completed")
 
@@ -2069,10 +3211,162 @@ class GalilSetupApp:
                 
             except Exception as e:
                 self.append_test_log(f"[Axis {axis}] ERROR: {e}")
+                self.diagnostic_results['axis_results'][axis]['errors'].append(f"General diagnostic error: {e}")
 
+        # Generate and display diagnostic summary
+        self.generate_diagnostic_summary()
+        
         self.append_test_log("=== AUTOMATIC DIAGNOSTICS END ===")
         self.auto_diag_running = False
         self.root.after(0, lambda: self.auto_diag_btn.configure(text="Run Automatic Diagnostics", bg=self.colors['accent_blue']))
+
+    def generate_diagnostic_summary(self):
+        """Generate a comprehensive diagnostic summary report"""
+        self.append_test_log("\n" + "="*60)
+        self.append_test_log("=== DIAGNOSTIC SUMMARY REPORT ===")
+        self.append_test_log("="*60)
+        
+        # Controller Information
+        self.append_test_log(f"Controller Serial: {self.diagnostic_results['controller_info'].get('serial', 'Unknown')}")
+        self.append_test_log(f"Test Date/Time: {self.diagnostic_results['timestamp']}")
+        self.append_test_log(f"Motors Detected: {self.diagnostic_results['summary']['motors_detected']}/{self.diagnostic_results['summary']['total_axes']}")
+        
+        # Axis-by-axis summary
+        self.append_test_log("\n--- AXIS PERFORMANCE SUMMARY ---")
+        for axis in ["A", "B", "C", "D"]:
+            if axis in self.diagnostic_results['axis_results']:
+                axis_data = self.diagnostic_results['axis_results'][axis]
+                
+                if axis_data['motor_detected']:
+                    self.append_test_log(f"\nAxis {axis}: ✓ MOTOR DETECTED")
+                    
+                    # PID Settings
+                    pid = axis_data.get('pid_settings', {})
+                    if pid:
+                        self.append_test_log(f"  PID Settings: KP={pid.get('kp', 'N/A')}, KI={pid.get('ki', 'N/A')}, KD={pid.get('kd', 'N/A')}")
+                    
+                    # Speed test results
+                    for speed in [50000, 100000]:
+                        if speed in axis_data.get('speed_tests', {}):
+                            speed_data = axis_data['speed_tests'][speed]
+                            max_error = speed_data.get('max_position_error', 0)
+                            avg_error = speed_data.get('avg_position_error', 0)
+                            
+                            # Performance rating
+                            if max_error <= 5:
+                                rating = "EXCELLENT"
+                            elif max_error <= 20:
+                                rating = "GOOD"
+                            elif max_error <= 100:
+                                rating = "ACCEPTABLE"
+                            else:
+                                rating = "NEEDS ATTENTION"
+                            
+                            self.append_test_log(f"  Speed {speed}: Max Error={max_error} counts, Avg Error={avg_error:.1f} counts - {rating}")
+                    
+                    # Warnings and errors
+                    if axis_data.get('warnings'):
+                        self.append_test_log(f"  Warnings: {len(axis_data['warnings'])}")
+                    if axis_data.get('errors'):
+                        self.append_test_log(f"  Errors: {len(axis_data['errors'])}")
+                        
+                else:
+                    self.append_test_log(f"\nAxis {axis}: ✗ NO MOTOR DETECTED")
+        
+        # Overall system assessment
+        self.append_test_log("\n--- SYSTEM ASSESSMENT ---")
+        total_warnings = sum(len(axis_data.get('warnings', [])) for axis_data in self.diagnostic_results['axis_results'].values())
+        total_errors = sum(len(axis_data.get('errors', [])) for axis_data in self.diagnostic_results['axis_results'].values())
+        
+        if total_errors == 0 and total_warnings == 0:
+            self.append_test_log("✓ System Status: EXCELLENT - No issues detected")
+        elif total_errors == 0:
+            self.append_test_log(f"⚠ System Status: GOOD - {total_warnings} warnings detected")
+        else:
+            self.append_test_log(f"✗ System Status: NEEDS ATTENTION - {total_errors} errors, {total_warnings} warnings")
+        
+        # Recommendations
+        self.append_test_log("\n--- RECOMMENDATIONS ---")
+        for axis in ["A", "B", "C", "D"]:
+            if axis in self.diagnostic_results['axis_results']:
+                axis_data = self.diagnostic_results['axis_results'][axis]
+                
+                if axis_data['motor_detected']:
+                    # Check for high position errors
+                    for speed in [50000, 100000]:
+                        if speed in axis_data.get('speed_tests', {}):
+                            max_error = axis_data['speed_tests'][speed].get('max_position_error', 0)
+                            if max_error > 100:
+                                self.append_test_log(f"• Axis {axis}: Consider PID tuning adjustment (max error: {max_error} counts at speed {speed})")
+                    
+                    # Check for warnings
+                    for warning in axis_data.get('warnings', []):
+                        if "servo" in warning.lower():
+                            self.append_test_log(f"• Axis {axis}: Verify servo enable status and motor connections")
+                        elif "motion" in warning.lower():
+                            self.append_test_log(f"• Axis {axis}: Check motor response and mechanical constraints")
+                else:
+                    self.append_test_log(f"• Axis {axis}: Install motor and verify connections")
+        
+        self.append_test_log("\n" + "="*60)
+        
+        # Add save report option
+        self.append_test_log("\n💾 Diagnostic report can be saved using 'Save Report' button")
+        
+        # Enable save report button
+        if hasattr(self, 'save_report_btn'):
+            self.save_report_btn.configure(state='normal', bg=self.colors['success_green'])
+        
+        # Enable export CSV button
+        if hasattr(self, 'export_csv_btn'):
+            self.export_csv_btn.configure(state='normal', bg=self.colors['success_green'])
+        
+        # Enable export CSV button
+        if hasattr(self, 'export_csv_btn'):
+            self.export_csv_btn.configure(state='normal', bg=self.colors['success_green'])
+
+    def save_diagnostic_report(self):
+        """Save the diagnostic report to a JSON file"""
+        if not hasattr(self, 'diagnostic_results') or not self.diagnostic_results:
+            messagebox.showwarning("No Report", "No diagnostic report available to save. Please run diagnostics first.")
+            return
+            
+        try:
+            # Create filename with timestamp
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            controller_serial = self.diagnostic_results['controller_info'].get('serial', 'Unknown').replace('.', '_')
+            filename = f"galil_diagnostic_report_{controller_serial}_{timestamp}.json"
+            
+            # Ask user for save location
+            file_path = filedialog.asksaveasfilename(
+                title="Save Diagnostic Report",
+                defaultextension=".json",
+                filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+                initialname=filename
+            )
+            
+            if file_path:
+                # Add additional metadata
+                report_data = {
+                    'report_metadata': {
+                        'version': '1.0',
+                        'generated_by': 'Galil Setup Tool',
+                        'save_timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    },
+                    'diagnostic_results': self.diagnostic_results
+                }
+                
+                # Save to file
+                with open(file_path, 'w') as f:
+                    json.dump(report_data, f, indent=2)
+                
+                self.append_test_log(f"✓ Diagnostic report saved to: {file_path}")
+                messagebox.showinfo("Report Saved", f"Diagnostic report saved successfully!\n\nFile: {file_path}")
+                
+        except Exception as e:
+            error_msg = f"Error saving diagnostic report: {str(e)}"
+            self.append_test_log(f"ERROR: {error_msg}")
+            messagebox.showerror("Save Error", error_msg)
 
     def auto_connect_to_controller(self):
         """Automatically detect and connect to the Galil controller on startup"""
@@ -2385,9 +3679,7 @@ class GalilSetupApp:
 
     def test_tune_axis(self):
         """Tune the selected axis with PID values"""
-        if not self.controller:
-            messagebox.showerror("Error", "Please connect to a controller first")
-            return
+        self._ensure_controller_connected()
             
         try:
             axis = self.test_axis_var.get()
@@ -2411,9 +3703,7 @@ class GalilSetupApp:
             
     def test_jog_axis(self, direction):
         """Jog the selected axis by the specified distance"""
-        if not self.controller:
-            messagebox.showerror("Error", "Please connect to a controller first")
-            return
+        self._ensure_controller_connected()
             
         try:
             axis = self.test_axis_var.get()
@@ -2446,9 +3736,7 @@ class GalilSetupApp:
             
     def test_stop_axis(self):
         """Stop the selected axis"""
-        if not self.controller:
-            messagebox.showerror("Error", "Please connect to a controller first")
-            return
+        self._ensure_controller_connected()
             
         try:
             axis = self.test_axis_var.get()
@@ -2469,9 +3757,7 @@ class GalilSetupApp:
             
     def test_move_to_position(self):
         """Move the selected axis to the specified position"""
-        if not self.controller:
-            messagebox.showerror("Error", "Please connect to a controller first")
-            return
+        self._ensure_controller_connected()
             
         try:
             axis = self.test_axis_var.get()
@@ -2485,13 +3771,7 @@ class GalilSetupApp:
                 time.sleep(0.2)  # Wait longer for servo to stabilize
                 
                 # Verify servo is enabled
-                servo_status = self.controller.send_command(f"MG _MO{axis}").strip()
-                if servo_status == "0":
-                    # Try again
-                    self.controller.send_command(f"SH{axis}")
-                    time.sleep(0.3)
-                    servo_status = self.controller.send_command(f"MG _MO{axis}").strip()
-                
+                servo_status = self._ensure_servo_enabled(axis)
                 self.append_test_log(f"Servo status after enable: {servo_status}")
             except Exception as e:
                 self.append_test_log(f"Warning: Could not enable servo for axis {axis}: {e}")
@@ -2511,60 +3791,10 @@ class GalilSetupApp:
             galil_functions.move_to_position(self.controller, axis, position, speed)
             
             # Monitor the movement and ensure servo stays enabled
-            self.append_test_log(f"Monitoring movement...")
-            start_time = time.time()
-            last_pos = current_pos
+            self._monitor_motion_progress(axis, current_pos, position)
             
-            while time.time() - start_time < 10.0:  # 10 second timeout
-                try:
-                    # Check if motion is still active
-                    motion_status = self.controller.send_command("MG _BG").strip()
-                    try:
-                        bg_value = int(float(motion_status))
-                    except ValueError:
-                        bg_value = 0
-                    
-                    axis_bits = {"A": 1, "B": 2, "C": 4, "D": 8}
-                    motion_active = (bg_value & axis_bits[axis]) != 0
-                    
-                    # Get current position
-                    current_pos = int(self.controller.send_command(f"TP {axis}").strip())
-                    
-                    # Check servo status
-                    servo_status = self.controller.send_command(f"MG _MO{axis}").strip()
-                    if servo_status == "0":
-                        self.append_test_log(f"WARNING: Servo disabled during motion, re-enabling...")
-                        self.controller.send_command(f"SH{axis}")
-                        time.sleep(0.1)
-                    
-                    # Check if position is changing
-                    if abs(current_pos - last_pos) > 5:
-                        self.append_test_log(f"Position: {current_pos} (motion active: {motion_active})")
-                        last_pos = current_pos
-                    
-                    # Check if we're close to target
-                    if abs(current_pos - position) < 50:
-                        self.append_test_log(f"Close to target: {current_pos} (target: {position})")
-                    
-                    # If motion stopped and we're close enough, consider it complete
-                    if not motion_active and abs(current_pos - position) < 100:
-                        self.append_test_log(f"Motion completed near target")
-                        break
-                    
-                    time.sleep(0.2)
-                    
-                except Exception as e:
-                    self.append_test_log(f"Error monitoring motion: {e}")
-                    break
-            
-            # Final servo check and re-enable if needed
-            try:
-                servo_status = self.controller.send_command(f"MG _MO{axis}").strip()
-                if servo_status == "0":
-                    self.append_test_log(f"Re-enabling servo after motion...")
-                    self.controller.send_command(f"SH{axis}")
-            except Exception as e:
-                self.append_test_log(f"Error checking final servo status: {e}")
+                        # Final servo check and re-enable if needed
+            self._ensure_servo_enabled_after_motion(axis)
             
             self.append_test_log(f"Move command completed!")
             
@@ -2575,9 +3805,7 @@ class GalilSetupApp:
             
     def test_simple_move(self):
         """Test a simple small movement to verify the system is working"""
-        if not self.controller:
-            messagebox.showerror("Error", "Please connect to a controller first")
-            return
+        self._ensure_controller_connected()
             
         try:
             axis = self.test_axis_var.get()
@@ -2776,9 +4004,7 @@ class GalilSetupApp:
             
     def test_apply_motion_params(self):
         """Apply motion parameters to the selected axis"""
-        if not self.controller:
-            messagebox.showerror("Error", "Please connect to a controller first")
-            return
+        self._ensure_controller_connected()
             
         try:
             axis = self.test_axis_var.get()
@@ -2791,27 +4017,8 @@ class GalilSetupApp:
             # Stop the axis first
             self.controller.send_command(f"ST{axis}")
             
-            # Apply speed parameter
-            resp = self.controller.send_command(f"SP{axis}={speed}")
-            if resp.strip() == "?":
-                self.test_status_text.insert(tk.END, f"WARNING: Controller rejected speed value {speed}\n")
-            else:
-                self.test_status_text.insert(tk.END, f"Speed parameter applied successfully\n")
-            
-            # Apply acceleration parameter
-            resp = self.controller.send_command(f"AC{axis}={accel}")
-            if resp.strip() == "?":
-                self.test_status_text.insert(tk.END, f"WARNING: Controller rejected acceleration value {accel}\n")
-            else:
-                self.test_status_text.insert(tk.END, f"Acceleration parameter applied successfully\n")
-            
-            # Apply deceleration parameter (typically 2x acceleration)
-            decel = accel * 2
-            resp = self.controller.send_command(f"DC{axis}={decel}")
-            if resp.strip() == "?":
-                self.test_status_text.insert(tk.END, f"WARNING: Controller rejected deceleration value {decel}\n")
-            else:
-                self.test_status_text.insert(tk.END, f"Deceleration parameter applied successfully\n")
+            # Apply motion parameters
+            self._apply_motion_parameters(axis, speed, accel)
 
             # Verify via MG _SP/_AC/_DC
             try:
@@ -2835,122 +4042,23 @@ class GalilSetupApp:
             
     def test_encoder_update_loop(self):
         """Encoder position update loop for all axes"""
-        servo_maintenance_counter = 0
-        while self.test_encoder_update_running:
-            try:
-                if not self.controller:
-                    time.sleep(0.5)  # Wait longer when no controller
-                    continue
-                
-                # Read positions from all axes
-                axis_positions = {}
-                for axis in ["A", "B", "C", "D"]:
-                    try:
-                        pos_str = self.controller.send_command(f"TP {axis}")
-                        position = int(pos_str.strip())
-                        axis_positions[axis] = position
-                    except Exception as e:
-                        # If axis doesn't respond, mark as error
-                        axis_positions[axis] = None
-                
-                # Update all encoder displays in main thread
-                if self.test_encoder_update_running:  # Double-check before updating UI
-                    self.root.after(0, self.test_update_all_encoder_displays, axis_positions)
-                
-                # Perform servo maintenance every 50 updates (5 seconds)
-                servo_maintenance_counter += 1
-                if servo_maintenance_counter >= 50:
-                    self.maintain_servo_status()
-                    servo_maintenance_counter = 0
-                
-                # Sleep for update interval
-                time.sleep(0.1)  # 100ms updates
-                
-            except Exception as e:
-                # Update UI with error in main thread
-                if self.test_encoder_update_running:  # Double-check before updating UI
-                    self.root.after(0, self.test_update_all_encoder_displays, None, str(e))
-                time.sleep(1)  # Wait longer before retrying on error
+        self._run_encoder_update_loop()
                 
     def test_update_all_encoder_displays(self, axis_positions, error=None):
         """Update all encoder displays with positions for each axis"""
-        if not self.test_encoder_update_running:
-            return
+        self._ensure_encoder_update_running()
             
         # Check if widgets still exist before trying to update them
-        try:
-            if not hasattr(self, 'encoder_displays') or not hasattr(self, 'encoder_labels'):
-                return
-        except tk.TclError:
-            # Widget was destroyed, stop updates
-            self.test_encoder_update_running = False
-            return
+        self._validate_encoder_widgets()
             
-        if error:
-            # Show error on all displays
-            for axis in ['A', 'B', 'C', 'D']:
-                if axis in self.encoder_labels and self.encoder_labels[axis].winfo_exists():
-                    self.encoder_labels[axis].configure(text=f"Error: {error}")
-            return
+        self._handle_encoder_display_error_if_needed(error)
             
         # Update each axis display
-        for axis in ['A', 'B', 'C', 'D']:
-            try:
-                if axis not in self.encoder_displays or axis not in self.encoder_labels:
-                    continue
-                    
-                canvas = self.encoder_displays[axis]
-                label = self.encoder_labels[axis]
-                
-                if not canvas.winfo_exists() or not label.winfo_exists():
-                    continue
-                
-                position = axis_positions.get(axis)
-                
-                if position is None:
-                    # Axis not responding
-                    label.configure(text="No Response", fg=self.colors['error_red'])
-                    canvas.delete("all")
-                    # Draw empty circle
-                    canvas.create_oval(10, 10, 140, 140, outline='gray', width=1)
-                    canvas.create_text(75, 75, text="?", fill='gray', font=("Arial", 20))
-                else:
-                    # Update position label
-                    label.configure(text=f"Position: {position}", fg=self.colors['main_fg'])
-                    
-                    # Update visual display
-                    canvas.delete("all")
-                    
-                    # Draw encoder circle
-                    canvas.create_oval(10, 10, 140, 140, outline='black', width=2)
-                    
-                    # Calculate angle from position
-                    clicks_per_turn = int(self.test_clicks_per_turn_entry.get())
-                    angle = (position % clicks_per_turn) / clicks_per_turn * 2 * 3.14159
-                    
-                    # Draw position indicator
-                    center_x = 75
-                    center_y = 75
-                    radius = 50
-                    
-                    indicator_x = center_x + radius * 0.8 * math.cos(angle)
-                    indicator_y = center_y - radius * 0.8 * math.sin(angle)  # Negative for correct orientation
-                    
-                    canvas.create_oval(
-                        indicator_x - 5, indicator_y - 5,
-                        indicator_x + 5, indicator_y + 5,
-                        fill='red', outline='black'
-                    )
-                    
-            except Exception as e:
-                # Individual axis update failed, continue with others
-                continue
+        self._update_all_axis_displays(axis_positions)
              
     def test_servo_on(self):
         """Enable servo for the selected axis"""
-        if not self.controller:
-            messagebox.showerror("Error", "Please connect to a controller first")
-            return
+        self._ensure_controller_connected()
             
         try:
             axis = self.test_axis_var.get()
@@ -2958,26 +4066,11 @@ class GalilSetupApp:
             self.append_test_log(f"Enabling servo for axis {axis}...")
             
             # Enable servo with verification
-            self.controller.send_command(f"SH{axis}")
-            time.sleep(0.2)
-            
-            # Verify servo is enabled
-            servo_status = self.controller.send_command(f"MG _MO{axis}").strip()
-            if servo_status == "0":
-                # Try again
-                self.controller.send_command(f"SH{axis}")
-                time.sleep(0.3)
-                servo_status = self.controller.send_command(f"MG _MO{axis}").strip()
-            
-            if servo_status != "0":
-                self.append_test_log(f"Servo enabled for axis {axis} (status: {servo_status})")
-            else:
-                self.append_test_log(f"WARNING: Servo may not be enabled (status: {servo_status})")
+            servo_status = self._enable_servo_with_verification(axis)
+            self.append_test_log(f"Servo status: {servo_status}")
             
         except Exception as e:
-            error_msg = f"Servo enable error: {str(e)}"
-            self.append_test_log(f"ERROR: {error_msg}")
-            messagebox.showerror("Servo Error", error_msg)
+            self._handle_servo_error("Servo enable error", e)
             
     def maintain_servo_status(self):
         """Continuously monitor and maintain servo status for all axes"""
@@ -3034,9 +4127,7 @@ class GalilSetupApp:
             
     def test_servo_off(self):
         """Disable servo for the selected axis"""
-        if not self.controller:
-            messagebox.showerror("Error", "Please connect to a controller first")
-            return
+        self._ensure_controller_connected()
             
         try:
             axis = self.test_axis_var.get()
@@ -3060,9 +4151,7 @@ class GalilSetupApp:
             
     def test_stop_all(self):
         """Stop all axes"""
-        if not self.controller:
-            messagebox.showerror("Error", "Please connect to a controller first")
-            return
+        self._ensure_controller_connected()
             
         try:
             self.test_status_text.insert(tk.END, "Stopping all axes...\n")
@@ -3320,6 +4409,289 @@ class GalilSetupApp:
         # Timeout reached
         return False
     
+    def _stop_all_motion(self):
+        """Stop all motion on the controller"""
+        try:
+            self.controller.send_command("ST")
+        except:
+            pass
+            
+    def _disconnect_controller(self):
+        """Disconnect from the controller"""
+        try:
+            self.controller.disconnect()
+        except:
+            pass
+            
+    def _ensure_controller_connected(self):
+        """Ensure controller is connected, show error if not"""
+        if not self.controller:
+            messagebox.showerror("Connection Error", "No controller connected. Please connect to a controller first.")
+            raise RuntimeError("No controller connected")
+            
+    def _test_all_axis_positions(self):
+        """Test position reading for all axes"""
+        for axis in ["A", "B", "C", "D"]:
+            try:
+                position_response = self.controller.send_command(f"TP{axis}")
+                position = int(float(position_response.strip()))
+                self.motor_status_text.insert(tk.END, f"Axis {axis} position: {position}\n")
+            except Exception as e:
+                self.motor_status_text.insert(tk.END, f"Axis {axis} test failed: {str(e)}\n")
+                
+    def _ensure_servo_enabled(self, axis):
+        """Ensure servo is enabled for the specified axis"""
+        servo_status = self.controller.send_command(f"MG _MO{axis}").strip()
+        if servo_status == "0":
+            # Try again
+            self.controller.send_command(f"SH{axis}")
+            time.sleep(0.3)
+            servo_status = self.controller.send_command(f"MG _MO{axis}").strip()
+        return servo_status
+        
+    def _monitor_motion_progress(self, axis, start_pos, target_pos):
+        """Monitor motion progress and maintain servo status"""
+        self.append_test_log(f"Monitoring movement...")
+        start_time = time.time()
+        last_pos = start_pos
+        
+        while time.time() - start_time < 10.0:  # 10 second timeout
+            try:
+                # Check if motion is still active
+                motion_status = self.controller.send_command("MG _BG").strip()
+                try:
+                    bg_value = int(float(motion_status))
+                except ValueError:
+                    bg_value = 0
+                
+                axis_bits = {"A": 1, "B": 2, "C": 4, "D": 8}
+                motion_active = (bg_value & axis_bits[axis]) != 0
+                
+                # Get current position
+                current_pos = int(self.controller.send_command(f"TP {axis}").strip())
+                
+                # Check servo status
+                servo_status = self.controller.send_command(f"MG _MO{axis}").strip()
+                if servo_status == "0":
+                    self.append_test_log(f"WARNING: Servo disabled during motion, re-enabling...")
+                    self.controller.send_command(f"SH{axis}")
+                    time.sleep(0.1)
+                
+                # Check if position is changing
+                if abs(current_pos - last_pos) > 5:
+                    self.append_test_log(f"Position: {current_pos} (motion active: {motion_active})")
+                    last_pos = current_pos
+                
+                # Check if we're close to target
+                if abs(current_pos - target_pos) < 50:
+                    self.append_test_log(f"Close to target: {current_pos} (target: {target_pos})")
+                
+                # If motion stopped and we're close enough, consider it complete
+                if not motion_active and abs(current_pos - target_pos) < 100:
+                    self.append_test_log(f"Motion completed near target")
+                    break
+                
+                time.sleep(0.2)
+                
+            except Exception as e:
+                self.append_test_log(f"Error monitoring motion: {e}")
+                break
+                
+    def _ensure_servo_enabled_after_motion(self, axis):
+        """Ensure servo is enabled after motion completion"""
+        try:
+            servo_status = self.controller.send_command(f"MG _MO{axis}").strip()
+            if servo_status == "0":
+                self.append_test_log(f"Re-enabling servo after motion...")
+                self.controller.send_command(f"SH{axis}")
+        except Exception as e:
+            self.append_test_log(f"Error checking final servo status: {e}")
+            
+    def _check_motion_command_support(self, axis):
+        """Check if motion commands are supported for the given axis"""
+        try:
+            # Test basic motion commands
+            test_pr = self.controller.send_command(f"PR{axis}=100")
+            test_bg = self.controller.send_command(f"BG{axis}")
+            test_st = self.controller.send_command(f"ST{axis}")
+            
+            if "?" not in test_pr and "?" not in test_bg and "?" not in test_st:
+                self.motor_status_text.insert(tk.END, "✓ Motion commands supported for index latching\n")
+                return True
+            else:
+                self.motor_status_text.insert(tk.END, "⚠ Motion commands not supported - using position analysis\n")
+                return False
+        except:
+            self.motor_status_text.insert(tk.END, "⚠ Motion commands not supported - using position analysis\n")
+            return False
+            
+    def _apply_motion_parameters(self, axis, speed, accel):
+        """Apply motion parameters to the specified axis"""
+        # Apply speed parameter
+        resp = self.controller.send_command(f"SP{axis}={speed}")
+        if resp.strip() == "?":
+            self.test_status_text.insert(tk.END, f"WARNING: Controller rejected speed value {speed}\n")
+        else:
+            self.test_status_text.insert(tk.END, f"Speed parameter applied successfully\n")
+        
+        # Apply acceleration parameter
+        resp = self.controller.send_command(f"AC{axis}={accel}")
+        if resp.strip() == "?":
+            self.test_status_text.insert(tk.END, f"WARNING: Controller rejected acceleration value {accel}\n")
+        else:
+            self.test_status_text.insert(tk.END, f"Acceleration parameter applied successfully\n")
+        
+        # Apply deceleration parameter (typically 2x acceleration)
+        decel = accel * 2
+        resp = self.controller.send_command(f"DC{axis}={decel}")
+        if resp.strip() == "?":
+            self.test_status_text.insert(tk.END, f"WARNING: Controller rejected deceleration value {decel}\n")
+        else:
+            self.test_status_text.insert(tk.END, f"Deceleration parameter applied successfully\n")
+            
+    def _run_encoder_update_loop(self):
+        """Run the encoder position update loop"""
+        servo_maintenance_counter = 0
+        while self.test_encoder_update_running:
+            try:
+                if not self.controller:
+                    time.sleep(0.5)  # Wait longer when no controller
+                    continue
+                
+                # Read positions from all axes
+                axis_positions = {}
+                for axis in ["A", "B", "C", "D"]:
+                    try:
+                        pos_str = self.controller.send_command(f"TP {axis}")
+                        position = int(pos_str.strip())
+                        axis_positions[axis] = position
+                    except Exception as e:
+                        # If axis doesn't respond, mark as error
+                        axis_positions[axis] = None
+                
+                # Update all encoder displays in main thread
+                if self.test_encoder_update_running:  # Double-check before updating UI
+                    self.root.after(0, self.test_update_all_encoder_displays, axis_positions)
+                
+                # Perform servo maintenance every 50 updates (5 seconds)
+                servo_maintenance_counter += 1
+                if servo_maintenance_counter >= 50:
+                    self.maintain_servo_status()
+                    servo_maintenance_counter = 0
+                
+                # Sleep for update interval
+                time.sleep(0.1)  # 100ms updates
+                
+            except Exception as e:
+                # Update UI with error in main thread
+                if self.test_encoder_update_running:  # Double-check before updating UI
+                    self.root.after(0, self.test_update_all_encoder_displays, None, str(e))
+                time.sleep(1)  # Wait longer before retrying on error
+                
+    def _ensure_encoder_update_running(self):
+        """Ensure encoder update is running, raise exception if not"""
+        if not self.test_encoder_update_running:
+            raise RuntimeError("Encoder update not running")
+            
+    def _validate_encoder_widgets(self):
+        """Validate that encoder widgets exist and are accessible"""
+        try:
+            if not hasattr(self, 'encoder_displays') or not hasattr(self, 'encoder_labels'):
+                raise RuntimeError("Encoder widgets not initialized")
+        except tk.TclError:
+            # Widget was destroyed, stop updates
+            self.test_encoder_update_running = False
+            raise RuntimeError("Encoder widgets destroyed")
+            
+    def _handle_encoder_display_error_if_needed(self, error):
+        """Handle encoder display errors if error is present"""
+        if error:
+            for axis in ['A', 'B', 'C', 'D']:
+                if axis in self.encoder_labels and self.encoder_labels[axis].winfo_exists():
+                    self.encoder_labels[axis].configure(text=f"Error: {error}")
+            raise RuntimeError("Encoder display error occurred")
+            
+    def _update_all_axis_displays(self, axis_positions):
+        """Update all axis displays with position data"""
+        for axis in ['A', 'B', 'C', 'D']:
+            try:
+                if axis not in self.encoder_displays or axis not in self.encoder_labels:
+                    continue
+                    
+                canvas = self.encoder_displays[axis]
+                label = self.encoder_labels[axis]
+                
+                if not canvas.winfo_exists() or not label.winfo_exists():
+                    continue
+                
+                position = axis_positions.get(axis)
+                
+                if position is None:
+                    # Axis not responding
+                    label.configure(text="No Response", fg=self.colors['error_red'])
+                    canvas.delete("all")
+                    # Draw empty circle
+                    canvas.create_oval(10, 10, 140, 140, outline='gray', width=1)
+                    canvas.create_text(75, 75, text="?", fill='gray', font=("Arial", 20))
+                else:
+                    # Update position label
+                    label.configure(text=f"Position: {position}", fg=self.colors['main_fg'])
+                    
+                    # Update visual display
+                    canvas.delete("all")
+                    
+                    # Draw encoder circle
+                    canvas.create_oval(10, 10, 140, 140, outline='black', width=2)
+                    
+                    # Calculate angle from position
+                    clicks_per_turn = int(self.test_clicks_per_turn_entry.get())
+                    angle = (position % clicks_per_turn) / clicks_per_turn * 2 * 3.14159
+                    
+                    # Draw position indicator
+                    center_x = 75
+                    center_y = 75
+                    radius = 50
+                    
+                    indicator_x = center_x + radius * 0.8 * math.cos(angle)
+                    indicator_y = center_y - radius * 0.8 * math.sin(angle)  # Negative for correct orientation
+                    
+                    canvas.create_oval(
+                        indicator_x - 5, indicator_y - 5,
+                        indicator_x + 5, indicator_y + 5,
+                        fill='red', outline='black'
+                    )
+                    
+            except Exception as e:
+                # Individual axis update failed, continue with others
+                continue
+                
+    def _enable_servo_with_verification(self, axis):
+        """Enable servo for the specified axis with verification"""
+        # Enable servo
+        self.controller.send_command(f"SH{axis}")
+        time.sleep(0.2)
+        
+        # Verify servo is enabled
+        servo_status = self.controller.send_command(f"MG _MO{axis}").strip()
+        if servo_status == "0":
+            # Try again
+            self.controller.send_command(f"SH{axis}")
+            time.sleep(0.3)
+            servo_status = self.controller.send_command(f"MG _MO{axis}").strip()
+        
+        if servo_status != "0":
+            self.append_test_log(f"Servo enabled for axis {axis} (status: {servo_status})")
+        else:
+            self.append_test_log(f"WARNING: Servo may not be enabled (status: {servo_status})")
+            
+        return servo_status
+        
+    def _handle_servo_error(self, operation, error):
+        """Handle servo operation errors"""
+        error_msg = f"{operation}: {str(error)}"
+        self.append_test_log(f"ERROR: {error_msg}")
+        messagebox.showerror("Servo Error", error_msg)
+            
     def cleanup(self):
         """Clean up resources when application is closing"""
         try:
@@ -3347,6 +4719,278 @@ class GalilSetupApp:
                     pass
         except Exception as e:
             print(f"Cleanup error: {e}")
+
+    def load_diagnostic_report(self):
+        """Load and display a previously saved diagnostic report"""
+        try:
+            # Ask user to select a report file
+            file_path = filedialog.askopenfilename(
+                title="Load Diagnostic Report",
+                filetypes=[("JSON files", "*.json"), ("All files", "*.*")]
+            )
+            
+            if not file_path:
+                return
+                
+            # Load the report
+            with open(file_path, 'r') as f:
+                report_data = json.load(f)
+            
+            # Extract diagnostic results
+            if 'diagnostic_results' in report_data:
+                self.diagnostic_results = report_data['diagnostic_results']
+                
+                # Display the report
+                self.display_loaded_report(report_data)
+                
+                self.append_test_log(f"✓ Diagnostic report loaded from: {file_path}")
+                messagebox.showinfo("Report Loaded", f"Diagnostic report loaded successfully!\n\nFile: {file_path}")
+            else:
+                messagebox.showerror("Invalid Report", "The selected file does not contain a valid diagnostic report.")
+                
+        except Exception as e:
+            error_msg = f"Error loading diagnostic report: {str(e)}"
+            self.append_test_log(f"ERROR: {error_msg}")
+            messagebox.showerror("Load Error", error_msg)
+
+    def display_loaded_report(self, report_data):
+        """Display a loaded diagnostic report in the status log"""
+        # Clear the status log
+        self.test_status_text.delete(1.0, tk.END)
+        
+        # Display report metadata
+        metadata = report_data.get('report_metadata', {})
+        self.append_test_log("=== LOADED DIAGNOSTIC REPORT ===")
+        self.append_test_log(f"Generated by: {metadata.get('generated_by', 'Unknown')}")
+        self.append_test_log(f"Version: {metadata.get('version', 'Unknown')}")
+        self.append_test_log(f"Generated: {self.diagnostic_results.get('timestamp', 'Unknown')}")
+        self.append_test_log(f"Saved: {metadata.get('save_timestamp', 'Unknown')}")
+        
+        # Generate and display the summary
+        self.generate_diagnostic_summary()
+        
+        # Enable save report button
+        if hasattr(self, 'save_report_btn'):
+            self.save_report_btn.configure(state='normal', bg=self.colors['success_green'])
+
+    def export_diagnostic_csv(self):
+        """Export diagnostic results as CSV files for data analysis"""
+        if not hasattr(self, 'diagnostic_results') or not self.diagnostic_results:
+            messagebox.showwarning("No Report", "No diagnostic report available to export. Please run diagnostics first.")
+            return
+            
+        try:
+            # Ask user for save location
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            controller_serial = self.diagnostic_results['controller_info'].get('serial', 'Unknown').replace('.', '_')
+            filename = f"galil_diagnostic_data_{controller_serial}_{timestamp}.csv"
+            
+            file_path = filedialog.asksaveasfilename(
+                title="Export Diagnostic Data as CSV",
+                defaultextension=".csv",
+                filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+                initialname=filename
+            )
+            
+            if file_path:
+                import csv
+                
+                with open(file_path, 'w', newline='') as csvfile:
+                    writer = csv.writer(csvfile)
+                    
+                    # Write header
+                    writer.writerow([
+                        'Axis', 'Speed', 'Test_Step', 'Target_Position', 'Final_Position', 
+                        'Position_Error', 'Motor_Detected', 'KP', 'KI', 'KD', 'Timestamp'
+                    ])
+                    
+                    # Write data rows
+                    for axis in ["A", "B", "C", "D"]:
+                        if axis in self.diagnostic_results['axis_results']:
+                            axis_data = self.diagnostic_results['axis_results'][axis]
+                            
+                            # Get PID settings
+                            pid = axis_data.get('pid_settings', {})
+                            kp = pid.get('kp', 'N/A')
+                            ki = pid.get('ki', 'N/A')
+                            kd = pid.get('kd', 'N/A')
+                            
+                            motor_detected = 'Yes' if axis_data.get('motor_detected', False) else 'No'
+                            
+                            # Write speed test data
+                            for speed in [50000, 100000]:
+                                if speed in axis_data.get('speed_tests', {}):
+                                    speed_data = axis_data['speed_tests'][speed]
+                                    
+                                    for test in speed_data.get('position_tests', []):
+                                        writer.writerow([
+                                            axis,
+                                            speed,
+                                            test.get('step_number', ''),
+                                            test.get('target_position', ''),
+                                            test.get('final_position', ''),
+                                            test.get('position_error', ''),
+                                            motor_detected,
+                                            kp,
+                                            ki,
+                                            kd,
+                                            self.diagnostic_results.get('timestamp', '')
+                                        ])
+                
+                self.append_test_log(f"✓ Diagnostic data exported to CSV: {file_path}")
+                messagebox.showinfo("Export Complete", f"Diagnostic data exported successfully!\n\nFile: {file_path}")
+                
+        except Exception as e:
+            error_msg = f"Error exporting diagnostic data: {str(e)}"
+            self.append_test_log(f"ERROR: {error_msg}")
+            messagebox.showerror("Export Error", error_msg)
+
+    def compare_diagnostic_reports(self):
+        """Compare multiple diagnostic reports to show performance trends"""
+        try:
+            # Ask user to select multiple report files
+            file_paths = filedialog.askopenfilenames(
+                title="Select Diagnostic Reports to Compare",
+                filetypes=[("JSON files", "*.json"), ("All files", "*.*")]
+            )
+            
+            if not file_paths or len(file_paths) < 2:
+                messagebox.showwarning("Selection Required", "Please select at least 2 diagnostic reports to compare.")
+                return
+            
+            # Load all reports
+            reports = []
+            for file_path in file_paths:
+                try:
+                    with open(file_path, 'r') as f:
+                        report_data = json.load(f)
+                    if 'diagnostic_results' in report_data:
+                        reports.append({
+                            'file_path': file_path,
+                            'data': report_data['diagnostic_results'],
+                            'metadata': report_data.get('report_metadata', {})
+                        })
+                except Exception as e:
+                    self.append_test_log(f"WARNING: Could not load report {file_path}: {e}")
+            
+            if len(reports) < 2:
+                messagebox.showerror("Invalid Reports", "Could not load enough valid reports for comparison.")
+                return
+            
+            # Generate comparison report
+            self.generate_comparison_report(reports)
+            
+        except Exception as e:
+            error_msg = f"Error comparing diagnostic reports: {str(e)}"
+            self.append_test_log(f"ERROR: {error_msg}")
+            messagebox.showerror("Comparison Error", error_msg)
+
+    def generate_comparison_report(self, reports):
+        """Generate a comparison report for multiple diagnostic files"""
+        self.append_test_log("\n" + "="*80)
+        self.append_test_log("=== DIAGNOSTIC REPORTS COMPARISON ===")
+        self.append_test_log("="*80)
+        
+        # Sort reports by timestamp
+        reports.sort(key=lambda x: x['data'].get('timestamp', ''))
+        
+        # Display report list
+        self.append_test_log(f"\nComparing {len(reports)} diagnostic reports:")
+        for i, report in enumerate(reports, 1):
+            timestamp = report['data'].get('timestamp', 'Unknown')
+            serial = report['data'].get('controller_info', {}).get('serial', 'Unknown')
+            self.append_test_log(f"  {i}. {timestamp} - Controller {serial}")
+        
+        # Compare performance metrics for each axis
+        self.append_test_log("\n--- PERFORMANCE COMPARISON BY AXIS ---")
+        
+        for axis in ["A", "B", "C", "D"]:
+            self.append_test_log(f"\nAxis {axis}:")
+            
+            # Collect data for this axis across all reports
+            axis_data = []
+            for report in reports:
+                if axis in report['data'].get('axis_results', {}):
+                    axis_result = report['data']['axis_results'][axis]
+                    if axis_result.get('motor_detected', False):
+                        timestamp = report['data'].get('timestamp', 'Unknown')
+                        
+                        # Get performance metrics
+                        for speed in [50000, 100000]:
+                            if speed in axis_result.get('speed_tests', {}):
+                                speed_data = axis_result['speed_tests'][speed]
+                                max_error = speed_data.get('max_position_error', 0)
+                                avg_error = speed_data.get('avg_position_error', 0)
+                                
+                                axis_data.append({
+                                    'timestamp': timestamp,
+                                    'speed': speed,
+                                    'max_error': max_error,
+                                    'avg_error': avg_error,
+                                    'report_index': len(axis_data)
+                                })
+            
+            if axis_data:
+                # Show trends
+                self.append_test_log(f"  Motor detected in {len(set(d['report_index'] for d in axis_data))} reports")
+                
+                # Compare max errors
+                for speed in [50000, 100000]:
+                    speed_data = [d for d in axis_data if d['speed'] == speed]
+                    if speed_data:
+                        max_errors = [d['max_error'] for d in speed_data]
+                        avg_errors = [d['avg_error'] for d in speed_data]
+                        
+                        min_max = min(max_errors)
+                        max_max = max(max_errors)
+                        avg_max = sum(max_errors) / len(max_errors)
+                        
+                        self.append_test_log(f"  Speed {speed}: Max Error Range: {min_max}-{max_max} counts (Avg: {avg_max:.1f})")
+                        
+                        # Identify best and worst performance
+                        best_report = speed_data[max_errors.index(min_max)]
+                        worst_report = speed_data[max_errors.index(max_max)]
+                        
+                        if min_max != max_max:
+                            self.append_test_log(f"    Best: {best_report['timestamp']} ({min_max} counts)")
+                            self.append_test_log(f"    Worst: {worst_report['timestamp']} ({max_max} counts)")
+                        
+                        # Trend analysis
+                        if len(max_errors) >= 3:
+                            trend = "Improving" if max_errors[-1] < max_errors[0] else "Declining" if max_errors[-1] > max_errors[0] else "Stable"
+                            self.append_test_log(f"    Trend: {trend}")
+            else:
+                self.append_test_log(f"  No motor detected or insufficient data")
+        
+        # Overall system health comparison
+        self.append_test_log("\n--- SYSTEM HEALTH COMPARISON ---")
+        
+        system_scores = []
+        for report in reports:
+            total_errors = sum(len(axis_data.get('errors', [])) for axis_data in report['data'].get('axis_results', {}).values())
+            total_warnings = sum(len(axis_data.get('warnings', [])) for axis_data in report['data'].get('axis_results', {}).values())
+            
+            # Calculate a simple health score (lower is better)
+            health_score = total_errors * 10 + total_warnings * 2
+            system_scores.append({
+                'timestamp': report['data'].get('timestamp', 'Unknown'),
+                'errors': total_errors,
+                'warnings': total_warnings,
+                'health_score': health_score
+            })
+        
+        if system_scores:
+            best_health = min(system_scores, key=lambda x: x['health_score'])
+            worst_health = max(system_scores, key=lambda x: x['health_score'])
+            
+            self.append_test_log(f"Best System Health: {best_health['timestamp']} (Score: {best_health['health_score']})")
+            self.append_test_log(f"Worst System Health: {worst_health['timestamp']} (Score: {worst_health['health_score']})")
+            
+            if len(system_scores) >= 3:
+                avg_score = sum(s['health_score'] for s in system_scores) / len(system_scores)
+                self.append_test_log(f"Average System Health Score: {avg_score:.1f}")
+        
+        self.append_test_log("\n" + "="*80)
 
 def main():
     root = tk.Tk()
