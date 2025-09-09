@@ -479,32 +479,116 @@ def configure_controller_network_dmc4143(controller, ip_address: str, subnet_mas
         except Exception as e:
             results['debug_info'].append(f"Error reading current IP: {str(e)}")
         
-        # Step 1: Set IP address - Use the format that worked in debug
-        results['debug_info'].append(f"Setting IP address to: {ip_address}")
+        # Step 1: Convert IP address to comma-separated format for IA command
+        # IA command format: IA n0,n1,n2,n3 where n0=byte0, n1=byte1, n2=byte2, n3=byte3
+        try:
+            ip_parts = ip_address.split('.')
+            if len(ip_parts) == 4:
+                # Convert to integers in correct order (n0=byte0, n1=byte1, n2=byte2, n3=byte3)
+                ip_bytes = [int(part) for part in ip_parts]
+                ia_format = f"{ip_bytes[0]},{ip_bytes[1]},{ip_bytes[2]},{ip_bytes[3]}"
+                results['debug_info'].append(f"IA command format: {ia_format}")
+            else:
+                raise ValueError("Invalid IP address format")
+        except Exception as e:
+            results['debug_info'].append(f"Error converting IP address: {str(e)}")
+            return results
         
-        # Based on debug results, try these formats in order
-        ip_commands = [
-            f"IP={ip_address}",          # This format worked in debug
-            f"IP{ip_address}",           # Standard format
-            f"IP {ip_address}",          # With space
+        # Step 2: Send combined DHCP disable and IP address command (recommended for DMC-4103)
+        results['debug_info'].append(f"Setting IP address to: {ip_address}")
+        results['debug_info'].append("Using combined command to avoid disconnection issues...")
+        
+        # Try combined commands first (DHCP disable + IP set in one line)
+        combined_commands = [
+            f"DH 0;IA {ia_format}",      # Combined command with space
+            f"DH0;IA{ia_format}",        # Combined command without spaces
+            f"DH=0;IA={ia_format}",      # Combined command with equals
         ]
         
-        for cmd in ip_commands:
+        ip_set_success = False
+        for cmd in combined_commands:
             try:
-                results['debug_info'].append(f"Trying command: {cmd}")
+                results['debug_info'].append(f"Trying combined command: {cmd}")
                 response = controller.send_command(cmd)
-                results['debug_info'].append(f"Response: {response}")
+                results['debug_info'].append(f"Combined command response: {response}")
                 
-                # For DMC-4143, empty response or no error means success
+                # For combined command, empty response or no error means success
                 if not response or not response.startswith('?'):
                     results['ip_set'] = True
-                    results['debug_info'].append(f"IP command successful: {cmd}")
+                    ip_set_success = True
+                    results['debug_info'].append(f"✓ Combined command successful: {cmd}")
                     break
                 else:
-                    results['debug_info'].append(f"IP command failed with response: {response}")
+                    results['debug_info'].append(f"Combined command failed with response: {response}")
             except Exception as e:
-                results['debug_info'].append(f"Command {cmd} failed: {str(e)}")
+                results['debug_info'].append(f"Combined command {cmd} failed: {str(e)}")
                 continue
+        
+        # If combined commands fail, try individual commands
+        if not ip_set_success:
+            results['debug_info'].append("Combined commands failed, trying individual commands...")
+            
+            # Try individual DHCP disable first
+            dhcp_commands = [
+                "DH 0",           # Standard format
+                "DH0",            # Without space
+                "DH=0",           # With equals
+            ]
+            
+            dhcp_disabled = False
+            for cmd in dhcp_commands:
+                try:
+                    results['debug_info'].append(f"Trying DHCP disable command: {cmd}")
+                    response = controller.send_command(cmd)
+                    results['debug_info'].append(f"DHCP disable response: {response}")
+                    
+                    # Empty response or no error means success
+                    if not response or not response.startswith('?'):
+                        dhcp_disabled = True
+                        results['debug_info'].append(f"DHCP disabled successfully: {cmd}")
+                        break
+                    else:
+                        results['debug_info'].append(f"DHCP disable failed with response: {response}")
+                except Exception as e:
+                    results['debug_info'].append(f"DHCP disable command {cmd} failed: {str(e)}")
+                    continue
+            
+            if not dhcp_disabled:
+                results['debug_info'].append("Warning: Could not disable DHCP, but continuing with IP setting...")
+            
+            # Try individual IP commands
+            ip_commands = [
+                f"IA {ia_format}",           # Correct IA command format
+                f"IA{ia_format}",            # IA without space
+                f"IA={ia_format}",           # IA with equals (fallback)
+            ]
+            
+            for cmd in ip_commands:
+                try:
+                    results['debug_info'].append(f"Trying IP command: {cmd}")
+                    response = controller.send_command(cmd)
+                    results['debug_info'].append(f"IP command response: {response}")
+                    
+                    # For IA command, empty response or no error means success
+                    if not response or not response.startswith('?'):
+                        results['ip_set'] = True
+                        ip_set_success = True
+                        results['debug_info'].append(f"✓ IP command successful: {cmd}")
+                        results['debug_info'].append("IP address change will cause immediate disconnect")
+                        results['debug_info'].append("Controller should now be accessible at new IP address")
+                        break
+                    else:
+                        results['debug_info'].append(f"IP command failed with response: {response}")
+                except Exception as e:
+                    results['debug_info'].append(f"IP command {cmd} failed: {str(e)}")
+                    # If we get a timeout or write error, it likely means the IP was set and controller disconnected
+                    if "timeout" in str(e).lower() or "write error" in str(e).lower() or "connection" in str(e).lower():
+                        results['debug_info'].append("✓ Timeout/write error indicates IP was set (controller disconnected)")
+                        results['ip_set'] = True
+                        ip_set_success = True
+                        results['debug_info'].append("Controller should now be accessible at new IP address")
+                        break
+                    continue
         
         # Step 2: Set subnet mask - Use the format that worked in debug
         results['debug_info'].append(f"Setting subnet mask to: {subnet_mask}")
@@ -658,22 +742,33 @@ def configure_controller_network_dmc4143(controller, ip_address: str, subnet_mas
         results['debug_info'].append("Final verification and recommendations...")
         
         # Check if any settings were successfully applied
-        if results.get('ip_set', False) or results.get('subnet_set', False):
-            results['debug_info'].append("Network settings were successfully applied")
-            
-            if results.get('saved_to_flash', False):
-                results['debug_info'].append("Settings appear to be saved to non-volatile memory")
-                results['debug_info'].append("IMPORTANT: Power cycle the controller for changes to take effect")
-            else:
-                results['debug_info'].append("WARNING: Settings may not be saved to non-volatile memory")
-                results['debug_info'].append("Try power cycling the controller to see if settings persist")
+        if results.get('ip_set', False):
+            results['debug_info'].append("✓ IP address was successfully set")
+            results['debug_info'].append("⚠ IMPORTANT: Controller has disconnected due to IP change")
+            results['debug_info'].append("")
+            results['debug_info'].append("NEXT STEPS:")
+            results['debug_info'].append("1. Try connecting to the new IP address immediately")
+            results['debug_info'].append("2. If connection succeeds, send BN command to save settings")
+            results['debug_info'].append("3. If connection fails, power cycle the controller")
+            results['debug_info'].append("4. After power cycle, try connecting to new IP again")
+            results['debug_info'].append("")
+            results['debug_info'].append("The IP change IS working - the controller switches to the new IP")
+            results['debug_info'].append("but may revert if settings aren't saved to flash memory")
         else:
-            results['debug_info'].append("No network settings were successfully applied")
-            results['saved_to_flash'] = False
+            results['debug_info'].append("✗ No network settings were successfully applied")
+            results['debug_info'].append("→ Check controller connection")
+            results['debug_info'].append("→ Verify controller model and firmware")
         
         # Always recommend power cycle for DMC-4143
         results['reboot_required'] = True
-        results['debug_info'].append("DMC-4143: Power cycle required for network changes to take effect")
+        results['debug_info'].append("")
+        results['debug_info'].append("DMC-4103 IP Change Process:")
+        results['debug_info'].append("1. Disable DHCP (DH 0)")
+        results['debug_info'].append("2. Set new IP (IA n0,n1,n2,n3)")
+        results['debug_info'].append("3. Controller disconnects (this is normal)")
+        results['debug_info'].append("4. Connect to new IP address")
+        results['debug_info'].append("5. Send BN command to save settings")
+        results['debug_info'].append("6. Power cycle controller")
         
     except Exception as e:
         results['error'] = str(e)
@@ -760,26 +855,100 @@ def force_save_network_settings_dmc4143(controller, ip_address: str, subnet_mask
     try:
         results['debug_info'].append("=== FORCE SAVE NETWORK SETTINGS ===")
         
-        # Step 1: Set network parameters
-        results['debug_info'].append(f"Setting IP address to: {ip_address}")
-        
-        # Set IP with multiple attempts
-        ip_commands = [
-            f"IP={ip_address}",
-            f"IP{ip_address}",
-            f"IP {ip_address}",
+        # Step 1: Disable DHCP first (required before setting static IP)
+        results['debug_info'].append("Disabling DHCP before setting static IP address...")
+        dhcp_commands = [
+            "DH 0",           # Standard format
+            "DH0",            # Without space
+            "DH=0",           # With equals
         ]
         
-        for cmd in ip_commands:
+        dhcp_disabled = False
+        for cmd in dhcp_commands:
             try:
+                results['debug_info'].append(f"Trying DHCP disable command: {cmd}")
                 response = controller.send_command(cmd)
+                results['debug_info'].append(f"DHCP disable response: {response}")
+                
+                # Empty response or no error means success
+                if not response or not response.startswith('?'):
+                    dhcp_disabled = True
+                    results['debug_info'].append(f"DHCP disabled successfully: {cmd}")
+                    break
+                else:
+                    results['debug_info'].append(f"DHCP disable failed with response: {response}")
+            except Exception as e:
+                results['debug_info'].append(f"DHCP disable command {cmd} failed: {str(e)}")
+                continue
+        
+        if not dhcp_disabled:
+            results['debug_info'].append("Warning: Could not disable DHCP, but continuing with IP setting...")
+        
+        # Step 2: Set network parameters
+        results['debug_info'].append(f"Setting IP address to: {ip_address}")
+        
+        # Convert IP address to comma-separated format for IA command
+        try:
+            ip_parts = ip_address.split('.')
+            if len(ip_parts) == 4:
+                # Convert to integers in correct order (n0=byte0, n1=byte1, n2=byte2, n3=byte3)
+                ip_bytes = [int(part) for part in ip_parts]
+                ia_format = f"{ip_bytes[0]},{ip_bytes[1]},{ip_bytes[2]},{ip_bytes[3]}"
+                results['debug_info'].append(f"IA command format: {ia_format}")
+            else:
+                raise ValueError("Invalid IP address format")
+        except Exception as e:
+            results['debug_info'].append(f"Error converting IP address: {str(e)}")
+            return results
+        
+        # Try combined commands first (DHCP disable + IP set in one line)
+        combined_commands = [
+            f"DH 0;IA {ia_format}",      # Combined command with space
+            f"DH0;IA{ia_format}",        # Combined command without spaces
+            f"DH=0;IA={ia_format}",      # Combined command with equals
+        ]
+        
+        ip_set_success = False
+        for cmd in combined_commands:
+            try:
+                results['debug_info'].append(f"Trying combined command: {cmd}")
+                response = controller.send_command(cmd)
+                results['debug_info'].append(f"Combined command response: {response}")
+                
+                # For combined command, empty response or no error means success
                 if not response or not response.startswith('?'):
                     results['ip_set'] = True
-                    results['debug_info'].append(f"IP command successful: {cmd}")
+                    ip_set_success = True
+                    results['debug_info'].append(f"✓ Combined command successful: {cmd}")
                     break
+                else:
+                    results['debug_info'].append(f"Combined command failed with response: {response}")
             except Exception as e:
-                results['debug_info'].append(f"IP command failed: {cmd} - {str(e)}")
+                results['debug_info'].append(f"Combined command {cmd} failed: {str(e)}")
                 continue
+        
+        # If combined commands fail, try individual IP commands
+        if not ip_set_success:
+            results['debug_info'].append("Combined commands failed, trying individual IP commands...")
+            ip_commands = [
+                f"IA {ia_format}",           # Correct IA command format
+                f"IA{ia_format}",            # IA without space
+                f"IA={ia_format}",           # IA with equals (fallback)
+            ]
+            
+            for cmd in ip_commands:
+                try:
+                    results['debug_info'].append(f"Trying IP command: {cmd}")
+                    response = controller.send_command(cmd)
+                    results['debug_info'].append(f"IP command response: {response}")
+                    if not response or not response.startswith('?'):
+                        results['ip_set'] = True
+                        ip_set_success = True
+                        results['debug_info'].append(f"✓ IP command successful: {cmd}")
+                        break
+                except Exception as e:
+                    results['debug_info'].append(f"IP command failed: {cmd} - {str(e)}")
+                    continue
         
         # Set subnet mask
         results['debug_info'].append(f"Setting subnet mask to: {subnet_mask}")
@@ -1021,7 +1190,8 @@ def comprehensive_network_test(controller) -> Dict[str, any]:
         
         # Test 2: Network command support
         network_commands = [
-            ("IP", "IP address command"),
+            ("IA", "IP address command (correct format)"),
+            ("IP", "IP address command (legacy)"),
             ("SM", "Subnet mask command"),
             ("GW", "Gateway command"),
             ("MG _IP", "Get IP address"),
@@ -1098,10 +1268,14 @@ def comprehensive_network_test(controller) -> Dict[str, any]:
             results['controller_info']['error'] = f"Error reading network settings: {str(e)}"
         
         # Test 5: Network configuration test (without actually changing anything)
+        # Convert test IP to IA format: 192.168.1.100 -> 100,1,168,192
+        test_ip_parts = [192, 168, 1, 100]
+        ia_test_format = f"{test_ip_parts[3]},{test_ip_parts[2]},{test_ip_parts[1]},{test_ip_parts[0]}"
+        
         network_test_commands = [
-            "IP192.168.1.100",
-            "IP 192.168.1.100", 
-            "IP=192.168.1.100",
+            f"IA {ia_test_format}",           # Correct IA command format
+            f"IA{ia_test_format}",            # IA without space
+            f"IA={ia_test_format}",           # IA with equals
             "SM255.255.255.0",
             "SM 255.255.255.0",
             "SM=255.255.255.0",
@@ -1239,6 +1413,237 @@ def is_administrator() -> bool:
         # Windows
         import ctypes
         return ctypes.windll.shell32.IsUserAnAdmin() != 0
+
+def configure_controller_pid_settings(controller, kp_values: Dict[str, float] = None, 
+                                     ki_values: Dict[str, float] = None, 
+                                     kd_values: Dict[str, float] = None) -> Dict[str, bool]:
+    """
+    Configure PID settings for Galil controller and burn them to flash memory.
+    
+    Args:
+        controller: Connected GalilController instance
+        kp_values: Dictionary of KP values by axis (e.g., {'A': 12.0, 'B': 14.0})
+        ki_values: Dictionary of KI values by axis (e.g., {'A': 0.1, 'B': 0.2})
+        kd_values: Dictionary of KD values by axis (e.g., {'A': 50.0, 'B': 60.0})
+        
+    Returns:
+        Dictionary with success status for each operation
+    """
+    results = {
+        'kp_set': False,
+        'ki_set': False,
+        'kd_set': False,
+        'burned_to_flash': False,
+        'debug_info': []
+    }
+    
+    if not hasattr(controller, 'g') or not controller.g:
+        results['debug_info'].append("Controller not connected")
+        return results
+    
+    try:
+        results['debug_info'].append("=== CONFIGURING PID SETTINGS ===")
+        
+        # Step 1: Set KP values (Proportional Constant)
+        if kp_values:
+            results['debug_info'].append(f"Setting KP values: {kp_values}")
+            
+            # Build KP command with comma-separated values for all axes
+            kp_command = "KP "
+            kp_parts = []
+            
+            for axis in ['A', 'B', 'C', 'D']:
+                if axis in kp_values:
+                    kp_parts.append(str(kp_values[axis]))
+                else:
+                    kp_parts.append("")  # Empty for unchanged axes
+            
+            kp_command += ",".join(kp_parts)
+            results['debug_info'].append(f"KP command: {kp_command}")
+            
+            try:
+                response = controller.send_command(kp_command)
+                results['debug_info'].append(f"KP response: {response}")
+                
+                if not response or not response.startswith('?'):
+                    results['kp_set'] = True
+                    results['debug_info'].append("KP values set successfully")
+                else:
+                    results['debug_info'].append(f"KP command failed: {response}")
+            except Exception as e:
+                results['debug_info'].append(f"KP command error: {str(e)}")
+        
+        # Step 2: Set KI values (Integrator)
+        if ki_values:
+            results['debug_info'].append(f"Setting KI values: {ki_values}")
+            
+            # Build KI command with comma-separated values for all axes
+            ki_command = "KI "
+            ki_parts = []
+            
+            for axis in ['A', 'B', 'C', 'D']:
+                if axis in ki_values:
+                    ki_parts.append(str(ki_values[axis]))
+                else:
+                    ki_parts.append("")  # Empty for unchanged axes
+            
+            ki_command += ",".join(ki_parts)
+            results['debug_info'].append(f"KI command: {ki_command}")
+            
+            try:
+                response = controller.send_command(ki_command)
+                results['debug_info'].append(f"KI response: {response}")
+                
+                if not response or not response.startswith('?'):
+                    results['ki_set'] = True
+                    results['debug_info'].append("KI values set successfully")
+                else:
+                    results['debug_info'].append(f"KI command failed: {response}")
+            except Exception as e:
+                results['debug_info'].append(f"KI command error: {str(e)}")
+        
+        # Step 3: Set KD values (Derivative Constant)
+        if kd_values:
+            results['debug_info'].append(f"Setting KD values: {kd_values}")
+            
+            # Build KD command with comma-separated values for all axes
+            kd_command = "KD "
+            kd_parts = []
+            
+            for axis in ['A', 'B', 'C', 'D']:
+                if axis in kd_values:
+                    kd_parts.append(str(kd_values[axis]))
+                else:
+                    kd_parts.append("")  # Empty for unchanged axes
+            
+            kd_command += ",".join(kd_parts)
+            results['debug_info'].append(f"KD command: {kd_command}")
+            
+            try:
+                response = controller.send_command(kd_command)
+                results['debug_info'].append(f"KD response: {response}")
+                
+                if not response or not response.startswith('?'):
+                    results['kd_set'] = True
+                    results['debug_info'].append("KD values set successfully")
+                else:
+                    results['debug_info'].append(f"KD command failed: {response}")
+            except Exception as e:
+                results['debug_info'].append(f"KD command error: {str(e)}")
+        
+        # Step 4: Burn settings to flash memory using BN command
+        if results.get('kp_set', False) or results.get('ki_set', False) or results.get('kd_set', False):
+            results['debug_info'].append("Burning PID settings to flash memory...")
+            
+            try:
+                # Wait a moment before burning
+                time.sleep(1)
+                
+                # Send BN command to burn settings
+                response = controller.send_command("BN")
+                results['debug_info'].append(f"BN response: '{response}'")
+                
+                # Wait for burn to complete (BN takes about 1 second)
+                time.sleep(2)
+                
+                if not response or not response.startswith('?'):
+                    results['burned_to_flash'] = True
+                    results['debug_info'].append("✓ PID settings burned to flash memory successfully")
+                else:
+                    results['debug_info'].append(f"BN command failed: {response}")
+                    
+            except Exception as e:
+                results['debug_info'].append(f"BN command error: {str(e)}")
+        else:
+            results['debug_info'].append("No PID settings were successfully set - skipping burn")
+        
+        # Step 5: Verification
+        results['debug_info'].append("=== VERIFICATION ===")
+        
+        if results.get('burned_to_flash', False):
+            results['debug_info'].append("✓ PID configuration completed successfully")
+            results['debug_info'].append("✓ Settings have been burned to non-volatile memory")
+            results['debug_info'].append("→ Settings will persist through power cycles")
+        else:
+            results['debug_info'].append("⚠ PID settings may not be saved to flash memory")
+            results['debug_info'].append("→ Try the configuration process again")
+        
+    except Exception as e:
+        results['error'] = str(e)
+        results['debug_info'].append(f"General error: {str(e)}")
+    
+    return results
+
+def get_controller_pid_settings(controller) -> Dict[str, any]:
+    """
+    Get current PID settings from the controller.
+    
+    Args:
+        controller: Connected GalilController instance
+        
+    Returns:
+        Dictionary with current PID settings
+    """
+    settings = {
+        'kp_values': {},
+        'ki_values': {},
+        'kd_values': {},
+        'error': None
+    }
+    
+    if not hasattr(controller, 'g') or not controller.g:
+        settings['error'] = "Controller not connected"
+        return settings
+    
+    try:
+        # Get KP values for all axes
+        try:
+            kp_response = controller.send_command("KP ?,?,?,?")
+            if kp_response and not kp_response.startswith('?'):
+                kp_values = [float(x.strip()) for x in kp_response.split(',')]
+                settings['kp_values'] = {
+                    'A': kp_values[0] if len(kp_values) > 0 else 0,
+                    'B': kp_values[1] if len(kp_values) > 1 else 0,
+                    'C': kp_values[2] if len(kp_values) > 2 else 0,
+                    'D': kp_values[3] if len(kp_values) > 3 else 0
+                }
+        except Exception as e:
+            settings['error'] = f"Error reading KP values: {str(e)}"
+        
+        # Get KI values for all axes
+        try:
+            ki_response = controller.send_command("KI ?,?,?,?")
+            if ki_response and not ki_response.startswith('?'):
+                ki_values = [float(x.strip()) for x in ki_response.split(',')]
+                settings['ki_values'] = {
+                    'A': ki_values[0] if len(ki_values) > 0 else 0,
+                    'B': ki_values[1] if len(ki_values) > 1 else 0,
+                    'C': ki_values[2] if len(ki_values) > 2 else 0,
+                    'D': ki_values[3] if len(ki_values) > 3 else 0
+                }
+        except Exception as e:
+            if not settings.get('error'):
+                settings['error'] = f"Error reading KI values: {str(e)}"
+        
+        # Get KD values for all axes
+        try:
+            kd_response = controller.send_command("KD ?,?,?,?")
+            if kd_response and not kd_response.startswith('?'):
+                kd_values = [float(x.strip()) for x in kd_response.split(',')]
+                settings['kd_values'] = {
+                    'A': kd_values[0] if len(kd_values) > 0 else 0,
+                    'B': kd_values[1] if len(kd_values) > 1 else 0,
+                    'C': kd_values[2] if len(kd_values) > 2 else 0,
+                    'D': kd_values[3] if len(kd_values) > 3 else 0
+                }
+        except Exception as e:
+            if not settings.get('error'):
+                settings['error'] = f"Error reading KD values: {str(e)}"
+                
+    except Exception as e:
+        settings['error'] = str(e)
+    
+    return settings
 
 def check_network_configuration_permissions() -> bool:
     """Check if we have the necessary permissions to configure network settings."""

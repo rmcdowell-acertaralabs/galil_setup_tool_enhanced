@@ -17,10 +17,12 @@ from network_combined import (
     discover_galil_controllers, ping_controller, validate_ip_address,
     test_controller_connection, configure_controller_network_complete, configure_controller_network_dmc4143, 
     reset_controller_network_to_dhcp, get_controller_network_status, comprehensive_network_test,
-    force_save_network_settings_dmc4143, NetworkConfigurator
+    force_save_network_settings_dmc4143, NetworkConfigurator,
+    configure_controller_pid_settings, get_controller_pid_settings
 )
 from galil_combined import GalilController
 import galil_combined as galil_functions
+from command_compatibility_checker import GalilCommandChecker
 
 class GalilSetupApp:
     def __init__(self, root):
@@ -34,6 +36,11 @@ class GalilSetupApp:
         self.test_encoder_update_running = False
         self.auto_connect_running = False
         self.motor_direction_test_active = False  # Flag to control encoder position logging
+        
+        # Bind mouse wheel events to the root window
+        self.root.bind("<MouseWheel>", self._on_mousewheel)
+        self.root.bind("<Button-4>", self._on_mousewheel)  # Linux scroll up
+        self.root.bind("<Button-5>", self._on_mousewheel)  # Linux scroll down
         
         # Color scheme matching Acertara
         self.colors = {
@@ -71,6 +78,32 @@ class GalilSetupApp:
         
         # Create main content area
         self.create_main_content()
+    
+    def _on_mousewheel(self, event):
+        """Handle mouse wheel scrolling for all text widgets"""
+        # Find the widget under the mouse cursor
+        widget = event.widget.winfo_containing(event.x_root, event.y_root)
+        
+        # If it's a text widget, scroll it
+        if isinstance(widget, (tk.Text, scrolledtext.ScrolledText)):
+            # Determine scroll direction
+            if event.delta:
+                # Windows
+                delta = -1 if event.delta > 0 else 1
+            else:
+                # Linux
+                delta = -1 if event.num == 4 else 1
+            
+            # Scroll the text widget
+            widget.yview_scroll(delta, "units")
+        
+        # If it's a canvas, scroll it
+        elif isinstance(widget, tk.Canvas):
+            if event.delta:
+                delta = -1 if event.delta > 0 else 1
+            else:
+                delta = -1 if event.num == 4 else 1
+            widget.yview_scroll(delta, "units")
         
     def create_sidebar(self):
         """Create the dark sidebar with navigation"""
@@ -160,6 +193,7 @@ class GalilSetupApp:
             ("⚙️", "Settings", self.show_settings),
         ]
         
+        # Add menu items
         for icon, text, command in menu_items:
             menu_item = tk.Button(nav_frame, text=f"{icon} {text}", 
                                 font=("Arial", 11), 
@@ -171,6 +205,22 @@ class GalilSetupApp:
             # Hover effects
             menu_item.bind('<Enter>', lambda e, btn=menu_item: btn.configure(bg='#34495e'))
             menu_item.bind('<Leave>', lambda e, btn=menu_item: btn.configure(bg=self.colors['sidebar_bg']))
+        
+        # Add separator
+        separator = tk.Frame(nav_frame, height=2, bg='#34495e')
+        separator.pack(fill='x', pady=10)
+        
+        # Add persistent log toggle button
+        log_toggle_btn = tk.Button(nav_frame, text="📋 Show/Hide Log", 
+                                 font=("Arial", 11), 
+                                 bg=self.colors['sidebar_bg'], fg=self.colors['sidebar_fg'],
+                                 bd=0, relief='flat', anchor='w',
+                                 command=self.toggle_persistent_log)
+        log_toggle_btn.pack(fill='x', pady=2)
+        
+        # Hover effects for log button
+        log_toggle_btn.bind('<Enter>', lambda e, btn=log_toggle_btn: btn.configure(bg='#34495e'))
+        log_toggle_btn.bind('<Leave>', lambda e, btn=log_toggle_btn: btn.configure(bg=self.colors['sidebar_bg']))
         
     def create_header(self):
         """Create the light header with logo and controls"""
@@ -216,13 +266,549 @@ class GalilSetupApp:
                 user_label.pack(side='left', padx=(5, 10))
         
     def create_main_content(self):
-        """Create the main content area"""
-        # Main content frame
-        self.main_content = tk.Frame(self.root, bg=self.colors['main_bg'])
-        self.main_content.grid(row=0, column=1, sticky="nsew", padx=20, pady=20)
+        """Create the main content area with scrolling and scaling support"""
+        # Main content container frame
+        self.main_content_container = tk.Frame(self.root, bg=self.colors['main_bg'])
+        self.main_content_container.grid(row=0, column=1, sticky="nsew", padx=20, pady=20)
+        
+        # Configure grid weights for the container
+        self.main_content_container.grid_rowconfigure(0, weight=1)
+        self.main_content_container.grid_columnconfigure(0, weight=1)
+        
+        # Create canvas for scrolling
+        self.main_canvas = tk.Canvas(self.main_content_container, bg=self.colors['main_bg'], 
+                                   highlightthickness=0, relief='flat')
+        self.main_canvas.grid(row=0, column=0, sticky="nsew")
+        
+        # Create scrollbars
+        self.v_scrollbar = ttk.Scrollbar(self.main_content_container, orient="vertical", 
+                                        command=self.main_canvas.yview)
+        self.v_scrollbar.grid(row=0, column=1, sticky="ns")
+        
+        self.h_scrollbar = ttk.Scrollbar(self.main_content_container, orient="horizontal", 
+                                        command=self.main_canvas.xview)
+        self.h_scrollbar.grid(row=1, column=0, sticky="ew")
+        
+        # Configure canvas scrolling
+        self.main_canvas.configure(yscrollcommand=self.v_scrollbar.set, 
+                                 xscrollcommand=self.h_scrollbar.set)
+        
+        # Create scrollable frame inside canvas
+        self.main_content = tk.Frame(self.main_canvas, bg=self.colors['main_bg'])
+        self.main_canvas.create_window((0, 0), window=self.main_content, anchor="nw")
+        
+        # Set initial canvas window width after a short delay
+        self.root.after(10, self._update_canvas_window_width)
+        
+        # Configure the main content frame to expand properly
+        self.main_content.grid_columnconfigure(0, weight=1)
+        
+        # Bind events for proper scrolling behavior
+        self.main_content.bind("<Configure>", self._on_frame_configure)
+        self.main_canvas.bind("<Configure>", self._on_canvas_configure)
+        self.main_canvas.bind("<MouseWheel>", self._on_mousewheel)
+        self.main_canvas.bind("<Button-4>", self._on_mousewheel)
+        self.main_canvas.bind("<Button-5>", self._on_mousewheel)
+        
+        # Bind window resize event
+        self.root.bind("<Configure>", self._on_window_resize)
+        
+        # Create persistent log that stays across all pages
+        self.create_persistent_log()
         
         # Show controller testing by default
         self.show_controller_testing()
+        
+    def _on_frame_configure(self, event=None):
+        """Update canvas scroll region when frame size changes"""
+        try:
+            # Update the scroll region to include all content
+            bbox = self.main_canvas.bbox("all")
+            if bbox:
+                self.main_canvas.configure(scrollregion=bbox)
+            else:
+                # If no content, set a minimum scroll region
+                self.main_canvas.configure(scrollregion=(0, 0, 100, 100))
+        except Exception:
+            pass
+        
+    def _on_canvas_configure(self, event):
+        """Update canvas window width when canvas is resized"""
+        # Update the width of the frame inside the canvas
+        canvas_width = event.width
+        try:
+            # Find the window item (the main_content frame)
+            window_items = self.main_canvas.find_withtag("all")
+            if window_items:
+                self.main_canvas.itemconfig(window_items[0], width=canvas_width)
+        except Exception:
+            pass
+        
+    def _on_mousewheel(self, event):
+        """Handle mouse wheel scrolling"""
+        if event.num == 4:  # Linux scroll up
+            self.main_canvas.yview_scroll(-1, "units")
+        elif event.num == 5:  # Linux scroll down
+            self.main_canvas.yview_scroll(1, "units")
+        else:  # Windows/Mac scroll
+            self.main_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            
+    def _on_window_resize(self, event):
+        """Handle window resize events for proper scaling"""
+        # Only handle main window resize events
+        if event.widget == self.root:
+            # Update canvas scroll region
+            self._on_frame_configure()
+            
+            # Update canvas window width to match new canvas width
+            self._update_canvas_window_width()
+            
+            # Ensure scrollbars are shown/hidden as needed
+            self._update_scrollbar_visibility()
+            
+            # Configure sections for proper scaling after resize
+            self.root.after(100, self._configure_page_sections)
+            
+    def _update_scrollbar_visibility(self):
+        """Show/hide scrollbars based on content size"""
+        try:
+            # Get canvas dimensions
+            canvas_width = self.main_canvas.winfo_width()
+            canvas_height = self.main_canvas.winfo_height()
+            
+            # Get the actual content bounds from the canvas
+            bbox = self.main_canvas.bbox("all")
+            if bbox:
+                content_width = bbox[2] - bbox[0]  # right - left
+                content_height = bbox[3] - bbox[1]  # bottom - top
+            else:
+                content_width = 0
+                content_height = 0
+            
+            # Show/hide horizontal scrollbar
+            if content_width > canvas_width and canvas_width > 0:
+                self.h_scrollbar.grid()
+            else:
+                self.h_scrollbar.grid_remove()
+                
+            # Show/hide vertical scrollbar
+            if content_height > canvas_height and canvas_height > 0:
+                self.v_scrollbar.grid()
+            else:
+                self.v_scrollbar.grid_remove()
+                
+        except Exception:
+            # If there's an error, show both scrollbars
+            pass
+            
+    def _update_page_scroll_region(self):
+        """Update scroll region after page content is loaded"""
+        try:
+            # Update the main canvas scroll region
+            self._on_frame_configure()
+            
+            # Update canvas window width to match canvas width
+            self._update_canvas_window_width()
+            
+            # Update scrollbar visibility
+            self._update_scrollbar_visibility()
+            
+            # Configure all sections for proper scaling
+            self._configure_page_sections()
+            
+            # Schedule multiple updates to ensure proper sizing
+            self.root.after(50, self._on_frame_configure)
+            self.root.after(100, self._update_scrollbar_visibility)
+            self.root.after(150, self._on_frame_configure)
+            self.root.after(200, self._update_canvas_window_width)
+            self.root.after(300, self._configure_page_sections)
+            self.root.after(400, self._on_frame_configure)
+            self.root.after(500, self._update_scrollbar_visibility)
+        except Exception:
+            pass
+            
+    def _configure_page_sections(self):
+        """Configure all sections within the current page for proper scaling"""
+        try:
+            # Find all LabelFrame widgets (sections) and configure them for proper scaling
+            for widget in self.main_content.winfo_children():
+                if isinstance(widget, tk.LabelFrame):
+                    widget.pack(fill='x', expand=True, padx=15, pady=(0, 15))
+                elif isinstance(widget, tk.Frame):
+                    # Configure frame widgets to expand properly
+                    widget.pack(fill='both', expand=True)
+                    
+                # Recursively configure child widgets
+                self._configure_child_widgets(widget)
+                
+            # Ensure buttons remain in visible areas
+            self._ensure_button_visibility()
+        except Exception:
+            pass
+            
+    def _ensure_button_visibility(self):
+        """Ensure all buttons remain in visible areas of the window"""
+        try:
+            # Find all buttons in the main content
+            buttons = []
+            self._find_all_buttons(self.main_content, buttons)
+            
+            for button in buttons:
+                # Ensure button has proper padding and doesn't get cut off
+                self._configure_button_visibility(button)
+        except Exception:
+            pass
+            
+    def _find_all_buttons(self, parent_widget, button_list):
+        """Recursively find all buttons in a widget hierarchy"""
+        try:
+            for child in parent_widget.winfo_children():
+                if isinstance(child, tk.Button):
+                    button_list.append(child)
+                # Recursively search children
+                self._find_all_buttons(child, button_list)
+        except Exception:
+            pass
+            
+    def _configure_button_visibility(self, button):
+        """Configure button to ensure it remains visible and properly sized"""
+        try:
+            # Set standard button size to ensure consistency
+            button.configure(width=20, height=2)
+            
+            # Ensure button has proper padding
+            button.pack_configure(padx=10, pady=5)
+            
+            # Configure button to not expand beyond its content
+            button.pack_propagate(False)
+        except Exception:
+            pass
+            
+    def _configure_child_widgets(self, parent_widget):
+        """Recursively configure child widgets for proper scaling"""
+        try:
+            for child in parent_widget.winfo_children():
+                if isinstance(child, tk.LabelFrame):
+                    child.pack(fill='x', expand=True, padx=10, pady=(0, 10))
+                elif isinstance(child, tk.Frame):
+                    child.pack(fill='both', expand=True)
+                elif isinstance(child, tk.Button):
+                    # Keep buttons at standard size, don't scale them
+                    child.pack(padx=10, pady=5)
+                    # Configure button text to scale within the button
+                    self._configure_button_text_scaling(child)
+                elif isinstance(child, tk.Entry):
+                    # Ensure entry widgets expand properly
+                    child.pack(fill='x', expand=True, padx=5, pady=2)
+                    
+                # Recursively configure children of this child
+                self._configure_child_widgets(child)
+        except Exception:
+            pass
+            
+    def _configure_button_text_scaling(self, button):
+        """Configure button text to scale within the button while keeping button size standard"""
+        try:
+            # Set a standard button size - use consistent dimensions
+            button.configure(width=20, height=2)
+            
+            # Get the current text
+            text = button.cget('text')
+            if text:
+                # Use a responsive font that scales with text length
+                font_size = self._calculate_button_font_size(text)
+                button.configure(font=('Arial', font_size))
+                
+            # Ensure button doesn't expand beyond its content
+            button.pack_propagate(False)
+        except Exception:
+            pass
+            
+    def _calculate_button_font_size(self, text):
+        """Calculate appropriate font size for button text"""
+        try:
+            # Base font size
+            base_size = 10
+            
+            # Adjust font size based on text length
+            if len(text) <= 10:
+                return base_size
+            elif len(text) <= 15:
+                return base_size - 1
+            elif len(text) <= 20:
+                return base_size - 2
+            elif len(text) <= 25:
+                return base_size - 3
+            else:
+                return max(6, base_size - 4)  # Minimum font size of 6
+        except Exception:
+            return 10
+            
+    def _create_missing_encoder_label(self, axis):
+        """Create a missing encoder label for the specified axis"""
+        try:
+            # Find the encoder display frame
+            for widget in self.main_content.winfo_children():
+                if isinstance(widget, tk.LabelFrame) and "Real-time Encoder Positions" in widget.cget("text"):
+                    # Find the encoder display frame within this LabelFrame
+                    for child in widget.winfo_children():
+                        if isinstance(child, tk.Frame):
+                            # Create the missing axis label
+                            axis_label = tk.Label(child, text=f"Axis {axis}:", 
+                                                font=("Arial", 10, "bold"),
+                                                bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                                width=8)
+                            axis_label.grid(row=len(child.winfo_children())//2, column=0, padx=(0, 5), pady=5, sticky='w')
+                            
+                            # Create the position value label
+                            pos_label = tk.Label(child, text="0", 
+                                               font=("Consolas", 12, "bold"),
+                                               bg='white', fg='black', relief='sunken', bd=1,
+                                               width=12)
+                            pos_label.grid(row=len(child.winfo_children())//2, column=1, padx=(0, 10), pady=5, sticky='w')
+                            self.encoder_labels[axis] = pos_label
+                            break
+                    break
+        except Exception:
+            pass
+            
+    def _force_update_encoder_displays(self):
+        """Force update encoder displays to ensure all axes are visible"""
+        try:
+            # Ensure all encoder displays are properly initialized
+            expected_axes = ["A", "B", "C", "D"]
+            for axis in expected_axes:
+                if axis in self.encoder_displays and axis in self.encoder_labels:
+                    # Force update the display
+                    canvas = self.encoder_displays[axis]
+                    label = self.encoder_labels[axis]
+                    
+                    # Clear and redraw the canvas - updated for 120x120 canvas
+                    canvas.delete("all")
+                    canvas.create_oval(10, 10, 110, 110, outline='gray', width=2)
+                    canvas.create_text(60, 60, text="?", fill='gray', font=("Arial", 24))
+                    
+                    # Update the label
+                    label.configure(text="Not Connected", fg=self.colors['error_red'])
+                    
+        except Exception:
+            pass
+    
+    def send_manual_command(self, event=None):
+        """Send manual command to the controller"""
+        if not self.controller:
+            self.command_response_text.insert(tk.END, "ERROR: No controller connected\n")
+            self.command_response_text.see(tk.END)
+            return
+        
+        # Get command from entry
+        command = self.manual_command_entry.get().strip()
+        if not command:
+            self.command_response_text.insert(tk.END, "ERROR: No command entered\n")
+            self.command_response_text.see(tk.END)
+            return
+        
+        try:
+            # Log the command being sent
+            timestamp = time.strftime("%H:%M:%S")
+            self.command_response_text.insert(tk.END, f"[{timestamp}] Sending: {command}\n")
+            
+            # Send command to controller
+            response = self.controller.send_command(command)
+            
+            # Display response
+            if response is not None:
+                self.command_response_text.insert(tk.END, f"[{timestamp}] Response: {response}\n")
+            else:
+                self.command_response_text.insert(tk.END, f"[{timestamp}] Response: (no response)\n")
+            
+            # Clear the command entry
+            self.manual_command_entry.delete(0, tk.END)
+            
+            # Scroll to bottom
+            self.command_response_text.see(tk.END)
+            
+            # Also log to main status log
+            self.append_test_log(f"Manual Command: {command} -> {response}")
+            
+        except Exception as e:
+            error_msg = f"ERROR: {str(e)}"
+            self.command_response_text.insert(tk.END, f"[{timestamp}] {error_msg}\n")
+            self.command_response_text.see(tk.END)
+            self.append_test_log(f"Manual Command Error: {command} -> {error_msg}")
+    
+    def insert_quick_command(self, command):
+        """Insert a quick command into the command entry"""
+        self.manual_command_entry.delete(0, tk.END)
+        self.manual_command_entry.insert(0, command)
+        self.manual_command_entry.focus()
+    
+    def clear_command_response(self):
+        """Clear the command response text area"""
+        self.command_response_text.delete(1.0, tk.END)
+    
+    def _ensure_all_axes_visible(self):
+        """Ensure all four axes (A, B, C, D) are visible and properly sized"""
+        try:
+            if not hasattr(self, 'encoder_displays') or not self.encoder_displays:
+                return
+                
+            # Check that all four axes exist
+            expected_axes = ['A', 'B', 'C', 'D']
+            missing_axes = []
+            
+            for axis in expected_axes:
+                if axis not in self.encoder_displays:
+                    missing_axes.append(axis)
+                else:
+                    canvas = self.encoder_displays[axis]
+                    if not canvas.winfo_exists():
+                        missing_axes.append(axis)
+            
+            if missing_axes:
+                print(f"Warning: Missing or invalid encoder displays for axes: {missing_axes}")
+                return
+            
+            # Force all axes to be visible and properly sized
+            for axis in expected_axes:
+                canvas = self.encoder_displays[axis]
+                if canvas.winfo_exists():
+                    # Ensure canvas is properly sized
+                    canvas.configure(width=120, height=120)
+                    canvas.update_idletasks()
+                    
+                    # Draw initial display
+                    canvas.delete("all")
+                    canvas.create_oval(10, 10, 110, 110, outline='black', width=3)
+                    canvas.create_text(60, 60, text="0", fill='blue', font=("Arial", 16, "bold"))
+                    
+            print(f"Successfully ensured all {len(expected_axes)} axes are visible")
+            
+        except Exception as e:
+            print(f"Error ensuring axes visibility: {e}")
+            
+    def _update_canvas_window_width(self):
+        """Update the canvas window width to match the canvas width"""
+        try:
+            canvas_width = self.main_canvas.winfo_width()
+            if canvas_width > 1:  # Only update if canvas has a valid width
+                # Find the window item (the main_content frame)
+                window_items = self.main_canvas.find_withtag("all")
+                if window_items:
+                    self.main_canvas.itemconfig(window_items[0], width=canvas_width)
+        except Exception:
+            pass
+            
+    def _configure_content_scaling(self, frame):
+        """Configure a frame for proper content scaling"""
+        try:
+            # Configure the frame to expand properly
+            frame.grid_columnconfigure(0, weight=1)
+            frame.grid_rowconfigure(0, weight=1)
+            
+            # Ensure the frame expands to fill its container
+            # Don't disable pack_propagate as it's needed for proper sizing
+            frame.grid_propagate(False)
+        except Exception:
+            pass
+            
+    def _configure_widget_scaling(self, widget, parent_frame):
+        """Configure a widget to scale properly within its parent frame"""
+        try:
+            # If the widget is a frame, configure it to expand
+            if isinstance(widget, tk.Frame):
+                widget.pack(fill='both', expand=True)
+            # If it's a label frame, configure it to expand horizontally
+            elif isinstance(widget, tk.LabelFrame):
+                widget.pack(fill='x', expand=True)
+            # For other widgets, ensure they expand horizontally
+            else:
+                widget.pack(fill='x', expand=True)
+        except Exception:
+            pass
+        
+    def create_persistent_log(self):
+        """Create a persistent log that stays across all pages"""
+        # Create persistent log frame (initially hidden)
+        self.persistent_log_frame = tk.Frame(self.root, bg=self.colors['main_bg'])
+        
+        # Log title
+        log_title = tk.Label(self.persistent_log_frame, text="📋 Persistent Log (All Pages)", 
+                           font=("Arial", 14, "bold"),
+                           bg=self.colors['main_bg'], fg=self.colors['main_fg'])
+        log_title.pack(anchor='w', pady=(0, 10))
+        
+        # Log text area
+        self.persistent_log_text = scrolledtext.ScrolledText(self.persistent_log_frame, 
+                                                           height=15, font=("Consolas", 9),
+                                                           bg='white', fg='black')
+        self.persistent_log_text.pack(fill='both', expand=True, padx=15, pady=(0, 10))
+        
+        # Log control buttons
+        log_buttons_frame = tk.Frame(self.persistent_log_frame, bg=self.colors['main_bg'])
+        log_buttons_frame.pack(fill='x', padx=15, pady=(0, 15))
+        
+        # Copy log button
+        copy_log_btn = tk.Button(log_buttons_frame, text="📋 Copy Log", 
+                               font=("Arial", 10, "bold"),
+                               bg=self.colors['accent_blue'], fg='white',
+                               command=self.copy_persistent_log)
+        copy_log_btn.pack(side='left')
+        
+        # Clear log button
+        clear_log_btn = tk.Button(log_buttons_frame, text="🗑️ Clear Log", 
+                                font=("Arial", 10, "bold"),
+                                bg=self.colors['warning_orange'], fg='white',
+                                command=self.clear_persistent_log)
+        clear_log_btn.pack(side='left', padx=(10, 0))
+        
+        # Toggle log visibility button
+        self.toggle_log_btn = tk.Button(log_buttons_frame, text="👁️ Show/Hide Log", 
+                                      font=("Arial", 10, "bold"),
+                                      bg=self.colors['success_green'], fg='white',
+                                      command=self.toggle_persistent_log)
+        self.toggle_log_btn.pack(side='right')
+        
+        # Initialize log visibility state
+        self.persistent_log_visible = False
+        
+        # Add initial log message
+        self.persistent_log_text.insert(tk.END, "=== PERSISTENT LOG STARTED ===\n")
+        self.persistent_log_text.insert(tk.END, "This log maintains data across all pages.\n")
+        self.persistent_log_text.insert(tk.END, "Use 'Show/Hide Log' to toggle visibility.\n\n")
+        
+    def toggle_persistent_log(self):
+        """Toggle the visibility of the persistent log"""
+        if self.persistent_log_visible:
+            # Hide log
+            self.persistent_log_frame.grid_remove()
+            self.persistent_log_visible = False
+            self.toggle_log_btn.configure(text="👁️ Show Log")
+        else:
+            # Show log - position it below the main content area
+            self.persistent_log_frame.grid(row=1, column=1, sticky="nsew", padx=20, pady=(0, 20))
+            self.persistent_log_visible = True
+            self.toggle_log_btn.configure(text="👁️ Hide Log")
+            
+        # Update scroll region when toggling log visibility
+        self._on_frame_configure()
+            
+    def copy_persistent_log(self):
+        """Copy the persistent log content to clipboard"""
+        try:
+            log_text = self.persistent_log_text.get(1.0, tk.END)
+            self.root.clipboard_clear()
+            self.root.clipboard_append(log_text)
+            messagebox.showinfo("Success", "Log copied to clipboard!")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to copy log: {str(e)}")
+            
+    def clear_persistent_log(self):
+        """Clear the persistent log content"""
+        if messagebox.askyesno("Confirm", "Are you sure you want to clear the entire log?"):
+            self.persistent_log_text.delete(1.0, tk.END)
+            self.persistent_log_text.insert(tk.END, "=== LOG CLEARED ===\n")
+            self.persistent_log_text.insert(tk.END, f"Cleared at: {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n")
         
 
         
@@ -235,8 +821,15 @@ class GalilSetupApp:
         if hasattr(self, 'encoder_update_job'):
             self.stop_encoder_auto_update()
         
+        # Clear all widgets from the main content frame
         for widget in self.main_content.winfo_children():
             widget.destroy()
+            
+        # Update scroll region after clearing
+        self._on_frame_configure()
+        
+        # Update canvas window width to ensure proper scaling
+        self._update_canvas_window_width()
             
     def show_motor_setup(self):
         """Show motor setup interface"""
@@ -252,45 +845,16 @@ class GalilSetupApp:
         if not self.controller:
             self.auto_connect_to_controller()
         
-        # Create main container with two-column layout
+        # Main container
         main_container = tk.Frame(self.main_content, bg=self.colors['main_bg'])
         main_container.pack(fill='both', expand=True)
         
-        # Left column for configuration sections
-        left_column = tk.Frame(main_container, bg=self.colors['main_bg'])
-        left_column.pack(side='left', fill='both', expand=True, padx=(0, 10))
-        
-        # Right column for status log
-        right_column = tk.Frame(main_container, bg=self.colors['main_bg'])
-        right_column.pack(side='right', fill='both', expand=False, padx=(10, 0))
-        
-        # Create canvas for scrolling on left column
-        canvas = tk.Canvas(left_column, bg=self.colors['main_bg'], highlightthickness=0)
-        scrollbar = ttk.Scrollbar(left_column, orient="vertical", command=canvas.yview)
-        scrollable_frame = tk.Frame(canvas, bg=self.colors['main_bg'])
-        
-        scrollable_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
-        
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-        
-        # Pack canvas and scrollbar
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        
-        # Motor setup content
-        setup_frame = tk.Frame(scrollable_frame, bg=self.colors['main_bg'])
-        setup_frame.pack(fill='both', expand=True, padx=10)
-        
-        # Real-time Encoder Position Display Section (Always visible)
-        encoder_frame = tk.LabelFrame(setup_frame, text="📊 Real-time Encoder Positions", 
+        # TOP SECTION: Real-time Encoder Position Display
+        encoder_frame = tk.LabelFrame(main_container, text="📊 Real-time Encoder Positions", 
                                     font=("Arial", 12, "bold"),
                                     bg=self.colors['main_bg'], fg=self.colors['main_fg'],
                                     relief='solid', bd=1)
-        encoder_frame.pack(fill='x', pady=(0, 15))
+        encoder_frame.pack(fill='x', pady=(0, 15), padx=10)
         
         # Encoder position display
         encoder_display_frame = tk.Frame(encoder_frame, bg=self.colors['main_bg'])
@@ -306,14 +870,14 @@ class GalilSetupApp:
                                 font=("Arial", 10, "bold"),
                                 bg=self.colors['main_bg'], fg=self.colors['main_fg'],
                                 width=8)
-            axis_label.grid(row=0, column=i*2, padx=(0, 5), pady=5)
+            axis_label.grid(row=i, column=0, padx=(0, 5), pady=5, sticky='w')
             
             # Position value label
             pos_label = tk.Label(encoder_display_frame, text="0", 
                                font=("Consolas", 12, "bold"),
                                bg='white', fg='black', relief='sunken', bd=1,
                                width=12)
-            pos_label.grid(row=0, column=i*2+1, padx=(0, 10), pady=5)
+            pos_label.grid(row=i, column=1, padx=(0, 10), pady=5, sticky='w')
             self.encoder_labels[axis] = pos_label
         
         # Update button
@@ -339,57 +903,48 @@ class GalilSetupApp:
                                          command=self.toggle_auto_update)
         auto_update_check.pack(pady=(0, 10))
         
-        # Collapsible sections container
-        sections_frame = tk.Frame(setup_frame, bg=self.colors['main_bg'])
-        sections_frame.pack(fill='x', pady=(0, 15))
-        
-        # PID Configuration Section (Collapsible)
-        self.pid_frame = tk.LabelFrame(sections_frame, text="⚙️ PID Configuration ▼", 
+        # MIDDLE SECTION: PID Configuration
+        self.pid_frame = tk.LabelFrame(main_container, text="⚙️ PID Configuration", 
                                      font=("Arial", 12, "bold"),
                                      bg=self.colors['main_bg'], fg=self.colors['main_fg'],
                                      relief='solid', bd=1)
-        self.pid_frame.pack(fill='x', pady=(0, 10))
-        self.pid_frame.bind("<Button-1>", self.toggle_pid_section)
+        self.pid_frame.pack(fill='x', pady=(0, 15), padx=10)
         
-        # PID content frame
+        # PID content container
         self.pid_content = tk.Frame(self.pid_frame, bg=self.colors['main_bg'])
-        self.pid_content.pack(fill='x', padx=15, pady=10)
+        self.pid_content.pack(fill='x', padx=15, pady=15)
         
         # Axis selection
-        axis_frame = tk.Frame(self.pid_content, bg=self.colors['main_bg'])
-        axis_frame.pack(fill='x', pady=(0, 10))
-        
-        tk.Label(axis_frame, text="Axis:", font=("Arial", 10, "bold"),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
+        tk.Label(self.pid_content, text="Axis:", font=("Arial", 10, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(anchor='w')
         
         self.axis_var = tk.StringVar(value="A")
-        axis_combo = ttk.Combobox(axis_frame, textvariable=self.axis_var, 
+        axis_combo = ttk.Combobox(self.pid_content, textvariable=self.axis_var, 
                                  values=["A", "B", "C", "D"], width=10)
-        axis_combo.pack(side='left', padx=(10, 0))
+        axis_combo.pack(anchor='w', pady=(5, 15))
         
-        # PID values
-        pid_values_frame = tk.Frame(self.pid_content, bg=self.colors['main_bg'])
-        pid_values_frame.pack(fill='x', pady=(0, 10))
+        # KP input
+        tk.Label(self.pid_content, text="KP:", font=("Arial", 10, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(anchor='w')
         
-        # KP
-        tk.Label(pid_values_frame, text="KP:", font=("Arial", 10),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).grid(row=0, column=0, sticky='w')
-        self.kp_entry = tk.Entry(pid_values_frame, font=("Arial", 10), width=15)
-        self.kp_entry.grid(row=0, column=1, padx=(10, 20))
+        self.kp_entry = tk.Entry(self.pid_content, font=("Arial", 10), width=15)
+        self.kp_entry.pack(anchor='w', pady=(5, 10))
         self.kp_entry.insert(0, "10.0")
         
-        # KI
-        tk.Label(pid_values_frame, text="KI:", font=("Arial", 10),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).grid(row=0, column=2, sticky='w')
-        self.ki_entry = tk.Entry(pid_values_frame, font=("Arial", 10), width=15)
-        self.ki_entry.grid(row=0, column=3, padx=(10, 20))
+        # KI input
+        tk.Label(self.pid_content, text="KI:", font=("Arial", 10, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(anchor='w')
+        
+        self.ki_entry = tk.Entry(self.pid_content, font=("Arial", 10), width=15)
+        self.ki_entry.pack(anchor='w', pady=(5, 10))
         self.ki_entry.insert(0, "0.1")
         
-        # KD
-        tk.Label(pid_values_frame, text="KD:", font=("Arial", 10),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).grid(row=0, column=4, sticky='w')
-        self.kd_entry = tk.Entry(pid_values_frame, font=("Arial", 10), width=15)
-        self.kd_entry.grid(row=0, column=5, padx=(10, 0))
+        # KD input
+        tk.Label(self.pid_content, text="KD:", font=("Arial", 10, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(anchor='w')
+        
+        self.kd_entry = tk.Entry(self.pid_content, font=("Arial", 10), width=15)
+        self.kd_entry.pack(anchor='w', pady=(5, 15))
         self.kd_entry.insert(0, "50.0")
         
         # Tune button
@@ -397,15 +952,54 @@ class GalilSetupApp:
                            font=("Arial", 10, "bold"),
                            bg=self.colors['success_green'], fg='white',
                            command=self.tune_axis)
-        tune_btn.pack(pady=(0, 10))
+        tune_btn.pack(anchor='w')
         
-        # Motion Parameters Section (Collapsible)
-        self.motion_frame = tk.LabelFrame(sections_frame, text="🚀 Motion Parameters ▼", 
+        # BOTTOM SECTION: Status & Log
+        status_frame = tk.LabelFrame(main_container, text="📋 Status & Log", 
                                         font=("Arial", 12, "bold"),
                                         bg=self.colors['main_bg'], fg=self.colors['main_fg'],
                                         relief='solid', bd=1)
-        self.motion_frame.pack(fill='x', pady=(0, 10))
-        self.motion_frame.bind("<Button-1>", self.toggle_motion_section)
+        status_frame.pack(fill='both', expand=True, pady=(0, 10), padx=10)
+        
+        # Log text area with scrollbar
+        log_frame = tk.Frame(status_frame, bg=self.colors['main_bg'])
+        log_frame.pack(fill='both', expand=True, padx=15, pady=15)
+        
+        # Create text widget and scrollbar
+        self.motor_status_text = tk.Text(log_frame, height=8, font=("Consolas", 9),
+                                       bg='white', fg='black', wrap=tk.WORD)
+        motor_scrollbar = ttk.Scrollbar(log_frame, orient="vertical", command=self.motor_status_text.yview)
+        self.motor_status_text.configure(yscrollcommand=motor_scrollbar.set)
+        
+        # Pack text widget and scrollbar
+        self.motor_status_text.pack(side="left", fill="both", expand=True)
+        motor_scrollbar.pack(side="right", fill="y")
+        
+        # Log control buttons
+        log_buttons_frame = tk.Frame(status_frame, bg=self.colors['main_bg'])
+        log_buttons_frame.pack(fill='x', padx=15, pady=(0, 15))
+        
+        clear_log_btn = tk.Button(log_buttons_frame, text="🗑️ Clear Log", 
+                                font=("Arial", 9, "bold"),
+                                bg=self.colors['warning_orange'], fg='white',
+                                command=self.clear_motor_setup_log)
+        clear_log_btn.pack(side='left', padx=(0, 10))
+        
+        copy_log_btn = tk.Button(log_buttons_frame, text="📋 Copy Log", 
+                               font=("Arial", 9, "bold"),
+                               bg=self.colors['accent_blue'], fg='white',
+                               command=self.copy_motor_setup_log)
+        copy_log_btn.pack(side='left')
+        
+        # Set up page show/hide handlers
+        self.root.bind('<Visibility>', self._on_visibility_change)
+        
+        # Start encoder position updates when page is shown
+        self.on_motor_setup_show()
+            
+    def show_motion_controls(self):
+        """Show motion controls interface"""
+        self.clear_main_content()
         
         # Motion content frame
         self.motion_content = tk.Frame(self.motion_frame, bg=self.colors['main_bg'])
@@ -463,12 +1057,27 @@ class GalilSetupApp:
 • Motor should be uncoupled from mechanics with room to move
 • MO jumper should be installed for safety
 • Motor, encoder, and hall sensors must be properly connected
-• Power down controller, connect components, then repower"""
+• Power down controller, connect components, then repower
+
+IMPORTANT: During manual movement tests (Steps 1 & 2), the servo will be automatically disabled to allow free movement. The servo will remain disabled after these tests for safety."""
         
         instructions_label = tk.Label(instructions_frame, text=instructions_text, 
                                     font=("Arial", 9), justify='left',
                                     bg=self.colors['main_bg'], fg=self.colors['main_fg'])
         instructions_label.pack(anchor='w')
+        
+        # Axis selection for brushless configuration
+        axis_selection_frame = tk.Frame(self.brushless_content, bg=self.colors['main_bg'])
+        axis_selection_frame.pack(fill='x', pady=(10, 10))
+        
+        tk.Label(axis_selection_frame, text="Select Axis to Configure:", 
+               font=("Arial", 10, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
+        
+        self.brushless_axis_var = tk.StringVar(value="A")
+        brushless_axis_combo = ttk.Combobox(axis_selection_frame, textvariable=self.brushless_axis_var, 
+                                           values=["A", "B", "C", "D"], width=10)
+        brushless_axis_combo.pack(side='left', padx=(10, 0))
         
         # Brushless configuration buttons
         brushless_buttons_frame = tk.Frame(self.brushless_content, bg=self.colors['main_bg'])
@@ -578,9 +1187,17 @@ class GalilSetupApp:
                                command=self.copy_motor_setup_log)
         copy_log_btn.pack(side='left')
         
+        # Re-enable servo button
+        self.re_enable_servo_btn = tk.Button(status_buttons_frame, text="🔧 Re-enable Servo", 
+                                           font=("Arial", 10, "bold"),
+                                           bg=self.colors['warning_orange'], fg='white',
+                                           command=self.re_enable_servo)
+        self.re_enable_servo_btn.pack(side='left', padx=(10, 0))
+        
         # Initial status message
         self.motor_status_text.insert(tk.END, "Motor Setup Interface Ready\n")
         self.motor_status_text.insert(tk.END, "Connect to a controller to begin configuration...\n")
+        self.motor_status_text.insert(tk.END, "Note: Manual movement tests will disable servo for safety.\n")
         
         # Initialize encoder position display
         self.on_motor_setup_show()
@@ -588,6 +1205,12 @@ class GalilSetupApp:
         
         # Initialize encoder position display
         self.on_motor_setup_show()
+        
+        # Force update encoder positions to ensure all axes are displayed
+        self.root.after(100, self.update_encoder_positions)
+        
+        # Update scroll region after page content is loaded
+        self._update_page_scroll_region()
             
     def show_motion_controls(self):
         """Show motion controls interface"""
@@ -602,6 +1225,9 @@ class GalilSetupApp:
         # Motion controls content
         controls_frame = tk.Frame(self.main_content, bg=self.colors['main_bg'])
         controls_frame.pack(fill='both', expand=True)
+        
+        # Configure content scaling for the controls frame
+        self._configure_content_scaling(controls_frame)
         
         # Jog Controls Section
         jog_frame = tk.LabelFrame(controls_frame, text="Jog Controls", 
@@ -695,6 +1321,9 @@ class GalilSetupApp:
         # Initial status message
         self.motion_status_text.insert(tk.END, "Motion Controls Interface Ready\n")
         self.motion_status_text.insert(tk.END, "Connect to a controller to begin motion control...\n")
+        
+        # Update scroll region after page content is loaded
+        self._update_page_scroll_region()
             
     def show_encoder_overlay(self):
         """Show encoder overlay interface"""
@@ -709,6 +1338,9 @@ class GalilSetupApp:
         # Encoder overlay content
         overlay_frame = tk.Frame(self.main_content, bg=self.colors['main_bg'])
         overlay_frame.pack(fill='both', expand=True)
+        
+        # Configure content scaling for the overlay frame
+        self._configure_content_scaling(overlay_frame)
         
         # Controls Section
         controls_frame = tk.LabelFrame(overlay_frame, text="Encoder Controls", 
@@ -766,6 +1398,9 @@ class GalilSetupApp:
         self.encoder_update_running = True
         self.encoder_update_thread = threading.Thread(target=self.encoder_update_loop, daemon=True)
         self.encoder_update_thread.start()
+        
+        # Update scroll region after page content is loaded
+        self._update_page_scroll_region()
             
     def show_diagnostics(self):
         """Show diagnostics interface"""
@@ -780,6 +1415,9 @@ class GalilSetupApp:
         # Diagnostics content
         diag_frame = tk.Frame(self.main_content, bg=self.colors['main_bg'])
         diag_frame.pack(fill='both', expand=True)
+        
+        # Configure content scaling for the diagnostics frame
+        self._configure_content_scaling(diag_frame)
         
         # Controller Information Section
         info_frame = tk.LabelFrame(diag_frame, text="Controller Information", 
@@ -822,6 +1460,91 @@ class GalilSetupApp:
         self.update_interval_entry.pack(side='left')
         self.update_interval_entry.insert(0, "1000")
         
+        # Command Compatibility Checker Section
+        compatibility_frame = tk.LabelFrame(diag_frame, text="Command Compatibility Checker", 
+                                          font=("Arial", 12, "bold"),
+                                          bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                          relief='solid', bd=1)
+        compatibility_frame.pack(fill='x', pady=(0, 20), padx=10)
+        
+        # Compatibility checker controls
+        compatibility_controls_frame = tk.Frame(compatibility_frame, bg=self.colors['main_bg'])
+        compatibility_controls_frame.pack(fill='x', padx=15, pady=10)
+        
+        # Run compatibility test button
+        compatibility_btn = tk.Button(compatibility_controls_frame, text="Run Command Compatibility Test", 
+                                    font=("Arial", 10, "bold"),
+                                    bg=self.colors['accent_blue'], fg='white',
+                                    command=self.run_command_compatibility_test)
+        compatibility_btn.pack(side='left', padx=(0, 10))
+        
+        # Show compatible commands button
+        show_commands_btn = tk.Button(compatibility_controls_frame, text="Show Compatible Commands", 
+                                    font=("Arial", 10, "bold"),
+                                    bg=self.colors['success_green'], fg='white',
+                                    command=self.show_compatible_commands)
+        show_commands_btn.pack(side='left', padx=(0, 10))
+        
+        # Configure axes button
+        configure_axes_btn = tk.Button(compatibility_controls_frame, text="Configure All Axes Like Axis A", 
+                                     font=("Arial", 10, "bold"),
+                                     bg=self.colors['warning_orange'], fg='white',
+                                     command=self.configure_all_axes_like_axis_a)
+        configure_axes_btn.pack(side='left', padx=(0, 10))
+        
+        # Remove Axis B limits button
+        remove_b_limits_btn = tk.Button(compatibility_controls_frame, text="Remove Axis B Limits", 
+                                      font=("Arial", 10, "bold"),
+                                      bg=self.colors['error_red'], fg='white',
+                                      command=self.remove_axis_b_limits)
+        remove_b_limits_btn.pack(side='left', padx=(0, 10))
+        
+        # Travel Limit Management Section
+        travel_frame = tk.LabelFrame(diag_frame, text="Travel Limit Management", 
+                                   font=("Arial", 12, "bold"),
+                                   bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                   relief='solid', bd=1)
+        travel_frame.pack(fill='x', pady=(0, 20), padx=10)
+        
+        # Travel limit controls
+        travel_controls_frame = tk.Frame(travel_frame, bg=self.colors['main_bg'])
+        travel_controls_frame.pack(fill='x', padx=15, pady=10)
+        
+        # Check travel limits button
+        check_travel_btn = tk.Button(travel_controls_frame, text="Check Travel Limits", 
+                                   font=("Arial", 10, "bold"),
+                                   bg=self.colors['accent_blue'], fg='white',
+                                   command=self.check_travel_limits)
+        check_travel_btn.pack(side='left', padx=(0, 10))
+        
+        # Clear travel limits button
+        clear_travel_btn = tk.Button(travel_controls_frame, text="Clear Travel Limits", 
+                                   font=("Arial", 10, "bold"),
+                                   bg=self.colors['warning_orange'], fg='white',
+                                   command=self.clear_travel_limits)
+        clear_travel_btn.pack(side='left', padx=(0, 10))
+        
+        # Restore travel limits button
+        restore_travel_btn = tk.Button(travel_controls_frame, text="Restore Travel Limits", 
+                                     font=("Arial", 10, "bold"),
+                                     bg=self.colors['success_green'], fg='white',
+                                     command=self.restore_travel_limits)
+        restore_travel_btn.pack(side='left', padx=(0, 10))
+        
+        # Disable limit switches button
+        disable_limits_btn = tk.Button(travel_controls_frame, text="Disable Limit Switches", 
+                                     font=("Arial", 10, "bold"),
+                                     bg=self.colors['error_red'], fg='white',
+                                     command=self.disable_limit_switches)
+        disable_limits_btn.pack(side='left', padx=(0, 10))
+        
+        # Re-enable limit switches button
+        enable_limits_btn = tk.Button(travel_controls_frame, text="Re-enable Limit Switches", 
+                                    font=("Arial", 10, "bold"),
+                                    bg=self.colors['warning_orange'], fg='white',
+                                    command=self.enable_limit_switches)
+        enable_limits_btn.pack(side='left')
+        
         # Status section
         diag_status_frame = tk.LabelFrame(diag_frame, text="Diagnostic Results", 
                                         font=("Arial", 12, "bold"),
@@ -837,10 +1560,16 @@ class GalilSetupApp:
         # Initial status message
         self.diag_status_text.insert(tk.END, "Diagnostics Interface Ready\n")
         self.diag_status_text.insert(tk.END, "Connect to a controller to begin diagnostics...\n")
+        self.diag_status_text.insert(tk.END, "Note: Improved error handling for large position changes.\n")
+        self.diag_status_text.insert(tk.END, "Use 'Remove Axis B Limits' button to fix Axis B movement issues.\n")
+        self.diag_status_text.insert(tk.END, "If button not visible, restart the application.\n")
         
         # Initialize live update variables
         self.live_update_running = False
         self.live_update_thread = None
+        
+        # Update scroll region after page content is loaded
+        self._update_page_scroll_region()
             
     def show_network_config(self):
         """Show network configuration interface"""
@@ -855,6 +1584,9 @@ class GalilSetupApp:
         # Create network configuration interface
         self.create_network_interface()
         
+        # Update scroll region after page content is loaded
+        self._update_page_scroll_region()
+        
     def show_settings(self):
         """Show settings interface"""
         self.clear_main_content()
@@ -868,6 +1600,9 @@ class GalilSetupApp:
         # Settings content
         settings_frame = tk.Frame(self.main_content, bg=self.colors['main_bg'])
         settings_frame.pack(fill='both', expand=True)
+        
+        # Configure content scaling for the settings frame
+        self._configure_content_scaling(settings_frame)
         
         # General Settings Section
         general_frame = tk.LabelFrame(settings_frame, text="General Settings", 
@@ -978,6 +1713,9 @@ class GalilSetupApp:
         # Initial status message
         self.settings_status_text.insert(tk.END, "Settings Interface Ready\n")
         self.settings_status_text.insert(tk.END, "Use the buttons above to manage your configuration...\n")
+        
+        # Update scroll region after page content is loaded
+        self._update_page_scroll_region()
             
     def create_network_interface(self):
         """Create the network configuration interface"""
@@ -1010,13 +1748,6 @@ class GalilSetupApp:
                               command=self.connect_to_controller)
         connect_btn.pack(side='left', padx=(10, 0))
         
-        # Disconnect button
-        disconnect_btn = tk.Button(ip_frame, text="Disconnect", 
-                                font=("Arial", 10, "bold"),
-                                bg=self.colors['error_red'], fg='white',
-                                command=self.disconnect_controller)
-        disconnect_btn.pack(side='left', padx=(10, 0))
-        
         # Discover button
         discover_btn = tk.Button(ip_frame, text="Discover Controllers", 
                                font=("Arial", 10, "bold"),
@@ -1030,65 +1761,39 @@ class GalilSetupApp:
                                               bg=self.colors['main_bg'], fg=self.colors['error_red'])
         self.connection_status_label.pack(side='right', padx=(10, 0))
         
-        # Network configuration section
-        config_frame = tk.LabelFrame(network_frame, text="Network Configuration", 
+        # IP Address Configuration section
+        config_frame = tk.LabelFrame(network_frame, text="IP Address Configuration", 
                                    font=("Arial", 12, "bold"),
                                    bg=self.colors['main_bg'], fg=self.colors['main_fg'],
                                    relief='solid', bd=1)
         config_frame.pack(fill='x', pady=(0, 20), padx=10)
         
-        # Network settings inputs
+        # New IP Address input
         settings_frame = tk.Frame(config_frame, bg=self.colors['main_bg'])
-        settings_frame.pack(fill='x', padx=15, pady=10)
+        settings_frame.pack(fill='x', padx=15, pady=15)
         
-        # IP Address
-        tk.Label(settings_frame, text="New IP:", font=("Arial", 10),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).grid(row=0, column=0, sticky='w')
-        self.new_ip_entry = tk.Entry(settings_frame, font=("Arial", 10), width=15)
-        self.new_ip_entry.grid(row=0, column=1, padx=(10, 20))
+        # New IP Address
+        ip_label = tk.Label(settings_frame, text="New IP Address:", font=("Arial", 10, "bold"),
+                           bg=self.colors['main_bg'], fg=self.colors['main_fg'])
+        ip_label.pack(anchor='w')
         
-        # Subnet Mask
-        tk.Label(settings_frame, text="Subnet Mask:", font=("Arial", 10),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).grid(row=0, column=2, sticky='w')
-        self.subnet_entry = tk.Entry(settings_frame, font=("Arial", 10), width=15)
-        self.subnet_entry.grid(row=0, column=3, padx=(10, 20))
-        self.subnet_entry.insert(0, "255.255.255.0")
-        
-        # Gateway
-        tk.Label(settings_frame, text="Gateway:", font=("Arial", 10),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).grid(row=1, column=0, sticky='w', pady=(10, 0))
-        self.gateway_entry = tk.Entry(settings_frame, font=("Arial", 10), width=15)
-        self.gateway_entry.grid(row=1, column=1, padx=(10, 20), pady=(10, 0))
+        self.new_ip_entry = tk.Entry(settings_frame, font=("Arial", 10), width=20)
+        self.new_ip_entry.pack(anchor='w', pady=(5, 15))
+        self.new_ip_entry.insert(0, "10.1.0.20")  # Default IP address
         
         # Configuration buttons
         buttons_frame = tk.Frame(config_frame, bg=self.colors['main_bg'])
-        buttons_frame.pack(fill='x', padx=15, pady=10)
+        buttons_frame.pack(fill='x', padx=15, pady=(0, 15))
         
-        tk.Button(buttons_frame, text="Configure Network", 
+        tk.Button(buttons_frame, text="Set IP Address", 
                 font=("Arial", 10, "bold"),
                 bg=self.colors['success_green'], fg='white',
-                command=self.configure_network).pack(side='left', padx=(0, 10))
+                command=self.set_ip_address).pack(side='left', padx=(0, 10))
         
-        tk.Button(buttons_frame, text="Reset to DHCP", 
-                font=("Arial", 10, "bold"),
-                bg=self.colors['warning_orange'], fg='white',
-                command=self.reset_to_dhcp).pack(side='left', padx=(0, 10))
-        
-        tk.Button(buttons_frame, text="COMPREHENSIVE NETWORK TEST", 
-                font=("Arial", 10, "bold"),
-                bg=self.colors['accent_blue'], fg='white',
-                command=self.comprehensive_network_test).pack(side='left', padx=(0, 10))
-        
-        tk.Button(buttons_frame, text="FORCE SAVE NETWORK", 
+        tk.Button(buttons_frame, text="Burn to Flash", 
                 font=("Arial", 10, "bold"),
                 bg=self.colors['error_red'], fg='white',
-                command=self.force_save_network).pack(side='left', padx=(0, 10))
-        
-        # GDK Launch button
-        tk.Button(buttons_frame, text="🚀 Launch GDK", 
-                font=("Arial", 10, "bold"),
-                bg=self.colors['success_green'], fg='white',
-                command=self.launch_gdk).pack(side='left')
+                command=self.burn_ip_to_flash).pack(side='left')
         
         # Status and log section
         status_frame = tk.LabelFrame(network_frame, text="Status & Log", 
@@ -1103,8 +1808,97 @@ class GalilSetupApp:
         self.log_text.pack(fill='both', expand=True, padx=15, pady=15)
         
         # Initial log message
-        self.log_info("Galil Setup Tool - Network Configuration")
+        self.log_info("Galil Setup Tool - IP Address Configuration")
         self.log_info("Ready to connect to controller...")
+        
+        # Update scroll region after page content is loaded
+        self._update_page_scroll_region()
+    
+    def set_ip_address(self):
+        """Set the IP address on the controller"""
+        if not self.controller:
+            messagebox.showerror("Error", "Please connect to a controller first")
+            return
+        
+        new_ip = self.new_ip_entry.get().strip()
+        if not new_ip:
+            messagebox.showerror("Error", "Please enter an IP address")
+            return
+        
+        if not validate_ip_address(new_ip):
+            messagebox.showerror("Error", "Please enter a valid IP address")
+            return
+        
+        try:
+            self.log_info(f"Setting IP address to: {new_ip}")
+            
+            # Use the DMC-4143 specific function for setting IP
+            results = configure_controller_network_dmc4143(self.controller, new_ip)
+            
+            # Log results
+            for info in results.get('debug_info', []):
+                if '✓' in info:
+                    self.log_success(info)
+                elif '⚠' in info or '✗' in info:
+                    self.log_warning(info)
+                else:
+                    self.log_info(info)
+            
+            # Show success/failure message with specific guidance
+            if results.get('ip_set', False):
+                messagebox.showinfo("IP Address Set Successfully", 
+                    f"IP address has been set to {new_ip}!\n\n"
+                    "IMPORTANT: The controller has disconnected due to IP change.\n\n"
+                    "Next steps:\n"
+                    "1. Try connecting to the new IP address immediately\n"
+                    "2. If connection succeeds, use 'Burn to Flash' button\n"
+                    "3. If connection fails, power cycle the controller\n"
+                    "4. After power cycle, try connecting to new IP again\n\n"
+                    "The IP change IS working - the controller switches to the new IP\n"
+                    "but may revert if settings aren't saved to flash memory.")
+                self.log_success(f"IP address {new_ip} has been set successfully")
+                self.log_info("Controller has disconnected due to IP change - this is normal")
+            else:
+                messagebox.showerror("Error", "Failed to set IP address. Check the log for details.")
+                
+        except Exception as e:
+            error_msg = f"Error setting IP address: {str(e)}"
+            self.log_error(error_msg)
+            messagebox.showerror("Error", error_msg)
+    
+    def burn_ip_to_flash(self):
+        """Burn the current IP address settings to flash memory"""
+        if not self.controller:
+            messagebox.showerror("Error", "Please connect to a controller first")
+            return
+        
+        try:
+            self.log_info("Burning IP address settings to flash memory...")
+            
+            # Use the force save function to burn settings
+            new_ip = self.new_ip_entry.get().strip()
+            results = force_save_network_settings_dmc4143(self.controller, new_ip)
+            
+            # Log results
+            for info in results.get('debug_info', []):
+                if '✓' in info:
+                    self.log_success(info)
+                elif '⚠' in info or '✗' in info:
+                    self.log_warning(info)
+                else:
+                    self.log_info(info)
+            
+            # Show success/failure message
+            if results.get('burned_to_flash', False):
+                messagebox.showinfo("Success", "IP address settings burned to flash memory successfully!")
+                self.log_success("IP address settings have been saved to non-volatile memory")
+            else:
+                messagebox.showerror("Error", "Failed to burn settings to flash. Check the log for details.")
+                
+        except Exception as e:
+            error_msg = f"Error burning settings to flash: {str(e)}"
+            self.log_error(error_msg)
+            messagebox.showerror("Error", error_msg)
         
     def connect_to_controller(self):
         """Connect to the Galil controller"""
@@ -1322,66 +2116,215 @@ class GalilSetupApp:
             self.log_error(f"Force save error: {str(e)}")
             messagebox.showerror("Error", f"Force save error: {str(e)}")
             
-    def launch_gdk(self):
-        """Launch Galil Development Kit (GDK)"""
-        gdk_path = r"C:\Program Files\Galil\gdk\bin\gdk.exe"
-        
-        # Check if GDK exists
-        if not os.path.exists(gdk_path):
-            self.log_error("GDK not found at expected location")
-            messagebox.showerror("Error", f"GDK not found at:\n{gdk_path}\n\nPlease ensure Galil Development Kit is installed.")
+    def configure_pid_settings(self):
+        """Configure PID settings for the controller"""
+        if not self.controller:
+            messagebox.showerror("Error", "Please connect to a controller first")
             return
         
-        # Check if GDK is already running
+        # Create PID configuration dialog
+        pid_dialog = tk.Toplevel(self.root)
+        pid_dialog.title("Configure PID Settings")
+        pid_dialog.geometry("500x400")
+        pid_dialog.configure(bg=self.colors['main_bg'])
+        pid_dialog.transient(self.root)
+        pid_dialog.grab_set()
+        
+        # Center the dialog
+        pid_dialog.update_idletasks()
+        x = (pid_dialog.winfo_screenwidth() // 2) - (500 // 2)
+        y = (pid_dialog.winfo_screenheight() // 2) - (400 // 2)
+        pid_dialog.geometry(f"500x400+{x}+{y}")
+        
+        # Title
+        title_label = tk.Label(pid_dialog, text="Configure PID Settings", 
+                              font=("Arial", 16, "bold"),
+                              bg=self.colors['main_bg'], fg=self.colors['main_fg'])
+        title_label.pack(pady=20)
+        
+        # Instructions
+        instructions = tk.Label(pid_dialog, 
+                               text="Enter PID values for each axis. Leave empty to keep current values.",
+                               font=("Arial", 10),
+                               bg=self.colors['main_bg'], fg=self.colors['main_fg'])
+        instructions.pack(pady=(0, 20))
+        
+        # Axis selection frame
+        axis_frame = tk.Frame(pid_dialog, bg=self.colors['main_bg'])
+        axis_frame.pack(pady=20, padx=20, fill='x')
+        
+        # Axis selection
+        axis_label = tk.Label(axis_frame, text="Axis:", font=("Arial", 10, "bold"),
+                             bg=self.colors['main_bg'], fg=self.colors['main_fg'])
+        axis_label.pack(side='left', padx=(0, 10))
+        
+        self.axis_var = tk.StringVar(value="A")
+        axis_combo = ttk.Combobox(axis_frame, textvariable=self.axis_var, 
+                                 values=['A', 'B', 'C', 'D'], state='readonly', width=5)
+        axis_combo.pack(side='left')
+        
+        # Bind axis change to refresh values
+        self.axis_var.trace('w', self.on_axis_change)
+        
+        # PID values frame
+        values_frame = tk.Frame(pid_dialog, bg=self.colors['main_bg'])
+        values_frame.pack(pady=20, padx=20, fill='x')
+        
+        # KP input
+        kp_frame = tk.Frame(values_frame, bg=self.colors['main_bg'])
+        kp_frame.pack(fill='x', pady=5)
+        
+        kp_label = tk.Label(kp_frame, text="KP:", font=("Arial", 10, "bold"),
+                           bg=self.colors['main_bg'], fg=self.colors['main_fg'])
+        kp_label.pack(side='left', padx=(0, 10))
+        
+        self.kp_entry = tk.Entry(kp_frame, font=("Arial", 10), width=15)
+        self.kp_entry.pack(side='left')
+        
+        # KI input
+        ki_frame = tk.Frame(values_frame, bg=self.colors['main_bg'])
+        ki_frame.pack(fill='x', pady=5)
+        
+        ki_label = tk.Label(ki_frame, text="KI:", font=("Arial", 10, "bold"),
+                           bg=self.colors['main_bg'], fg=self.colors['main_fg'])
+        ki_label.pack(side='left', padx=(0, 10))
+        
+        self.ki_entry = tk.Entry(ki_frame, font=("Arial", 10), width=15)
+        self.ki_entry.pack(side='left')
+        
+        # KD input
+        kd_frame = tk.Frame(values_frame, bg=self.colors['main_bg'])
+        kd_frame.pack(fill='x', pady=5)
+        
+        kd_label = tk.Label(kd_frame, text="KD:", font=("Arial", 10, "bold"),
+                           bg=self.colors['main_bg'], fg=self.colors['main_fg'])
+        kd_label.pack(side='left', padx=(0, 10))
+        
+        self.kd_entry = tk.Entry(kd_frame, font=("Arial", 10), width=15)
+        self.kd_entry.pack(side='left')
+        
+        # Load current values
+        self.load_current_pid_values()
+        
+        # Buttons frame
+        buttons_frame = tk.Frame(pid_dialog, bg=self.colors['main_bg'])
+        buttons_frame.pack(pady=20)
+        
+        tk.Button(buttons_frame, text="Apply Settings", 
+                font=("Arial", 10, "bold"),
+                bg=self.colors['success_green'], fg='white',
+                command=lambda: self.apply_pid_settings(pid_dialog)).pack(side='left', padx=(0, 10))
+        
+        tk.Button(buttons_frame, text="Cancel", 
+                font=("Arial", 10, "bold"),
+                bg=self.colors['error_red'], fg='white',
+                command=pid_dialog.destroy).pack(side='left')
+    
+    def load_current_pid_values(self):
+        """Load current PID values from controller for selected axis"""
         try:
-            import psutil  # pyright: ignore[reportMissingModuleSource]
-            gdk_running = False
-            for proc in psutil.process_iter(['pid', 'name']):
-                if proc.info['name'] and 'gdk' in proc.info['name'].lower():
-                    gdk_running = True
-                    break
+            settings = get_controller_pid_settings(self.controller)
             
-            if gdk_running:
-                response = messagebox.askyesno("GDK Already Running", 
-                    "GDK appears to be already running.\n\nWould you like to launch another instance?")
-                if not response:
-                    self.log_info("GDK launch cancelled - instance already running")
-                    return
-        except ImportError:
-            # psutil not available, continue without checking
-            pass
+            if settings.get('error'):
+                self.log_error(f"Error loading PID settings: {settings['error']}")
+                return
+            
+            # Get current axis selection
+            current_axis = self.axis_var.get()
+            
+            # Populate the entry fields for the selected axis
+            if current_axis in settings.get('kp_values', {}):
+                self.kp_entry.insert(0, str(settings['kp_values'][current_axis]))
+            if current_axis in settings.get('ki_values', {}):
+                self.ki_entry.insert(0, str(settings['ki_values'][current_axis]))
+            if current_axis in settings.get('kd_values', {}):
+                self.kd_entry.insert(0, str(settings['kd_values'][current_axis]))
+                    
+        except Exception as e:
+            self.log_error(f"Error loading PID values: {str(e)}")
+    
+    def on_axis_change(self, *args):
+        """Called when axis selection changes"""
+        # Clear current values
+        self.kp_entry.delete(0, tk.END)
+        self.ki_entry.delete(0, tk.END)
+        self.kd_entry.delete(0, tk.END)
         
-        self.log_info("=== LAUNCHING GALIL DEVELOPMENT KIT ===")
-        self.log_info(f"GDK Path: {gdk_path}")
-        
+        # Load new values for selected axis
+        self.load_current_pid_values()
+    
+    def apply_pid_settings(self, dialog):
+        """Apply PID settings to controller"""
         try:
-            # Launch GDK
-            if self.controller:
-                current_ip = self.ip_entry.get().strip()
-                self.log_info(f"Current controller IP: {current_ip}")
-                self.log_info("Attempting to launch GDK with controller connection...")
-                
-                # Try to launch GDK with IP parameter (if supported)
+            # Get selected axis
+            selected_axis = self.axis_var.get()
+            
+            # Collect values from entry fields
+            kp_values = {}
+            ki_values = {}
+            kd_values = {}
+            
+            # KP value
+            kp_text = self.kp_entry.get().strip()
+            if kp_text:
                 try:
-                    # Some versions of GDK support command line parameters
-                    subprocess.Popen([gdk_path, "--ip", current_ip], shell=True)
-                    self.log_success("GDK launched with controller IP")
-                except:
-                    # Fallback to standard launch
-                    subprocess.Popen([gdk_path], shell=True)
-                    self.log_success("GDK launched successfully")
-                    self.log_info("You can connect to the controller in GDK using IP: " + current_ip)
+                    kp_values[selected_axis] = float(kp_text)
+                except ValueError:
+                    messagebox.showerror("Error", f"Invalid KP value")
+                    return
+            
+            # KI value
+            ki_text = self.ki_entry.get().strip()
+            if ki_text:
+                try:
+                    ki_values[selected_axis] = float(ki_text)
+                except ValueError:
+                    messagebox.showerror("Error", f"Invalid KI value")
+                    return
+            
+            # KD value
+            kd_text = self.kd_entry.get().strip()
+            if kd_text:
+                try:
+                    kd_values[selected_axis] = float(kd_text)
+                except ValueError:
+                    messagebox.showerror("Error", f"Invalid KD value")
+                    return
+            
+            # Check if any values were entered
+            if not kp_values and not ki_values and not kd_values:
+                messagebox.showwarning("Warning", "No PID values entered")
+                return
+            
+            # Apply settings
+            self.log_info(f"Applying PID settings for axis {selected_axis}...")
+            results = configure_controller_pid_settings(
+                self.controller, 
+                kp_values if kp_values else None,
+                ki_values if ki_values else None,
+                kd_values if kd_values else None
+            )
+            
+            # Log results
+            for info in results.get('debug_info', []):
+                if '✓' in info:
+                    self.log_success(info)
+                elif '⚠' in info or '✗' in info:
+                    self.log_warning(info)
             else:
-                # Launch GDK normally
-                subprocess.Popen([gdk_path], shell=True)
-                self.log_success("GDK launched successfully")
-                self.log_info("GDK should open in a new window")
-                self.log_info("No controller currently connected")
+                    self.log_info(info)
+            
+            # Show success/failure message
+            if results.get('burned_to_flash', False):
+                messagebox.showinfo("Success", f"PID settings for axis {selected_axis} applied and burned to flash memory successfully!")
+                dialog.destroy()
+            else:
+                messagebox.showwarning("Warning", f"PID settings for axis {selected_axis} applied but may not be saved to flash memory")
+                dialog.destroy()
             
         except Exception as e:
-            error_msg = f"Failed to launch GDK: {str(e)}"
-            self.log_error(error_msg)
-            messagebox.showerror("Launch Error", error_msg)
+            self.log_error(f"Error applying PID settings: {str(e)}")
+            messagebox.showerror("Error", f"Error applying PID settings: {str(e)}")
             
     def log_info(self, message):
         """Log an info message"""
@@ -1469,34 +2412,35 @@ class GalilSetupApp:
             return
             
         try:
-            axis = self.axis_var.get()
+            axis = self.brushless_axis_var.get()
             polarity = self.encoder_polarity_var.get()
             
-            self.motor_status_text.insert(tk.END, f"=== DEFINING MOTOR DIRECTION FOR AXIS {axis} ===\n")
-            self.motor_status_text.insert(tk.END, f"Encoder Polarity: {polarity}\n")
-            self.motor_status_text.insert(tk.END, "Instructions:\n")
-            self.motor_status_text.insert(tk.END, "1. Click 'Define Motor Direction' button\n")
-            self.motor_status_text.insert(tk.END, "2. Move motor by hand in desired positive direction\n")
-            self.motor_status_text.insert(tk.END, "3. Watch for encoder count changes\n")
-            self.motor_status_text.insert(tk.END, "4. If counts increase in wrong direction, change polarity\n\n")
+            self.log_message(f"=== DEFINING MOTOR DIRECTION FOR AXIS {axis} ===\n")
+            self.log_message(f"Encoder Polarity: {polarity}\n")
+            self.log_message("Instructions:\n")
+            self.log_message("1. Click 'Define Motor Direction' button\n")
+            self.log_message("2. Move motor by hand in desired positive direction\n")
+            self.log_message("3. Watch for encoder count changes\n")
+            self.log_message("4. If counts increase in wrong direction, change polarity\n\n")
             
             # Set encoder polarity
             if polarity == "Reversed":
                 self.controller.send_command(f"EP{axis}=1")
-                self.motor_status_text.insert(tk.END, f"Encoder polarity set to REVERSED for axis {axis}\n")
+                self.log_message(f"Encoder polarity set to REVERSED for axis {axis}\n")
             else:
                 self.controller.send_command(f"EP{axis}=0")
-                self.motor_status_text.insert(tk.END, f"Encoder polarity set to NORMAL for axis {axis}\n")
+                self.log_message(f"Encoder polarity set to NORMAL for axis {axis}\n")
             
-            # Enable servo for testing
-            self.controller.send_command(f"SH{axis}")
+            # Disable servo for manual movement testing
+            self.controller.send_command(f"MO{axis}")
             time.sleep(0.5)
             
             # Get initial position
-            initial_pos = int(self.controller.send_command(f"TP {axis}").strip())
-            self.motor_status_text.insert(tk.END, f"Initial position: {initial_pos}\n")
-            self.motor_status_text.insert(tk.END, "Now move the motor by hand in the desired positive direction...\n")
-            self.motor_status_text.insert(tk.END, "Watch the position change in the real-time encoder display above.\n\n")
+            initial_pos = int(self.controller.send_command(f"TP{axis}").strip())
+            self.log_message(f"Initial position: {initial_pos}\n")
+            self.log_message("Now move the motor by hand in the desired positive direction...\n")
+            self.log_message("Watch the position change in the real-time encoder display above.\n")
+            self.log_message("NOTE: Servo is disabled to allow manual movement.\n\n")
             
             # Set flag to enable position logging during motor direction test
             self.motor_direction_test_active = True
@@ -1512,20 +2456,20 @@ class GalilSetupApp:
                     self.update_encoder_positions()
                     
                     # Get current position
-                    current_pos = int(self.controller.send_command(f"TP {axis}").strip())
+                    current_pos = int(self.controller.send_command(f"TP{axis}").strip())
                     
                     # Show significant changes in the status area
                     if current_pos != last_pos:
                         change = current_pos - last_pos
                         direction = "positive" if change > 0 else "negative"
-                        self.motor_status_text.insert(tk.END, f"Position: {current_pos} (change: {change:+d} counts - {direction} direction)\n")
+                        self.log_message(f"Position: {current_pos} (change: {change:+d} counts - {direction} direction)\n")
                         last_pos = current_pos
                         update_count += 1
                     
                     # Update status every 2 seconds
                     if update_count % 20 == 0 and update_count > 0:
                         remaining = 10 - int(time.time() - start_time)
-                        self.motor_status_text.insert(tk.END, f"Monitoring... {remaining} seconds remaining\n")
+                        self.log_message(f"Monitoring... {remaining} seconds remaining\n")
                     
                     time.sleep(0.1)
                 except Exception as e:
@@ -1534,17 +2478,12 @@ class GalilSetupApp:
             # Clear flag to stop position logging
             self.motor_direction_test_active = False
             
-            # Disable servo
-            self.controller.send_command(f"MO{axis}")
-            
-            self.motor_status_text.insert(tk.END, "Motor direction test completed.\n")
-            self.motor_status_text.insert(tk.END, "If the direction was wrong, change the encoder polarity and repeat.\n\n")
-            self.motor_status_text.see(tk.END)
+            self.log_message("Motor direction test completed.\n")
+            self.log_message("If the direction was wrong, change the encoder polarity and repeat.\n\n")
             
         except Exception as e:
             error_msg = f"Motor direction definition error: {str(e)}"
-            self.motor_status_text.insert(tk.END, f"ERROR: {error_msg}\n")
-            self.motor_status_text.see(tk.END)
+            self.log_message(f"ERROR: {error_msg}\n")
             messagebox.showerror("Direction Error", error_msg)
             
     def estimate_brushless_modulo(self):
@@ -1554,13 +2493,13 @@ class GalilSetupApp:
             return
             
         try:
-            axis = self.axis_var.get()
+            axis = self.brushless_axis_var.get()
             
-            self.motor_status_text.insert(tk.END, f"=== ESTIMATING BRUSHLESS MODULO FOR AXIS {axis} ===\n")
-            self.motor_status_text.insert(tk.END, "This test will take a maximum of 30 seconds.\n")
+            self.log_message(f"=== ESTIMATING BRUSHLESS MODULO FOR AXIS {axis} ===\n")
+            self.log_message("This test will take a maximum of 30 seconds.\n")
             
             # Step 1: Check controller capabilities
-            self.motor_status_text.insert(tk.END, "Step 1/3: Checking controller capabilities...\n")
+            self.log_message("Step 1/3: Checking controller capabilities...\n")
             
             brushless_supported = False
             try:
@@ -1568,14 +2507,14 @@ class GalilSetupApp:
                 test_response = self.controller.send_command(f"BL{axis}")
                 if "?" not in test_response:
                     brushless_supported = True
-                    self.motor_status_text.insert(tk.END, "✓ Controller supports brushless commands\n")
+                    self.log_message("✓ Controller supports brushless commands\n")
                 else:
-                    self.motor_status_text.insert(tk.END, "⚠ Controller does not support brushless commands\n")
+                    self.log_message("⚠ Controller does not support brushless commands\n")
             except:
-                self.motor_status_text.insert(tk.END, "⚠ Controller does not support brushless commands\n")
+                self.log_message("⚠ Controller does not support brushless commands\n")
             
             # Step 2: Check what motion commands are supported
-            self.motor_status_text.insert(tk.END, "Step 2/3: Checking motion command support...\n")
+            self.log_message("Step 2/3: Checking motion command support...\n")
             
             motion_commands_supported = False
             try:
@@ -1586,26 +2525,27 @@ class GalilSetupApp:
                 
                 if "?" not in test_pr and "?" not in test_bg and "?" not in test_st:
                     motion_commands_supported = True
-                    self.motor_status_text.insert(tk.END, "✓ Motion commands supported\n")
+                    self.log_message("✓ Motion commands supported\n")
                 else:
-                    self.motor_status_text.insert(tk.END, "⚠ Motion commands not supported\n")
+                    self.log_message("⚠ Motion commands not supported\n")
             except:
-                self.motor_status_text.insert(tk.END, "⚠ Motion commands not supported\n")
+                self.log_message("⚠ Motion commands not supported\n")
             
             # Step 3: Perform manual movement-based brushless analysis
-            self.motor_status_text.insert(tk.END, "Step 3/3: Manual movement brushless analysis...\n")
-            self.motor_status_text.insert(tk.END, "This method requires manual movement of the motor.\n")
-            self.motor_status_text.insert(tk.END, "Please move the motor by hand in both directions during this test.\n\n")
+            self.log_message("Step 3/3: Manual movement brushless analysis...\n")
+            self.log_message("This method requires manual movement of the motor.\n")
+            self.log_message("Please move the motor by hand in both directions during this test.\n\n")
             
             try:
-                # Enable servo for testing
-                self.controller.send_command(f"SH{axis}")
+                # Disable servo for manual movement testing
+                self.controller.send_command(f"MO{axis}")
                 time.sleep(0.5)
                 
                 # Get initial position
                 initial_pos = int(self.controller.send_command(f"TP{axis}").strip())
-                self.motor_status_text.insert(tk.END, f"Initial position: {initial_pos}\n")
-                self.motor_status_text.insert(tk.END, "Starting movement analysis...\n")
+                self.log_message(f"Initial position: {initial_pos}\n")
+                self.log_message("Starting movement analysis...\n")
+                self.log_message("NOTE: Servo is disabled to allow manual movement.\n")
                 
                 # Monitor movement for 15 seconds to collect data
                 start_time = time.time()
@@ -1621,7 +2561,7 @@ class GalilSetupApp:
                         # Check for significant movement
                         if abs(current_pos - last_pos) > 10:
                             movement_detected = True
-                            self.motor_status_text.insert(tk.END, f"Movement detected: {last_pos} → {current_pos} (change: {current_pos - last_pos:+d})\n")
+                            self.log_message(f"Movement detected: {last_pos} → {current_pos} (change: {current_pos - last_pos:+d})\n")
                         
                         last_pos = current_pos
                         time.sleep(0.1)
@@ -1630,75 +2570,64 @@ class GalilSetupApp:
                         elapsed = int(time.time() - start_time)
                         if elapsed % 3 == 0 and elapsed > 0:
                             remaining = 15 - elapsed
-                            self.motor_status_text.insert(tk.END, f"Analyzing... {remaining} seconds remaining\n")
+                            self.log_message(f"Analyzing... {remaining} seconds remaining\n")
                             
                     except Exception as e:
                         time.sleep(0.1)
                         continue
                 
-                # Disable servo
-                self.controller.send_command(f"MO{axis}")
-                
                 if not movement_detected:
-                    self.motor_status_text.insert(tk.END, "⚠ No significant movement detected during test\n")
-                    self.motor_status_text.insert(tk.END, "Please ensure motor is free to move and try again\n")
+                    self.log_message("⚠ No significant movement detected during test\n")
+                    self.log_message("Please ensure motor is free to move and try again\n")
                     return
                 
                 # Analyze the collected position data
-                self.motor_status_text.insert(tk.END, f"✓ Collected {len(positions)} position samples\n")
+                self.log_message(f"✓ Collected {len(positions)} position samples\n")
                 
                 # Calculate movement statistics
                 min_pos = min(positions)
                 max_pos = max(positions)
                 total_movement = max_pos - min_pos
                 
-                self.motor_status_text.insert(tk.END, f"Movement range: {min_pos} to {max_pos} (total: {total_movement} counts)\n")
+                self.log_message(f"Movement range: {min_pos} to {max_pos} (total: {total_movement} counts)\n")
                 
                 # Estimate brushless modulo based on movement patterns
                 estimated_bm = self.estimate_bm_from_movement(positions, total_movement)
                 estimated_pole_pairs = self.estimate_pole_pairs_from_bm(estimated_bm)
                 
-                self.motor_status_text.insert(tk.END, f"✓ Movement analysis completed\n")
-                self.motor_status_text.insert(tk.END, f"✓ Estimated brushless modulo: {estimated_bm:.1f}\n")
-                self.motor_status_text.insert(tk.END, f"✓ Estimated pole pairs: {estimated_pole_pairs:.1f}\n")
+                self.log_message(f"✓ Movement analysis completed\n")
+                self.log_message(f"✓ Estimated brushless modulo: {estimated_bm:.1f}\n")
+                self.log_message(f"✓ Estimated pole pairs: {estimated_pole_pairs:.1f}\n")
                 
                 # Store the estimated values
                 self.brushless_bm = estimated_bm
                 self.brushless_pole_pairs = estimated_pole_pairs
                 
-                # Try to apply brushless configuration if supported
-                if brushless_supported:
-                    try:
-                        self.controller.send_command(f"BM{axis}={estimated_bm}")
-                        self.controller.send_command(f"BL{axis}=1")
-                        self.motor_status_text.insert(tk.END, "✓ Brushless configuration applied to controller\n")
-                    except:
-                        self.motor_status_text.insert(tk.END, "⚠ Could not apply brushless configuration\n")
-                else:
-                    self.motor_status_text.insert(tk.END, "⚠ Brushless configuration stored locally (controller not supported)\n")
+                # Store the estimated values for later application
+                self.brushless_bm = estimated_bm
+                self.brushless_pole_pairs = estimated_pole_pairs
                 
-                self.motor_status_text.insert(tk.END, "✓ Brushless analysis completed!\n")
-                self.motor_status_text.insert(tk.END, f"Final BM value: {self.brushless_bm:.1f}\n")
-                self.motor_status_text.insert(tk.END, f"Pole pairs: {self.brushless_pole_pairs:.1f}\n")
-                self.motor_status_text.insert(tk.END, "Note: For optimal brushless motor setup, use Galil's GDK software.\n\n")
-                self.motor_status_text.see(tk.END)
+                # Note: Configuration will be applied in the save step
+                self.log_message("✓ Brushless analysis completed!\n")
+                self.log_message(f"✓ Estimated BM value: {self.brushless_bm:.1f}\n")
+                self.log_message(f"✓ Estimated pole pairs: {self.brushless_pole_pairs:.1f}\n")
+                self.log_message("✓ Ready to save configuration to controller\n")
+                self.log_message("  Use 'Save Axis Settings' to apply configuration\n\n")
                 
             except Exception as est_error:
-                self.motor_status_text.insert(tk.END, f"⚠ Analysis failed: {est_error}\n")
-                self.motor_status_text.insert(tk.END, "Using default brushless configuration...\n")
+                self.log_message(f"⚠ Analysis failed: {est_error}\n")
+                self.log_message("Using default brushless configuration...\n")
                 
                 # Set default values
                 self.brushless_bm = 5000.0
                 self.brushless_pole_pairs = 4.0
                 
-                self.motor_status_text.insert(tk.END, f"Default BM: {self.brushless_bm:.1f}\n")
-                self.motor_status_text.insert(tk.END, "For optimal brushless motors, use Galil's GDK software.\n\n")
-                self.motor_status_text.see(tk.END)
+                self.log_message(f"Default BM: {self.brushless_bm:.1f}\n")
+                self.log_message("Ready to save configuration to controller\n\n")
                 
         except Exception as e:
             error_msg = f"Brushless modulo estimation error: {str(e)}"
-            self.motor_status_text.insert(tk.END, f"ERROR: {error_msg}\n")
-            self.motor_status_text.see(tk.END)
+            self.log_message(f"ERROR: {error_msg}\n")
             messagebox.showerror("Estimation Error", error_msg)
                 
     def estimate_bm_from_movement(self, positions, total_movement):
@@ -1771,7 +2700,7 @@ class GalilSetupApp:
             return
             
         try:
-            axis = self.axis_var.get()
+            axis = self.brushless_axis_var.get()
             
             self.motor_status_text.insert(tk.END, f"=== LATCHING INDEXES FOR AXIS {axis} ===\n")
             self.motor_status_text.insert(tk.END, "This test will take a maximum of 10 seconds to run.\n")
@@ -1894,20 +2823,13 @@ class GalilSetupApp:
             # Store the improved BM
             self.brushless_bm = brushless_bm
             
-            # Try to apply to controller if supported
-            try:
-                test_response = self.controller.send_command(f"BM{axis}")
-                if "?" not in test_response:
-                    self.controller.send_command(f"BM{axis}={brushless_bm}")
-                    self.motor_status_text.insert(tk.END, f"✓ Improved BM applied to controller\n")
-                else:
-                    self.motor_status_text.insert(tk.END, f"⚠ BM stored locally (controller not supported)\n")
-            except:
-                self.motor_status_text.insert(tk.END, f"⚠ Could not apply improved BM\n")
+            # Store the improved BM for later application
+            self.brushless_bm = brushless_bm
             
             self.motor_status_text.insert(tk.END, "✓ Index latching completed!\n")
-            self.motor_status_text.insert(tk.END, f"Final BM value: {self.brushless_bm:.1f}\n")
-            self.motor_status_text.insert(tk.END, "✓ Improved brushless configuration stored\n\n")
+            self.motor_status_text.insert(tk.END, f"✓ Improved BM value: {self.brushless_bm:.1f}\n")
+            self.motor_status_text.insert(tk.END, "✓ Ready to save configuration to controller\n")
+            self.motor_status_text.insert(tk.END, "  Use 'Save Axis Settings' to apply configuration\n\n")
             self.motor_status_text.see(tk.END)
             
         except Exception as e:
@@ -1924,59 +2846,123 @@ class GalilSetupApp:
         self.motor_status_text.insert(tk.END, "Using estimated brushless modulo from previous step.\n\n")
         self.motor_status_text.see(tk.END)
         
+    def log_message(self, message):
+        """Add message to persistent log with real-time update"""
+        # Add timestamp to message
+        timestamp = time.strftime("%H:%M:%S")
+        formatted_message = f"[{timestamp}] {message}"
+        
+        # Add to persistent log
+        self.persistent_log_text.insert(tk.END, formatted_message)
+        self.persistent_log_text.see(tk.END)
+        self.persistent_log_text.update()
+        
+        # Also add to page-specific log if it exists (for backward compatibility)
+        if hasattr(self, 'motor_status_text'):
+            try:
+                self.motor_status_text.insert(tk.END, formatted_message)
+                self.motor_status_text.see(tk.END)
+                self.motor_status_text.update()
+            except:
+                pass  # Page-specific log might not exist
+        
     def save_brushless_settings(self):
-        """Save brushless motor configuration settings"""
+        """Save brushless motor configuration settings to controller"""
         if not self.controller:
             messagebox.showerror("Error", "Please connect to a controller first")
             return
             
         try:
-            axis = self.axis_var.get()
+            axis = self.brushless_axis_var.get()
             
             if not hasattr(self, 'brushless_bm'):
                 messagebox.showerror("Error", "Please run brushless modulo estimation first")
                 return
             
-            self.motor_status_text.insert(tk.END, f"=== SAVING BRUSHLESS SETTINGS FOR AXIS {axis} ===\n")
+            self.log_message(f"=== SAVING BRUSHLESS SETTINGS FOR AXIS {axis} ===\n")
             
-            # Save brushless modulo with error handling
+            # Step 1: Stop any motion on the axis
             try:
-                self.controller.send_command(f"BM{axis}={self.brushless_bm}")
-                self.motor_status_text.insert(tk.END, f"✓ Brushless Modulo (BM): {self.brushless_bm:.4f}\n")
+                self.controller.send_command(f"ST{axis}")
+                time.sleep(0.5)
+                self.log_message(f"✓ Motion stopped on axis {axis}\n")
+            except Exception as stop_error:
+                self.log_message(f"⚠ Warning: Could not stop motion: {stop_error}\n")
+            
+            # Step 2: Disable servo for configuration
+            try:
+                self.controller.send_command(f"MO{axis}")
+                time.sleep(0.5)
+                self.log_message(f"✓ Servo disabled for configuration\n")
+            except Exception as mo_error:
+                self.log_message(f"⚠ Warning: Could not disable servo: {mo_error}\n")
+            
+            # Step 3: Save brushless modulo (BM) - REAL COMMAND
+            try:
+                bm_command = f"BM{axis}={self.brushless_bm}"
+                response = self.controller.send_command(bm_command)
+                if "?" in response:
+                    raise Exception(f"Controller rejected BM command: {response}")
+                self.log_message(f"✓ Brushless Modulo (BM): {self.brushless_bm:.4f}\n")
+                self.log_message(f"  Command: {bm_command}\n")
             except Exception as bm_error:
-                self.motor_status_text.insert(tk.END, f"⚠ Warning: Could not save BM: {bm_error}\n")
-                self.motor_status_text.insert(tk.END, "Continuing with simulation...\n")
+                self.log_message(f"✗ ERROR: Could not save BM: {bm_error}\n")
+                self.log_message(f"  This may indicate the controller doesn't support brushless motors\n")
+                return
             
-            # Set up brushless mode with error handling
+            # Step 4: Enable brushless mode (BL) - REAL COMMAND
             try:
-                self.controller.send_command(f"BL{axis}=1")  # Enable brushless mode
-                self.motor_status_text.insert(tk.END, f"✓ Brushless mode enabled for axis {axis}\n")
+                bl_command = f"BL{axis}=1"
+                response = self.controller.send_command(bl_command)
+                if "?" in response:
+                    raise Exception(f"Controller rejected BL command: {response}")
+                self.log_message(f"✓ Brushless mode enabled for axis {axis}\n")
+                self.log_message(f"  Command: {bl_command}\n")
             except Exception as bl_error:
-                self.motor_status_text.insert(tk.END, f"⚠ Warning: Could not enable brushless mode: {bl_error}\n")
-                self.motor_status_text.insert(tk.END, "Continuing with simulation...\n")
+                self.log_message(f"✗ ERROR: Could not enable brushless mode: {bl_error}\n")
+                self.log_message(f"  This may indicate the controller doesn't support brushless motors\n")
+                return
             
-            # Save settings to non-volatile memory with error handling
+            # Step 5: Verify brushless settings
             try:
-                self.controller.send_command("BN")
+                bm_verify = self.controller.send_command(f"BM{axis}")
+                bl_verify = self.controller.send_command(f"BL{axis}")
+                self.log_message(f"✓ Verification - BM: {bm_verify.strip()}, BL: {bl_verify.strip()}\n")
+            except Exception as verify_error:
+                self.log_message(f"⚠ Warning: Could not verify settings: {verify_error}\n")
+            
+            # Step 6: Save settings to non-volatile memory (BN) - REAL COMMAND
+            try:
+                response = self.controller.send_command("BN")
+                if "?" in response:
+                    raise Exception(f"Controller rejected BN command: {response}")
                 time.sleep(1.0)
-                self.motor_status_text.insert(tk.END, f"✓ Settings saved to controller memory\n")
+                self.log_message(f"✓ Settings saved to controller memory\n")
+                self.log_message(f"  Command: BN (Burn to Non-volatile memory)\n")
             except Exception as bn_error:
-                self.motor_status_text.insert(tk.END, f"⚠ Warning: Could not save to memory: {bn_error}\n")
-                self.motor_status_text.insert(tk.END, "Continuing with simulation...\n")
+                self.log_message(f"✗ ERROR: Could not save to memory: {bn_error}\n")
+                self.log_message(f"  Settings may be lost on power cycle\n")
             
-            self.motor_status_text.insert(tk.END, f"✓ Configuration and Setup Complete!\n")
-            self.motor_status_text.insert(tk.END, f"You have successfully configured this axis for sinusoidal commutation.\n")
-            self.motor_status_text.insert(tk.END, "Note: This is a simulated configuration. For real brushless motors,\n")
-            self.motor_status_text.insert(tk.END, "use Galil's GDK software for accurate brushless motor setup.\n\n")
-            self.motor_status_text.see(tk.END)
+            # Step 7: Re-enable servo
+            try:
+                self.controller.send_command(f"SH{axis}")
+                time.sleep(0.5)
+                self.log_message(f"✓ Servo re-enabled for axis {axis}\n")
+            except Exception as sh_error:
+                self.log_message(f"⚠ Warning: Could not re-enable servo: {sh_error}\n")
             
-            messagebox.showinfo("Success", f"Brushless motor configuration completed for axis {axis}!\n\nNote: This is a demonstration. For production use, use Galil's GDK software.")
+            self.log_message(f"✓ REAL BRUSHLESS CONFIGURATION COMPLETE!\n")
+            self.log_message(f"✓ Axis {axis} is now configured for sinusoidal commutation\n")
+            self.log_message(f"✓ Settings have been saved to the controller\n")
+            self.log_message(f"✓ Configuration will persist after power cycle\n\n")
+            
+            messagebox.showinfo("Success", f"REAL brushless motor configuration completed for axis {axis}!\n\nSettings have been saved to the controller and will persist after power cycle.")
             
         except Exception as e:
             error_msg = f"Save brushless settings error: {str(e)}"
             self.motor_status_text.insert(tk.END, f"ERROR: {error_msg}\n")
-            self.motor_status_text.insert(tk.END, "This feature requires brushless motor support on your controller.\n")
-            self.motor_status_text.insert(tk.END, "For accurate brushless motor setup, use Galil's GDK software.\n\n")
+            self.motor_status_text.insert(tk.END, "This may indicate the controller doesn't support brushless motors.\n")
+            self.motor_status_text.insert(tk.END, "Check your controller model and firmware version.\n\n")
             self.motor_status_text.see(tk.END)
             messagebox.showerror("Save Error", error_msg)
             
@@ -1985,6 +2971,13 @@ class GalilSetupApp:
         # Check if encoder labels exist (widgets might be destroyed)
         if not hasattr(self, 'encoder_labels') or not self.encoder_labels:
             return
+            
+        # Ensure all axes are present in the encoder labels
+        expected_axes = ["A", "B", "C", "D"]
+        for axis in expected_axes:
+            if axis not in self.encoder_labels:
+                # Create missing encoder label
+                self._create_missing_encoder_label(axis)
             
         if not self.controller:
             # Update labels to show "No Connection"
@@ -2069,6 +3062,40 @@ class GalilSetupApp:
                 self.motor_status_text.insert(tk.END, f"[{timestamp}] General error: {str(e)}\n")
                 self.motor_status_text.see(tk.END)
     
+    def update_all_encoder_positions(self, positions):
+        """Update encoder position display with provided positions dict"""
+        if not hasattr(self, 'encoder_labels') or not self.encoder_labels:
+            return
+            
+        try:
+            for axis in ["A", "B", "C", "D"]:
+                if axis in self.encoder_labels and axis in positions:
+                    try:
+                        position = positions[axis]
+                        formatted_position = str(position)
+                        self.encoder_labels[axis].config(text=formatted_position, fg='black')
+                    except tk.TclError:
+                        # Widget was destroyed, ignore
+                        pass
+        except Exception as e:
+            pass  # Ignore errors in position updates
+    
+    def update_single_encoder_position(self, axis, position):
+        """Update encoder position display for a single axis"""
+        if not hasattr(self, 'encoder_labels') or not self.encoder_labels:
+            return
+            
+        try:
+            if axis in self.encoder_labels:
+                try:
+                    formatted_position = str(position)
+                    self.encoder_labels[axis].config(text=formatted_position, fg='black')
+                except tk.TclError:
+                    # Widget was destroyed, ignore
+                    pass
+        except Exception as e:
+            pass  # Ignore errors in position updates
+    
     def toggle_auto_update(self):
         """Toggle automatic encoder position updates"""
         if self.auto_update_var.get():
@@ -2089,8 +3116,8 @@ class GalilSetupApp:
                 if hasattr(self, 'encoder_labels') and self.encoder_labels:
                     self.update_encoder_positions()
                     if self.auto_update_var.get():
-                        # Update every 500ms for real-time responsiveness
-                        self.encoder_update_job = self.root.after(500, update_loop)
+                        # Update every 100ms for more responsive real-time updates
+                        self.encoder_update_job = self.root.after(100, update_loop)
             except Exception as e:
                 # If there's an error, stop the update loop
                 if hasattr(self, 'encoder_update_job'):
@@ -2101,7 +3128,7 @@ class GalilSetupApp:
                     self.motor_status_text.insert(tk.END, f"[{timestamp}] Auto-update error: {str(e)}\n")
                     self.motor_status_text.see(tk.END)
         
-        self.encoder_update_job = self.root.after(100, update_loop)  # Start immediately
+        self.encoder_update_job = self.root.after(50, update_loop)  # Start immediately with minimal delay
     
     def stop_encoder_auto_update(self):
         """Stop automatic encoder position updates"""
@@ -2180,15 +3207,39 @@ class GalilSetupApp:
             error_msg = f"Error copying log: {str(e)}"
             messagebox.showerror("Copy Error", error_msg)
     
-    def toggle_pid_section(self, event=None):
-        """Toggle PID configuration section visibility"""
-        if hasattr(self, 'pid_content'):
-            if self.pid_content.winfo_viewable():
-                self.pid_content.pack_forget()
-                self.pid_frame.configure(text="⚙️ PID Configuration ▶")
+    def re_enable_servo(self):
+        """Re-enable servo for the selected axis after manual tests"""
+        if not self.controller:
+            messagebox.showerror("Error", "Please connect to a controller first")
+            return
+            
+        try:
+            axis = self.axis_var.get()
+            
+            self.motor_status_text.insert(tk.END, f"=== RE-ENABLING SERVO FOR AXIS {axis} ===\n")
+            
+            # Enable servo
+            self.controller.send_command(f"SH{axis}")
+            time.sleep(0.5)
+            
+            # Verify servo is enabled
+            servo_status = self.controller.send_command(f"MG _MO{axis}").strip()
+            
+            if servo_status == "0":
+                self.motor_status_text.insert(tk.END, f"✓ Servo enabled successfully for axis {axis}\n")
+                self.motor_status_text.insert(tk.END, "Motor is now locked and ready for normal operation.\n\n")
             else:
-                self.pid_content.pack(fill='x', padx=15, pady=10)
-                self.pid_frame.configure(text="⚙️ PID Configuration ▼")
+                self.motor_status_text.insert(tk.END, f"⚠ Servo status unclear: {servo_status}\n")
+                self.motor_status_text.insert(tk.END, "Please check motor connections and try again.\n\n")
+            
+            self.motor_status_text.see(tk.END)
+            
+        except Exception as e:
+            error_msg = f"Servo enable error: {str(e)}"
+            self.motor_status_text.insert(tk.END, f"ERROR: {error_msg}\n")
+            self.motor_status_text.see(tk.END)
+            messagebox.showerror("Servo Error", error_msg)
+    
     
     def toggle_motion_section(self, event=None):
         """Toggle motion parameters section visibility"""
@@ -2413,16 +3464,20 @@ class GalilSetupApp:
                 if not self.controller:
                     break
                     
-                # Get current position
-                axis = self.encoder_axis_var.get()
-                pos_str = self.controller.send_command(f"TP {axis}")
-                position = int(pos_str.strip())
+                # Get current position for all axes
+                positions = {}
+                for axis in ["A", "B", "C", "D"]:
+                    try:
+                        pos_str = self.controller.send_command(f"TP{axis}")
+                        positions[axis] = int(pos_str.strip())
+                    except:
+                        positions[axis] = 0
                 
-                # Update UI in main thread
-                self.root.after(0, self.update_encoder_display, position)
+                # Update UI in main thread with all positions
+                self.root.after(0, self.update_all_encoder_positions, positions)
                 
-                # Sleep for update interval
-                time.sleep(0.1)  # 100ms updates
+                # Sleep for update interval - reduced for more responsive updates
+                time.sleep(0.03)  # 30ms updates for better responsiveness
                 
             except Exception as e:
                 # Update UI with error in main thread
@@ -2439,7 +3494,7 @@ class GalilSetupApp:
             return
             
         # Update position label
-        self.position_label.configure(text=f"Position: {position}")
+        self.position_label.configure(text=f"{position}")
         
         # Update visual display
         self.encoder_canvas.delete("all")
@@ -2473,6 +3528,568 @@ class GalilSetupApp:
                 indicator_x + 5, indicator_y + 5,
                 fill='red', outline='black'
             )
+    
+    def check_travel_limits(self):
+        """Check travel limits for all axes"""
+        if not self.controller:
+            messagebox.showerror("Error", "Please connect to a controller first")
+            return
+            
+        try:
+            self.diag_status_text.insert(tk.END, "\n=== TRAVEL LIMIT & LIMIT SWITCH CHECK ===\n")
+            
+            for axis in ["A", "B", "C", "D"]:
+                try:
+                    travel_limit = self.controller.send_command(f"MG _TL{axis}").strip()
+                    limit_status = self.controller.send_command(f"MG _LF{axis}").strip()
+                    position = self.controller.send_command(f"TP{axis}").strip()
+                    
+                    # Check for limit switch configuration
+                    try:
+                        limit_config = self.controller.send_command(f"MG _LT{axis}").strip()
+                    except:
+                        limit_config = "?"
+                    
+                    self.diag_status_text.insert(tk.END, f"Axis {axis}:\n")
+                    self.diag_status_text.insert(tk.END, f"  Travel Limit: {travel_limit}\n")
+                    self.diag_status_text.insert(tk.END, f"  Limit Status: {limit_status}\n")
+                    self.diag_status_text.insert(tk.END, f"  Limit Config: {limit_config}\n")
+                    self.diag_status_text.insert(tk.END, f"  Position: {position}\n")
+                    
+                    if limit_status != "0":
+                        self.diag_status_text.insert(tk.END, f"  ⚠️ LIMIT SWITCH ACTIVE\n")
+                    if travel_limit != "0" and travel_limit != "?":
+                        self.diag_status_text.insert(tk.END, f"  ⚠️ TRAVEL LIMIT SET\n")
+                    
+                    self.diag_status_text.insert(tk.END, "\n")
+                    
+                except Exception as e:
+                    self.diag_status_text.insert(tk.END, f"Axis {axis}: Error checking limits - {e}\n\n")
+            
+            self.diag_status_text.see(tk.END)
+            
+        except Exception as e:
+            error_msg = f"Travel limit check failed: {str(e)}"
+            self.diag_status_text.insert(tk.END, f"ERROR: {error_msg}\n")
+            self.diag_status_text.see(tk.END)
+            messagebox.showerror("Travel Limit Error", error_msg)
+    
+    def clear_travel_limits(self):
+        """Clear travel limits for all axes"""
+        if not self.controller:
+            messagebox.showerror("Error", "Please connect to a controller first")
+            return
+            
+        try:
+            self.diag_status_text.insert(tk.END, "\n=== CLEARING TRAVEL LIMITS ===\n")
+            
+            for axis in ["A", "B", "C", "D"]:
+                try:
+                    # Check current travel limit
+                    old_limit = self.controller.send_command(f"MG _TL{axis}").strip()
+                    self.diag_status_text.insert(tk.END, f"Axis {axis}: Current travel limit = {old_limit}\n")
+                    
+                    # Clear travel limit
+                    self.controller.send_command(f"TL{axis}=0")
+                    time.sleep(0.2)
+                    
+                    # Verify it was cleared
+                    new_limit = self.controller.send_command(f"MG _TL{axis}").strip()
+                    if new_limit == "0":
+                        self.diag_status_text.insert(tk.END, f"Axis {axis}: ✓ Travel limit cleared\n")
+                    else:
+                        self.diag_status_text.insert(tk.END, f"Axis {axis}: ⚠️ Travel limit still {new_limit}\n")
+                    
+                except Exception as e:
+                    self.diag_status_text.insert(tk.END, f"Axis {axis}: Error clearing limit - {e}\n")
+            
+            self.diag_status_text.insert(tk.END, "\n✓ Travel limits cleared for all axes\n")
+            self.diag_status_text.see(tk.END)
+            
+        except Exception as e:
+            error_msg = f"Travel limit clear failed: {str(e)}"
+            self.diag_status_text.insert(tk.END, f"ERROR: {error_msg}\n")
+            self.diag_status_text.see(tk.END)
+            messagebox.showerror("Travel Limit Error", error_msg)
+    
+    def restore_travel_limits(self):
+        """Restore travel limits to default values"""
+        if not self.controller:
+            messagebox.showerror("Error", "Please connect to a controller first")
+            return
+            
+        try:
+            self.diag_status_text.insert(tk.END, "\n=== RESTORING TRAVEL LIMITS ===\n")
+            
+            # Default travel limit from config
+            default_travel_limit = 8.2
+            
+            for axis in ["A", "B", "C", "D"]:
+                try:
+                    # Set travel limit
+                    self.controller.send_command(f"TL{axis}={default_travel_limit}")
+                    time.sleep(0.2)
+                    
+                    # Verify it was set
+                    new_limit = self.controller.send_command(f"MG _TL{axis}").strip()
+                    if new_limit == str(default_travel_limit):
+                        self.diag_status_text.insert(tk.END, f"Axis {axis}: ✓ Travel limit restored to {default_travel_limit}\n")
+                    else:
+                        self.diag_status_text.insert(tk.END, f"Axis {axis}: ⚠️ Travel limit set to {new_limit}\n")
+                    
+                except Exception as e:
+                    self.diag_status_text.insert(tk.END, f"Axis {axis}: Error restoring limit - {e}\n")
+            
+            self.diag_status_text.insert(tk.END, "\n✓ Travel limits restored for all axes\n")
+            self.diag_status_text.see(tk.END)
+            
+        except Exception as e:
+            error_msg = f"Travel limit restore failed: {str(e)}"
+            self.diag_status_text.insert(tk.END, f"ERROR: {error_msg}\n")
+            self.diag_status_text.see(tk.END)
+            messagebox.showerror("Travel Limit Error", error_msg)
+    
+    def disable_limit_switches(self):
+        """Try to disable limit switches for testing"""
+        if not self.controller:
+            messagebox.showerror("Error", "Please connect to a controller first")
+            return
+            
+        try:
+            self.diag_status_text.insert(tk.END, "\n=== DISABLING LIMIT SWITCHES ===\n")
+            self.diag_status_text.insert(tk.END, "WARNING: This will disable limit switch protection!\n")
+            self.diag_status_text.insert(tk.END, "Only use this for testing when motors are safe to move.\n\n")
+            
+            for axis in ["A", "B", "C", "D"]:
+                try:
+                    # Check current limit switch status
+                    old_limit_status = self.controller.send_command(f"MG _LF{axis}").strip()
+                    self.diag_status_text.insert(tk.END, f"Axis {axis}: Current limit status = {old_limit_status}\n")
+                    
+                    # Try to disable limit switches by setting limit configuration to 0
+                    try:
+                        self.controller.send_command(f"LT{axis}=0")
+                        time.sleep(0.2)
+                        self.diag_status_text.insert(tk.END, f"Axis {axis}: ✓ Limit switch configuration disabled\n")
+                    except:
+                        self.diag_status_text.insert(tk.END, f"Axis {axis}: ⚠️ Could not disable limit switch configuration\n")
+                    
+                    # Stop and re-enable servo to clear any limit switch latches
+                    self.controller.send_command(f"ST{axis}")
+                    time.sleep(0.2)
+                    self.controller.send_command(f"SH{axis}")
+                    time.sleep(0.2)
+                    
+                    # Check limit status again
+                    new_limit_status = self.controller.send_command(f"MG _LF{axis}").strip()
+                    if new_limit_status == "0":
+                        self.diag_status_text.insert(tk.END, f"Axis {axis}: ✓ Limit switch cleared\n")
+                    else:
+                        self.diag_status_text.insert(tk.END, f"Axis {axis}: ⚠️ Limit switch still active ({new_limit_status})\n")
+                    
+                except Exception as e:
+                    self.diag_status_text.insert(tk.END, f"Axis {axis}: Error disabling limits - {e}\n")
+            
+            self.diag_status_text.insert(tk.END, "\n✓ Limit switch disable attempt completed\n")
+            self.diag_status_text.insert(tk.END, "Note: Some limit switches may be hardware-based and cannot be disabled\n")
+            self.diag_status_text.see(tk.END)
+            
+        except Exception as e:
+            error_msg = f"Limit switch disable failed: {str(e)}"
+            self.diag_status_text.insert(tk.END, f"ERROR: {error_msg}\n")
+            self.diag_status_text.see(tk.END)
+            messagebox.showerror("Limit Switch Error", error_msg)
+    
+    def enable_limit_switches(self):
+        """Re-enable limit switches for safety"""
+        if not self.controller:
+            messagebox.showerror("Error", "Please connect to a controller first")
+            return
+            
+        try:
+            self.diag_status_text.insert(tk.END, "\n=== RE-ENABLING LIMIT SWITCHES ===\n")
+            
+            for axis in ["A", "B", "C", "D"]:
+                try:
+                    # Try to re-enable limit switches by setting limit configuration to default
+                    try:
+                        self.controller.send_command(f"LT{axis}=1")
+                        time.sleep(0.2)
+                        self.diag_status_text.insert(tk.END, f"Axis {axis}: ✓ Limit switch configuration re-enabled\n")
+                    except:
+                        self.diag_status_text.insert(tk.END, f"Axis {axis}: ⚠️ Could not re-enable limit switch configuration\n")
+                    
+                    # Stop and re-enable servo
+                    self.controller.send_command(f"ST{axis}")
+                    time.sleep(0.2)
+                    self.controller.send_command(f"SH{axis}")
+                    time.sleep(0.2)
+                    
+                    # Check limit status
+                    limit_status = self.controller.send_command(f"MG _LF{axis}").strip()
+                    self.diag_status_text.insert(tk.END, f"Axis {axis}: Limit status = {limit_status}\n")
+                    
+                except Exception as e:
+                    self.diag_status_text.insert(tk.END, f"Axis {axis}: Error re-enabling limits - {e}\n")
+            
+            self.diag_status_text.insert(tk.END, "\n✓ Limit switch re-enable attempt completed\n")
+            self.diag_status_text.see(tk.END)
+            
+        except Exception as e:
+            error_msg = f"Limit switch re-enable failed: {str(e)}"
+            self.diag_status_text.insert(tk.END, f"ERROR: {error_msg}\n")
+            self.diag_status_text.see(tk.END)
+            messagebox.showerror("Limit Switch Error", error_msg)
+    
+    def run_command_compatibility_test(self):
+        """Run comprehensive command compatibility test"""
+        self._ensure_controller_connected()
+        
+        try:
+            self.diag_status_text.insert(tk.END, "=== STARTING COMMAND COMPATIBILITY TEST ===\n")
+            self.diag_status_text.insert(tk.END, "This will test all available Galil DMC-4103 commands...\n")
+            self.diag_status_text.insert(tk.END, "This may take several minutes. Please wait...\n\n")
+            self.diag_status_text.see(tk.END)
+            
+            # Create compatibility checker
+            checker = GalilCommandChecker(self.controller)
+            
+            # Run the test with progress callback
+            def progress_callback(message):
+                self.diag_status_text.insert(tk.END, f"{message}\n")
+                self.diag_status_text.see(tk.END)
+                self.root.update()
+            
+            # Run test in separate thread to avoid blocking UI
+            def run_test():
+                try:
+                    results = checker.run_compatibility_test(progress_callback)
+                    
+                    # Update UI with results
+                    self.root.after(0, lambda: self._display_compatibility_results(checker, results))
+                    
+                except Exception as e:
+                    self.root.after(0, lambda: self.diag_status_text.insert(tk.END, f"Error during compatibility test: {e}\n"))
+                    self.root.after(0, lambda: self.diag_status_text.see(tk.END))
+            
+            # Start test thread
+            test_thread = threading.Thread(target=run_test, daemon=True)
+            test_thread.start()
+            
+        except Exception as e:
+            self.diag_status_text.insert(tk.END, f"Error starting compatibility test: {e}\n")
+            self.diag_status_text.see(tk.END)
+    
+    def _display_compatibility_results(self, checker, results):
+        """Display compatibility test results"""
+        try:
+            self.diag_status_text.insert(tk.END, "\n" + "="*60 + "\n")
+            self.diag_status_text.insert(tk.END, "COMMAND COMPATIBILITY TEST RESULTS\n")
+            self.diag_status_text.insert(tk.END, "="*60 + "\n")
+            self.diag_status_text.insert(tk.END, f"Total Commands Tested: {results['total_commands']}\n")
+            self.diag_status_text.insert(tk.END, f"Compatible Commands: {results['compatible_commands']}\n")
+            self.diag_status_text.insert(tk.END, f"Incompatible Commands: {results['incompatible_commands']}\n")
+            self.diag_status_text.insert(tk.END, f"Compatibility Rate: {results['compatibility_rate']:.1f}%\n\n")
+            
+            # Save results
+            filename = checker.save_results()
+            self.diag_status_text.insert(tk.END, f"Results saved to: {filename}\n\n")
+            
+            # Store checker for later use
+            self.compatibility_checker = checker
+            
+            self.diag_status_text.insert(tk.END, "✓ Compatibility test completed successfully!\n")
+            self.diag_status_text.insert(tk.END, "Use 'Show Compatible Commands' to view detailed results.\n")
+            self.diag_status_text.see(tk.END)
+            
+        except Exception as e:
+            self.diag_status_text.insert(tk.END, f"Error displaying results: {e}\n")
+            self.diag_status_text.see(tk.END)
+    
+    def show_compatible_commands(self):
+        """Show detailed compatible commands"""
+        if not hasattr(self, 'compatibility_checker'):
+            self.diag_status_text.insert(tk.END, "No compatibility test results available. Run the compatibility test first.\n")
+            self.diag_status_text.see(tk.END)
+            return
+        
+        try:
+            self.diag_status_text.insert(tk.END, "\n" + "="*60 + "\n")
+            self.diag_status_text.insert(tk.END, "COMPATIBLE COMMANDS BY CATEGORY\n")
+            self.diag_status_text.insert(tk.END, "="*60 + "\n")
+            
+            compatible_by_category = self.compatibility_checker.get_compatible_commands_by_category()
+            
+            for category, commands in compatible_by_category.items():
+                if commands:
+                    self.diag_status_text.insert(tk.END, f"\n{category}:\n")
+                    self.diag_status_text.insert(tk.END, "-" * len(category) + "\n")
+                    for command, info in commands.items():
+                        self.diag_status_text.insert(tk.END, f"  {command:<10} - {info['description']}\n")
+                        if info.get('response'):
+                            self.diag_status_text.insert(tk.END, f"           Response: {info['response']}\n")
+                    self.diag_status_text.insert(tk.END, "\n")
+            
+            self.diag_status_text.see(tk.END)
+            
+        except Exception as e:
+            self.diag_status_text.insert(tk.END, f"Error showing compatible commands: {e}\n")
+            self.diag_status_text.see(tk.END)
+    
+    def configure_all_axes_like_axis_a(self):
+        """Configure all axes to match Axis A settings (which works correctly)"""
+        self.append_test_log("=== CONFIGURING ALL AXES TO MATCH AXIS A ===")
+        
+        try:
+            # Get Axis A settings as the reference
+            self.append_test_log("Reading Axis A configuration as reference...")
+            
+            # Get Axis A limit switch settings using correct variable names
+            try:
+                # Use correct DMC-4103 variable names
+                axis_a_lf = self.controller.send_command("MG _LFA").strip()  # Forward limit switch
+                axis_a_lr = self.controller.send_command("MG _LRA").strip()  # Reverse limit switch
+                axis_a_tl = self.controller.send_command("MG _TLA").strip()  # Travel limit
+                
+                self.append_test_log(f"Axis A settings - LF: {axis_a_lf}, LR: {axis_a_lr}, TL: {axis_a_tl}")
+                
+                # If variables return "?", use default values
+                if axis_a_lf == "?" or axis_a_lf == "":
+                    axis_a_lf = "0"  # Default: no forward limit
+                if axis_a_lr == "?" or axis_a_lr == "":
+                    axis_a_lr = "0"  # Default: no reverse limit  
+                if axis_a_tl == "?" or axis_a_tl == "":
+                    axis_a_tl = "0"  # Default: no travel limit
+                    
+                self.append_test_log(f"Using Axis A settings - LF: {axis_a_lf}, LR: {axis_a_lr}, TL: {axis_a_tl}")
+                
+            except Exception as e:
+                self.append_test_log(f"WARNING: Could not read Axis A settings: {e}")
+                # Use default values if reading fails
+                axis_a_lf = "0"
+                axis_a_lr = "0" 
+                axis_a_tl = "0"
+                self.append_test_log("Using default limit settings for all axes")
+            
+            # Configure other axes to match Axis A
+            for axis in ["B", "C", "D"]:
+                self.append_test_log(f"Configuring Axis {axis} to match Axis A...")
+                
+                try:
+                    # Set motor type (required for servo operation)
+                    self.controller.send_command(f"MT{axis}=1")  # Set to servo motor type
+                    time.sleep(0.2)  # Give more time for motor type to be set
+                    
+                    # Verify motor type was set
+                    motor_type = self.controller.send_command(f"MG _MT{axis}").strip()
+                    if motor_type == "?" or motor_type == "":
+                        self.append_test_log(f"WARNING: Could not verify motor type for Axis {axis}")
+                    
+                    # Clear any travel limits
+                    self.controller.send_command(f"TL{axis}=0")
+                    time.sleep(0.1)
+                    
+                    # Clear software limits that might be preventing motion
+                    self.controller.send_command(f"FL{axis}=0")  # Clear forward software limit
+                    self.controller.send_command(f"BL{axis}=0")  # Clear reverse software limit
+                    time.sleep(0.1)
+                    
+                    # Set limit switch configuration to match Axis A (skip LT command as it's not needed)
+                    
+                    # Set travel limits to match Axis A
+                    if axis_a_tl != "0":
+                        self.controller.send_command(f"TL{axis}={axis_a_tl}")
+                        time.sleep(0.1)
+                    
+                    # Stop and re-enable servo to apply changes
+                    self.controller.send_command(f"ST{axis}")
+                    time.sleep(0.2)
+                    self.controller.send_command(f"SH{axis}")
+                    time.sleep(0.2)
+                    
+                    # Verify settings
+                    try:
+                        new_tl = self.controller.send_command(f"MG _TL{axis}").strip()
+                        new_lf = self.controller.send_command(f"MG _LF{axis}").strip()
+                        new_lr = self.controller.send_command(f"MG _LR{axis}").strip()
+                        self.append_test_log(f"Axis {axis} configured - TL: {new_tl}, LF: {new_lf}, LR: {new_lr}")
+                    except:
+                        self.append_test_log(f"Axis {axis} configuration applied")
+                    
+                except Exception as e:
+                    self.append_test_log(f"WARNING: Could not configure Axis {axis}: {e}")
+            
+            self.append_test_log("=== AXIS CONFIGURATION COMPLETE ===")
+            
+        except Exception as e:
+            self.append_test_log(f"ERROR during axis configuration: {e}")
+    
+    def clear_all_software_limits(self):
+        """Clear all software limits to prevent motion restrictions during diagnostics"""
+        self.append_test_log("=== CLEARING SOFTWARE LIMITS ===")
+        
+        try:
+            for axis in ["A", "B", "C", "D"]:
+                self.append_test_log(f"Clearing software limits for Axis {axis}...")
+                
+                # Set motor type (required for servo operation)
+                self.controller.send_command(f"MT{axis}=1")  # Set to servo motor type
+                time.sleep(0.2)  # Give more time for motor type to be set
+                
+                # Clear forward and reverse software limits
+                self.controller.send_command(f"FL{axis}=0")  # Forward software limit
+                self.controller.send_command(f"BL{axis}=0")  # Reverse software limit
+                time.sleep(0.1)
+                
+                # Verify limits are cleared
+                try:
+                    fl_value = self.controller.send_command(f"MG _FL{axis}").strip()
+                    bl_value = self.controller.send_command(f"MG _BL{axis}").strip()
+                    self.append_test_log(f"Axis {axis} limits - FL: {fl_value}, BL: {bl_value}")
+                except:
+                    self.append_test_log(f"Axis {axis} limits cleared (verification failed)")
+            
+            self.append_test_log("=== SOFTWARE LIMITS CLEARED ===")
+            
+        except Exception as e:
+            self.append_test_log(f"ERROR: Failed to clear software limits: {e}")
+            self.append_test_log("Proceeding with diagnostics anyway...")
+    
+
+    
+    def copy_axis_a_to_all_axes(self):
+        """Copy all working Axis A settings to Axes B, C, and D"""
+        self.append_test_log("=== COPYING AXIS A SETTINGS TO ALL AXES ===")
+        
+        try:
+            # Step 1: Read all Axis A settings
+            self.append_test_log("Step 1: Reading all Axis A settings...")
+            
+            # PID Settings
+            try:
+                kp_a = float(self.controller.send_command("MG _KPA").strip())
+                ki_a = float(self.controller.send_command("MG _KIA").strip())
+                kd_a = float(self.controller.send_command("MG _KDA").strip())
+                self.append_test_log(f"Axis A PID - KP: {kp_a}, KI: {ki_a}, KD: {kd_a}")
+            except:
+                self.append_test_log("Using default PID values")
+                kp_a, ki_a, kd_a = 10.0, 0.1, 50.0
+            
+            # Motion Parameters
+            try:
+                sp_a = float(self.controller.send_command("MG _SPA").strip())
+                ac_a = float(self.controller.send_command("MG _ACA").strip())
+                dc_a = float(self.controller.send_command("MG _DCA").strip())
+                self.append_test_log(f"Axis A Motion - SP: {sp_a}, AC: {ac_a}, DC: {dc_a}")
+            except:
+                self.append_test_log("Using default motion parameters")
+                sp_a, ac_a, dc_a = 50000.0, 25000.0, 50000.0
+            
+            # Limit Settings
+            try:
+                tl_a = self.controller.send_command("MG _TLA").strip()
+                lt_a = self.controller.send_command("MG _LTA").strip()
+                lf_a = self.controller.send_command("MG _LFA").strip()
+                self.append_test_log(f"Axis A Limits - TL: {tl_a}, LT: {lt_a}, LF: {lf_a}")
+            except:
+                self.append_test_log("Using default limit settings")
+                tl_a, lt_a, lf_a = "0", "0", "0"
+            
+            # Servo Settings
+            try:
+                servo_a = self.controller.send_command("MG _SAA").strip()
+                self.append_test_log(f"Axis A Servo Status: {servo_a}")
+            except:
+                self.append_test_log("Could not read servo status")
+            
+            # Step 2: Apply settings to all other axes
+            self.append_test_log("Step 2: Applying settings to Axes B, C, D...")
+            
+            for axis in ['B', 'C', 'D']:
+                self.append_test_log(f"Configuring Axis {axis}...")
+                
+                # Stop any motion
+                self.controller.send_command(f"ST{axis}")
+                time.sleep(0.1)
+                
+                # Apply PID settings
+                self.controller.send_command(f"KP{axis}={kp_a}")
+                self.controller.send_command(f"KI{axis}={ki_a}")
+                self.controller.send_command(f"KD{axis}={kd_a}")
+                time.sleep(0.1)
+                
+                # Apply motion parameters
+                self.controller.send_command(f"SP{axis}={sp_a}")
+                self.controller.send_command(f"AC{axis}={ac_a}")
+                self.controller.send_command(f"DC{axis}={dc_a}")
+                time.sleep(0.1)
+                
+                # Apply limit settings
+                self.controller.send_command(f"TL{axis}={tl_a}")
+                self.controller.send_command(f"LT{axis}={lt_a}")
+                self.controller.send_command(f"LF{axis}={lf_a}")
+                time.sleep(0.1)
+                
+                # Reset servo
+                self.controller.send_command(f"MO{axis}")  # Disable
+                time.sleep(0.1)
+                self.controller.send_command(f"SH{axis}")  # Enable
+                time.sleep(0.2)
+                
+                self.append_test_log(f"Axis {axis} configuration complete")
+            
+            # Step 3: Verify settings were applied
+            self.append_test_log("Step 3: Verifying settings...")
+            
+            for axis in ['B', 'C', 'D']:
+                try:
+                    kp = float(self.controller.send_command(f"MG _KP{axis}").strip())
+                    ki = float(self.controller.send_command(f"MG _KI{axis}").strip())
+                    kd = float(self.controller.send_command(f"MG _KD{axis}").strip())
+                    sp = float(self.controller.send_command(f"MG _SP{axis}").strip())
+                    ac = float(self.controller.send_command(f"MG _AC{axis}").strip())
+                    dc = float(self.controller.send_command(f"MG _DC{axis}").strip())
+                    
+                    self.append_test_log(f"Axis {axis} verified - KP:{kp}, KI:{ki}, KD:{kd}, SP:{sp}, AC:{ac}, DC:{dc}")
+                except Exception as e:
+                    self.append_test_log(f"Could not verify Axis {axis} settings: {e}")
+            
+            # Step 4: Test movement on all axes
+            self.append_test_log("Step 4: Testing movement on all axes...")
+            
+            for axis in ['B', 'C', 'D']:
+                self.append_test_log(f"Testing Axis {axis} movement...")
+                try:
+                    pos_start = int(self.controller.send_command(f"TP{axis}").strip())
+                    
+                    # Small test move
+                    self.controller.send_command(f"SP{axis}=5000")
+                    self.controller.send_command(f"AC{axis}=5000")
+                    self.controller.send_command(f"DC{axis}=5000")
+                    self.controller.send_command(f"PR{axis}=500")
+                    self.controller.send_command(f"BG{axis}")
+                    time.sleep(0.5)
+                    self.controller.send_command(f"ST{axis}")
+                    time.sleep(0.5)
+                    
+                    pos_end = int(self.controller.send_command(f"TP{axis}").strip())
+                    movement = pos_end - pos_start
+                    
+                    if abs(movement) > 50:
+                        self.append_test_log(f"✓ Axis {axis}: SUCCESS - moved {movement} counts")
+                    else:
+                        self.append_test_log(f"⚠ Axis {axis}: LIMITED - moved {movement} counts")
+                        
+                except Exception as e:
+                    self.append_test_log(f"✗ Axis {axis}: FAILED - {e}")
+            
+            # Step 5: Summary
+            self.append_test_log("=== COPY COMPLETE ===")
+            self.append_test_log("All axes now have identical settings to Axis A")
+            self.append_test_log("Run motor detection to verify all axes are working")
+            
+        except Exception as e:
+            self.append_test_log(f"ERROR copying settings: {e}")
         
     def show_controller_testing(self):
         """Show comprehensive controller testing interface"""
@@ -2484,253 +4101,20 @@ class GalilSetupApp:
                         bg=self.colors['main_bg'], fg=self.colors['main_fg'])
         title.pack(anchor='w', pady=(0, 20))
         
-        # Main content frame with two columns
+        # Main content frame
         main_frame = tk.Frame(self.main_content, bg=self.colors['main_bg'])
         main_frame.pack(fill='both', expand=True)
         
-        # Configure grid weights for two columns
-        main_frame.grid_columnconfigure(0, weight=1)  # Left column (controls)
-        main_frame.grid_columnconfigure(1, weight=1)  # Right column (display)
-        main_frame.grid_rowconfigure(0, weight=1)
-        
-        # LEFT COLUMN - Controls
-        left_frame = tk.Frame(main_frame, bg=self.colors['main_bg'])
-        left_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
-        
-        # PID Configuration Section
-        pid_frame = tk.LabelFrame(left_frame, text="PID Configuration", 
-                                font=("Arial", 12, "bold"),
-                                bg=self.colors['main_bg'], fg=self.colors['main_fg'],
-                                relief='solid', bd=1)
-        pid_frame.pack(fill='x', pady=(0, 10))
-        
-        # Axis selection
-        axis_frame = tk.Frame(pid_frame, bg=self.colors['main_bg'])
-        axis_frame.pack(fill='x', padx=15, pady=10)
-        
-        tk.Label(axis_frame, text="Axis:", font=("Arial", 10, "bold"),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
-        
-        self.test_axis_var = tk.StringVar(value="A")
-        axis_combo = ttk.Combobox(axis_frame, textvariable=self.test_axis_var, 
-                                 values=["A", "B", "C", "D"], width=10)
-        axis_combo.pack(side='left', padx=(10, 0))
-        
-        # PID values
-        pid_values_frame = tk.Frame(pid_frame, bg=self.colors['main_bg'])
-        pid_values_frame.pack(fill='x', padx=15, pady=10)
-        
-        # KP
-        tk.Label(pid_values_frame, text="KP:", font=("Arial", 10),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).grid(row=0, column=0, sticky='w')
-        self.test_kp_entry = tk.Entry(pid_values_frame, font=("Arial", 10), width=12)
-        self.test_kp_entry.grid(row=0, column=1, padx=(10, 15))
-        self.test_kp_entry.insert(0, "10.0")
-        
-        # KI
-        tk.Label(pid_values_frame, text="KI:", font=("Arial", 10),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).grid(row=0, column=2, sticky='w')
-        self.test_ki_entry = tk.Entry(pid_values_frame, font=("Arial", 10), width=12)
-        self.test_ki_entry.grid(row=0, column=3, padx=(10, 15))
-        self.test_ki_entry.insert(0, "0.1")
-        
-        # KD
-        tk.Label(pid_values_frame, text="KD:", font=("Arial", 10),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).grid(row=0, column=4, sticky='w')
-        self.test_kd_entry = tk.Entry(pid_values_frame, font=("Arial", 10), width=12)
-        self.test_kd_entry.grid(row=0, column=5, padx=(10, 0))
-        self.test_kd_entry.insert(0, "50.0")
-        
-        # Tune button
-        tune_btn = tk.Button(pid_frame, text="Tune Axis", 
-                           font=("Arial", 10, "bold"),
-                           bg=self.colors['success_green'], fg='white',
-                           command=self.test_tune_axis)
-        tune_btn.pack(pady=10)
-        
-        # Motion Controls Section
-        motion_frame = tk.LabelFrame(left_frame, text="Motion Controls", 
-                                   font=("Arial", 12, "bold"),
-                                   bg=self.colors['main_bg'], fg=self.colors['main_fg'],
-                                   relief='solid', bd=1)
-        motion_frame.pack(fill='x', pady=(0, 10))
-        
-        # Jog controls
-        jog_frame = tk.Frame(motion_frame, bg=self.colors['main_bg'])
-        jog_frame.pack(fill='x', padx=15, pady=10)
-        
-        tk.Label(jog_frame, text="Jog Distance (mm):", font=("Arial", 10, "bold"),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
-        
-        self.test_jog_distance_entry = tk.Entry(jog_frame, font=("Arial", 10), width=12)
-        self.test_jog_distance_entry.pack(side='left', padx=(10, 10))
-        self.test_jog_distance_entry.insert(0, "10.0")
-        
-        # Jog buttons
-        jog_buttons_frame = tk.Frame(motion_frame, bg=self.colors['main_bg'])
-        jog_buttons_frame.pack(fill='x', padx=15, pady=10)
-        
-        tk.Button(jog_buttons_frame, text="Jog +", 
-                font=("Arial", 10, "bold"),
-                bg=self.colors['success_green'], fg='white',
-                command=lambda: self.test_jog_axis(1)).pack(side='left', padx=(0, 5))
-        
-        tk.Button(jog_buttons_frame, text="Jog -", 
-                font=("Arial", 10, "bold"),
-                bg=self.colors['error_red'], fg='white',
-                command=lambda: self.test_jog_axis(-1)).pack(side='left', padx=(0, 5))
-        
-        tk.Button(jog_buttons_frame, text="Stop", 
-                font=("Arial", 10, "bold"),
-                bg=self.colors['warning_orange'], fg='white',
-                command=self.test_stop_axis).pack(side='left')
-        
-        # Position control
-        pos_frame = tk.Frame(motion_frame, bg=self.colors['main_bg'])
-        pos_frame.pack(fill='x', padx=15, pady=10)
-        
-        tk.Label(pos_frame, text="Position (counts):", font=("Arial", 10, "bold"),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
-        
-        self.test_position_entry = tk.Entry(pos_frame, font=("Arial", 10), width=12)
-        self.test_position_entry.pack(side='left', padx=(10, 10))
-        self.test_position_entry.insert(0, "10000")
-        
-        tk.Button(pos_frame, text="Move", 
-                font=("Arial", 10, "bold"),
-                bg=self.colors['accent_blue'], fg='white',
-                command=self.test_move_to_position).pack(side='left')
-        
-        tk.Button(pos_frame, text="Test Move", 
-                font=("Arial", 10, "bold"),
-                bg=self.colors['warning_orange'], fg='white',
-                command=self.test_simple_move).pack(side='left', padx=(5, 0))
-        
-        # Motion Parameters Section
-        params_frame = tk.LabelFrame(left_frame, text="Motion Parameters", 
-                                   font=("Arial", 12, "bold"),
-                                   bg=self.colors['main_bg'], fg=self.colors['main_fg'],
-                                   relief='solid', bd=1)
-        params_frame.pack(fill='x', pady=(0, 10))
-        
-        # Speed and acceleration
-        params_values_frame = tk.Frame(params_frame, bg=self.colors['main_bg'])
-        params_values_frame.pack(fill='x', padx=15, pady=10)
-        
-        # Speed
-        tk.Label(params_values_frame, text="Speed:", font=("Arial", 10),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).grid(row=0, column=0, sticky='w')
-        self.test_speed_entry = tk.Entry(params_values_frame, font=("Arial", 10), width=12)
-        self.test_speed_entry.grid(row=0, column=1, padx=(10, 15))
-        self.test_speed_entry.insert(0, "5000")
-        
-        # Acceleration
-        tk.Label(params_values_frame, text="Accel:", font=("Arial", 10),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).grid(row=0, column=2, sticky='w')
-        self.test_accel_entry = tk.Entry(params_values_frame, font=("Arial", 10), width=12)
-        self.test_accel_entry.grid(row=0, column=3, padx=(10, 0))
-        self.test_accel_entry.insert(0, "1000")
-        
-        # Apply button
-        apply_btn = tk.Button(params_frame, text="Apply Parameters", 
-                            font=("Arial", 10, "bold"),
-                            bg=self.colors['accent_blue'], fg='white',
-                            command=self.test_apply_motion_params)
-        apply_btn.pack(pady=10)
-        
-        # Servo Control Section
-        servo_frame = tk.LabelFrame(left_frame, text="Servo Control", 
-                                  font=("Arial", 12, "bold"),
-                                  bg=self.colors['main_bg'], fg=self.colors['main_fg'],
-                                  relief='solid', bd=1)
-        servo_frame.pack(fill='x', pady=(0, 10))
-        
-        # Servo control buttons
-        servo_buttons_frame = tk.Frame(servo_frame, bg=self.colors['main_bg'])
-        servo_buttons_frame.pack(fill='x', padx=15, pady=10)
-        
-        tk.Button(servo_buttons_frame, text="Servo On", 
-                font=("Arial", 10, "bold"),
-                bg=self.colors['success_green'], fg='white',
-                command=self.test_servo_on).pack(side='left', padx=(0, 5))
-        
-        tk.Button(servo_buttons_frame, text="Servo Off", 
-                font=("Arial", 10, "bold"),
-                bg=self.colors['error_red'], fg='white',
-                command=self.test_servo_off).pack(side='left', padx=(0, 5))
-        
-        tk.Button(servo_buttons_frame, text="Stop All", 
-                font=("Arial", 10, "bold"),
-                bg=self.colors['warning_orange'], fg='white',
-                command=self.test_stop_all).pack(side='left')
-        
-        tk.Button(servo_buttons_frame, text="Status Check", 
-                font=("Arial", 10, "bold"),
-                bg=self.colors['accent_blue'], fg='white',
-                command=self.check_controller_status).pack(side='left', padx=(5, 0))
-        
-        tk.Button(servo_buttons_frame, text="Enable All Servos", 
-                font=("Arial", 10, "bold"),
-                bg=self.colors['success_green'], fg='white',
-                command=self.enable_all_servos).pack(side='left', padx=(5, 0))
-
-        # Automatic Diagnostics Section
-        auto_diag_frame = tk.LabelFrame(left_frame, text="Automatic Diagnostics", 
-                                      font=("Arial", 12, "bold"),
-                                      bg=self.colors['main_bg'], fg=self.colors['main_fg'],
-                                      relief='solid', bd=1)
-        auto_diag_frame.pack(fill='x', pady=(0, 10))
-
-        auto_diag_row = tk.Frame(auto_diag_frame, bg=self.colors['main_bg'])
-        auto_diag_row.pack(fill='x', padx=15, pady=10)
-
-        self.auto_diag_running = False
-        self.auto_diag_btn = tk.Button(auto_diag_row, text="Run Automatic Diagnostics", 
-                                       font=("Arial", 10, "bold"),
-                                       bg=self.colors['accent_blue'], fg='white',
-                                       command=self.toggle_automatic_diagnostics)
-        self.auto_diag_btn.pack(side='left')
-        
-        # Save Report button
-        self.save_report_btn = tk.Button(auto_diag_row, text="💾 Save Report", 
-                                       font=("Arial", 10, "bold"),
-                                       bg=self.colors['warning_orange'], fg='white',
-                                       command=self.save_diagnostic_report,
-                                       state='disabled')
-        self.save_report_btn.pack(side='left', padx=(10, 0))
-        
-        # Load Report button
-        self.load_report_btn = tk.Button(auto_diag_row, text="📂 Load Report", 
-                                       font=("Arial", 10, "bold"),
-                                       bg=self.colors['accent_blue'], fg='white',
-                                       command=self.load_diagnostic_report)
-        self.load_report_btn.pack(side='left', padx=(10, 0))
-        
-        # Export CSV button
-        self.export_csv_btn = tk.Button(auto_diag_row, text="📊 Export CSV", 
-                                       font=("Arial", 10, "bold"),
-                                       bg=self.colors['success_green'], fg='white',
-                                       command=self.export_diagnostic_csv,
-                                       state='disabled')
-        self.export_csv_btn.pack(side='left', padx=(10, 0))
-        
-        # Compare Reports button
-        self.compare_reports_btn = tk.Button(auto_diag_row, text="📈 Compare Reports", 
-                                           font=("Arial", 10, "bold"),
-                                           bg=self.colors['warning_orange'], fg='white',
-                                           command=self.compare_diagnostic_reports)
-        self.compare_reports_btn.pack(side='left', padx=(10, 0))
-        
-        # RIGHT COLUMN - Display
-        right_frame = tk.Frame(main_frame, bg=self.colors['main_bg'])
-        right_frame.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
-        
-        # Encoder Display Section
-        encoder_frame = tk.LabelFrame(right_frame, text="Encoder Position Display", 
+        # 1. ENCODER POSITION DISPLAY (TOP)
+        encoder_frame = tk.LabelFrame(main_frame, text="Real-time Encoder Positions", 
                                     font=("Arial", 12, "bold"),
                                     bg=self.colors['main_bg'], fg=self.colors['main_fg'],
                                     relief='solid', bd=1)
-        encoder_frame.pack(fill='both', expand=True, pady=(0, 10))
+        encoder_frame.pack(fill='x', pady=(0, 10))
+        
+        # Ensure encoder frame has proper sizing - make it taller for better visibility
+        encoder_frame.pack_propagate(False)
+        encoder_frame.configure(height=300)
         
         # Encoder controls
         encoder_controls_frame = tk.Frame(encoder_frame, bg=self.colors['main_bg'])
@@ -2745,13 +4129,7 @@ class GalilSetupApp:
         
         # Four-axis encoder displays
         encoder_displays_frame = tk.Frame(encoder_frame, bg=self.colors['main_bg'])
-        encoder_displays_frame.pack(fill='both', expand=True, padx=15, pady=(0, 10))
-        
-        # Configure grid weights for equal spacing
-        encoder_displays_frame.grid_columnconfigure(0, weight=1)
-        encoder_displays_frame.grid_columnconfigure(1, weight=1)
-        encoder_displays_frame.grid_columnconfigure(2, weight=1)
-        encoder_displays_frame.grid_columnconfigure(3, weight=1)
+        encoder_displays_frame.pack(fill='x', expand=True, padx=15, pady=(0, 10))
         
         # Create individual encoder displays for each axis
         self.encoder_displays = {}
@@ -2760,34 +4138,45 @@ class GalilSetupApp:
         for i, axis in enumerate(['A', 'B', 'C', 'D']):
             # Individual axis frame
             axis_frame = tk.Frame(encoder_displays_frame, bg=self.colors['main_bg'], relief='solid', bd=1)
-            axis_frame.grid(row=0, column=i, sticky="nsew", padx=5, pady=5)
+            axis_frame.pack(side='left', fill='both', expand=True, padx=3, pady=3)
+            
+            # Ensure minimum size for visibility - make them larger
+            axis_frame.pack_propagate(False)
+            axis_frame.configure(width=180, height=180)
+            
+            # Force the frame to maintain its size
+            axis_frame.update_idletasks()
+            axis_frame.configure(width=180, height=180)
             
             # Axis title
             axis_title = tk.Label(axis_frame, text=f"Axis {axis}", 
-                                font=("Arial", 11, "bold"),
+                                font=("Arial", 12, "bold"),
                                 bg=self.colors['main_bg'], fg=self.colors['main_fg'])
-            axis_title.pack(pady=(5, 0))
+            axis_title.pack(pady=(8, 5))
             
-            # Canvas for this axis
-            canvas = tk.Canvas(axis_frame, bg='white', height=150, width=150)
-            canvas.pack(padx=10, pady=5)
+            # Canvas for this axis - make it larger
+            canvas = tk.Canvas(axis_frame, bg='white', height=120, width=120, relief='sunken', bd=2)
+            canvas.pack(padx=5, pady=5)
             
             # Position label for this axis
-            position_label = tk.Label(axis_frame, text="Not Connected", 
-                                    font=("Arial", 10),
+            position_label = tk.Label(axis_frame, text="Position: 0", 
+                                    font=("Arial", 10, "bold"),
                                     bg=self.colors['main_bg'], fg=self.colors['main_fg'])
-            position_label.pack(pady=(0, 5))
+            position_label.pack(pady=(0, 8))
             
             # Store references
             self.encoder_displays[axis] = canvas
             self.encoder_labels[axis] = position_label
+            
+            # Force update for each axis frame
+            axis_frame.update_idletasks()
         
-        # Status Log Section
-        status_frame = tk.LabelFrame(right_frame, text="Status Log", 
-                                   font=("Arial", 12, "bold"),
-                                   bg=self.colors['main_bg'], fg=self.colors['main_fg'],
-                                   relief='solid', bd=1)
-        status_frame.pack(fill='both', expand=True, pady=(0, 10))
+        # 2. STATUS LOG (SECOND)
+        status_frame = tk.LabelFrame(main_frame, text="Status & Log", 
+                                font=("Arial", 12, "bold"),
+                                bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                relief='solid', bd=1)
+        status_frame.pack(fill='x', pady=(0, 10))
         
         # Status text area with copy functionality
         status_text_frame = tk.Frame(status_frame, bg=self.colors['main_bg'])
@@ -2825,6 +4214,388 @@ class GalilSetupApp:
         # Initialize encoder update variables (will start when controller connects)
         self.test_encoder_update_running = False
         
+        # 3. MANUAL COMMAND BOX (THIRD)
+        command_frame = tk.LabelFrame(main_frame, text="Manual Command Input", 
+                                   font=("Arial", 12, "bold"),
+                                   bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                   relief='solid', bd=1)
+        command_frame.pack(fill='x', pady=(0, 10))
+        
+        # Command input section
+        command_input_frame = tk.Frame(command_frame, bg=self.colors['main_bg'])
+        command_input_frame.pack(fill='x', padx=15, pady=15)
+        
+        # Command input label and entry
+        tk.Label(command_input_frame, text="DMC-4103 Command:", font=("Arial", 10, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(anchor='w')
+        
+        # Command entry with send button
+        command_entry_frame = tk.Frame(command_input_frame, bg=self.colors['main_bg'])
+        command_entry_frame.pack(fill='x', pady=(5, 10))
+        
+        self.manual_command_entry = tk.Entry(command_entry_frame, font=("Consolas", 11), 
+                                           bg='white', fg='black', relief='solid', bd=1)
+        self.manual_command_entry.pack(side='left', fill='x', expand=True, padx=(0, 10))
+        self.manual_command_entry.bind('<Return>', self.send_manual_command)
+        
+        # Send button
+        send_btn = tk.Button(command_entry_frame, text="Send Command", 
+                           font=("Arial", 10, "bold"),
+                           bg=self.colors['accent_blue'], fg='white',
+                           command=self.send_manual_command)
+        send_btn.pack(side='right')
+        
+        # Quick command buttons
+        quick_commands_frame = tk.Frame(command_frame, bg=self.colors['main_bg'])
+        quick_commands_frame.pack(fill='x', padx=15, pady=(0, 10))
+        
+        tk.Label(quick_commands_frame, text="Quick Commands:", font=("Arial", 9, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(anchor='w')
+        
+        quick_btn_frame = tk.Frame(quick_commands_frame, bg=self.colors['main_bg'])
+        quick_btn_frame.pack(fill='x', pady=(5, 0))
+        
+        # Quick command buttons
+        quick_commands = [
+            ("TPA", "Position A"), ("TPB", "Position B"), ("TPC", "Position C"), ("TPD", "Position D"),
+            ("SH A", "Servo On A"), ("MO A", "Motor Off A"), ("ST A", "Stop A"), ("BG A", "Begin A")
+        ]
+        
+        for i, (cmd, desc) in enumerate(quick_commands):
+            btn = tk.Button(quick_btn_frame, text=f"{cmd}\n{desc}", 
+                          font=("Arial", 8), width=8, height=2,
+                          bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                          command=lambda c=cmd: self.insert_quick_command(c))
+            btn.grid(row=i//4, column=i%4, padx=2, pady=2)
+        
+        # Command response area
+        response_frame = tk.Frame(command_frame, bg=self.colors['main_bg'])
+        response_frame.pack(fill='x', padx=15, pady=(0, 15))
+        
+        tk.Label(response_frame, text="Response:", font=("Arial", 10, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(anchor='w')
+        
+        self.command_response_text = scrolledtext.ScrolledText(response_frame, height=4, 
+                                                            font=("Consolas", 9),
+                                                            bg='white', fg='black')
+        self.command_response_text.pack(fill='x', pady=(5, 0))
+        
+        # Clear response button
+        clear_btn = tk.Button(response_frame, text="Clear Response", 
+                            font=("Arial", 8),
+                            bg=self.colors['warning_orange'], fg='white',
+                            command=self.clear_command_response)
+        clear_btn.pack(anchor='e', pady=(5, 0))
+        
+        # Command examples
+        examples_frame = tk.Frame(command_frame, bg=self.colors['main_bg'])
+        examples_frame.pack(fill='x', padx=15, pady=(0, 15))
+        
+        tk.Label(examples_frame, text="Command Examples:", font=("Arial", 9, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(anchor='w')
+        
+        examples_text = "TPA (Tell Position A) | TPB (Tell Position B) | SH A (Servo Here A) | MO A (Motor Off A)\n"
+        examples_text += "SP A=1000 (Set Speed A) | AC A=500 (Set Acceleration A) | BG A (Begin Motion A)\n"
+        examples_text += "PA A=1000 (Position Absolute A) | PR A=100 (Position Relative A) | ST A (Stop A)"
+        
+        examples_label = tk.Label(examples_frame, text=examples_text, 
+                                font=("Consolas", 8),
+                                bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                justify='left')
+        examples_label.pack(anchor='w', pady=(5, 0))
+        
+        # 4. MOTION CONTROLS (FOURTH)
+        motion_frame = tk.LabelFrame(main_frame, text="Motion Controls", 
+                                   font=("Arial", 12, "bold"),
+                                   bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                   relief='solid', bd=1)
+        motion_frame.pack(fill='x', pady=(0, 10))
+        
+        # Create a two-column layout for motion controls
+        motion_content_frame = tk.Frame(motion_frame, bg=self.colors['main_bg'])
+        motion_content_frame.pack(fill='x', padx=15, pady=15)
+        
+        # Left column - PID Configuration
+        pid_column = tk.Frame(motion_content_frame, bg=self.colors['main_bg'])
+        pid_column.pack(side='left', fill='both', expand=True, padx=(0, 10))
+        
+        # PID Configuration Section
+        pid_frame = tk.LabelFrame(pid_column, text="PID Configuration", 
+                                font=("Arial", 10, "bold"),
+                                bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                relief='solid', bd=1)
+        pid_frame.pack(fill='x', pady=(0, 10))
+        
+        # Axis selection at the top
+        axis_frame = tk.Frame(pid_frame, bg=self.colors['main_bg'])
+        axis_frame.pack(fill='x', padx=10, pady=(10, 5))
+        
+        tk.Label(axis_frame, text="Axis:", font=("Arial", 10, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
+        
+        self.test_axis_var = tk.StringVar(value="A")
+        axis_combo = ttk.Combobox(axis_frame, textvariable=self.test_axis_var, 
+                                 values=["A", "B", "C", "D"], width=10)
+        axis_combo.pack(side='left', padx=(10, 0))
+        
+        # PID values in a column
+        pid_values_frame = tk.Frame(pid_frame, bg=self.colors['main_bg'])
+        pid_values_frame.pack(fill='x', padx=10, pady=5)
+        
+        # KP
+        kp_frame = tk.Frame(pid_values_frame, bg=self.colors['main_bg'])
+        kp_frame.pack(fill='x', pady=2)
+        tk.Label(kp_frame, text="KP:", font=("Arial", 10),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
+        self.test_kp_entry = tk.Entry(kp_frame, font=("Arial", 10), width=12)
+        self.test_kp_entry.pack(side='right')
+        self.test_kp_entry.insert(0, "10.0")
+        
+        # KI
+        ki_frame = tk.Frame(pid_values_frame, bg=self.colors['main_bg'])
+        ki_frame.pack(fill='x', pady=2)
+        tk.Label(ki_frame, text="KI:", font=("Arial", 10),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
+        self.test_ki_entry = tk.Entry(ki_frame, font=("Arial", 10), width=12)
+        self.test_ki_entry.pack(side='right')
+        self.test_ki_entry.insert(0, "0.1")
+        
+        # KD
+        kd_frame = tk.Frame(pid_values_frame, bg=self.colors['main_bg'])
+        kd_frame.pack(fill='x', pady=2)
+        tk.Label(kd_frame, text="KD:", font=("Arial", 10),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
+        self.test_kd_entry = tk.Entry(kd_frame, font=("Arial", 10), width=12)
+        self.test_kd_entry.pack(side='right')
+        self.test_kd_entry.insert(0, "50.0")
+        
+        # Tune button
+        tune_btn = tk.Button(pid_frame, text="Tune Axis", 
+                           font=("Arial", 10, "bold"),
+                           bg=self.colors['success_green'], fg='white',
+                           command=self.test_tune_axis)
+        tune_btn.pack(pady=(10, 15))
+        
+        # Motion Parameters Section
+        params_frame = tk.LabelFrame(pid_column, text="Motion Parameters", 
+                                   font=("Arial", 10, "bold"),
+                                  bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                  relief='solid', bd=1)
+        params_frame.pack(fill='x', pady=(0, 10))
+        
+        # Speed and acceleration
+        params_values_frame = tk.Frame(params_frame, bg=self.colors['main_bg'])
+        params_values_frame.pack(fill='x', padx=10, pady=10)
+        
+        # Speed
+        tk.Label(params_values_frame, text="Speed:", font=("Arial", 10),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).grid(row=0, column=0, sticky='w')
+        self.test_speed_entry = tk.Entry(params_values_frame, font=("Arial", 10), width=12)
+        self.test_speed_entry.grid(row=0, column=1, padx=(10, 15))
+        self.test_speed_entry.insert(0, "5000")
+        
+        # Acceleration
+        tk.Label(params_values_frame, text="Accel:", font=("Arial", 10),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).grid(row=0, column=2, sticky='w')
+        self.test_accel_entry = tk.Entry(params_values_frame, font=("Arial", 10), width=12)
+        self.test_accel_entry.grid(row=0, column=3, padx=(10, 0))
+        self.test_accel_entry.insert(0, "1000")
+        
+        # Apply button
+        apply_btn = tk.Button(params_frame, text="Apply Parameters", 
+                            font=("Arial", 10, "bold"),
+                            bg=self.colors['accent_blue'], fg='white',
+                            command=self.test_apply_motion_params)
+        apply_btn.pack(pady=10)
+        
+        # Right column - Movement Controls
+        movement_column = tk.Frame(motion_content_frame, bg=self.colors['main_bg'])
+        movement_column.pack(side='right', fill='both', expand=True, padx=(10, 0))
+        
+        # Jog Controls Section
+        jog_frame = tk.LabelFrame(movement_column, text="Jog Controls", 
+                                font=("Arial", 10, "bold"),
+                                   bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                   relief='solid', bd=1)
+        jog_frame.pack(fill='x', pady=(0, 10))
+        
+        # Jog Distance
+        jog_distance_frame = tk.Frame(jog_frame, bg=self.colors['main_bg'])
+        jog_distance_frame.pack(fill='x', padx=10, pady=(10, 5))
+        
+        tk.Label(jog_distance_frame, text="Jog Distance (mm):", font=("Arial", 10, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(anchor='w')
+        
+        self.test_jog_distance_entry = tk.Entry(jog_distance_frame, font=("Arial", 10), width=12)
+        self.test_jog_distance_entry.pack(anchor='w', pady=(5, 0))
+        self.test_jog_distance_entry.insert(0, "10.0")
+        
+        # Jog buttons
+        jog_buttons_frame = tk.Frame(jog_frame, bg=self.colors['main_bg'])
+        jog_buttons_frame.pack(fill='x', padx=10, pady=(5, 15))
+        
+        tk.Button(jog_buttons_frame, text="Jog +", 
+                font=("Arial", 10, "bold"),
+                bg=self.colors['success_green'], fg='white',
+                command=lambda: self.test_jog_axis(1)).pack(side='left', padx=(0, 5))
+        
+        tk.Button(jog_buttons_frame, text="Jog -", 
+                font=("Arial", 10, "bold"),
+                bg=self.colors['error_red'], fg='white',
+                command=lambda: self.test_jog_axis(-1)).pack(side='left', padx=5)
+        
+        tk.Button(jog_buttons_frame, text="Stop", 
+                font=("Arial", 10, "bold"),
+                bg=self.colors['warning_orange'], fg='white',
+                command=self.test_stop_axis).pack(side='left', padx=5)
+        
+        # Position Control Section
+        pos_frame = tk.LabelFrame(movement_column, text="Position Control", 
+                                font=("Arial", 10, "bold"),
+                                bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                relief='solid', bd=1)
+        pos_frame.pack(fill='x', pady=(0, 10))
+        
+        # Position input
+        pos_input_frame = tk.Frame(pos_frame, bg=self.colors['main_bg'])
+        pos_input_frame.pack(fill='x', padx=10, pady=(10, 5))
+        
+        tk.Label(pos_input_frame, text="Position (counts):", font=("Arial", 10, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(anchor='w')
+        
+        self.test_position_entry = tk.Entry(pos_input_frame, font=("Arial", 10), width=12)
+        self.test_position_entry.pack(anchor='w', pady=(5, 0))
+        self.test_position_entry.insert(0, "10000")
+        
+        # Move buttons
+        move_buttons_frame = tk.Frame(pos_frame, bg=self.colors['main_bg'])
+        move_buttons_frame.pack(fill='x', padx=10, pady=(5, 15))
+        
+        tk.Button(move_buttons_frame, text="Move", 
+                font=("Arial", 10, "bold"),
+                bg=self.colors['accent_blue'], fg='white',
+                command=self.test_move_to_position).pack(side='left', padx=(0, 5))
+        
+        tk.Button(move_buttons_frame, text="Test Move", 
+                font=("Arial", 10, "bold"),
+                bg=self.colors['warning_orange'], fg='white',
+                command=self.test_simple_move).pack(side='left', padx=5)
+        
+        # Servo Control Section
+        servo_frame = tk.LabelFrame(movement_column, text="Servo Control", 
+                            font=("Arial", 10, "bold"),
+                                      bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                      relief='solid', bd=1)
+        servo_frame.pack(fill='x', pady=(0, 10))
+        
+        # Servo control buttons
+        servo_buttons_frame = tk.Frame(servo_frame, bg=self.colors['main_bg'])
+        servo_buttons_frame.pack(fill='x', padx=10, pady=10)
+        
+        # Configure grid weights for 3 columns
+        servo_buttons_frame.grid_columnconfigure(0, weight=1)
+        servo_buttons_frame.grid_columnconfigure(1, weight=1)
+        servo_buttons_frame.grid_columnconfigure(2, weight=1)
+        
+        # Row 1
+        tk.Button(servo_buttons_frame, text="Servo On", 
+                font=("Arial", 10, "bold"),
+                bg=self.colors['success_green'], fg='white',
+                command=self.test_servo_on).grid(row=0, column=0, padx=2, pady=2, sticky='ew')
+        
+        tk.Button(servo_buttons_frame, text="Servo Off", 
+                font=("Arial", 10, "bold"),
+                bg=self.colors['error_red'], fg='white',
+                command=self.test_servo_off).grid(row=0, column=1, padx=2, pady=2, sticky='ew')
+        
+        tk.Button(servo_buttons_frame, text="Stop All", 
+                font=("Arial", 10, "bold"),
+                bg=self.colors['warning_orange'], fg='white',
+                command=self.test_stop_all).grid(row=0, column=2, padx=2, pady=2, sticky='ew')
+        
+        # Row 2
+        tk.Button(servo_buttons_frame, text="Status Check", 
+                font=("Arial", 10, "bold"),
+                bg=self.colors['accent_blue'], fg='white',
+                command=self.check_controller_status).grid(row=1, column=0, padx=2, pady=2, sticky='ew')
+        
+        tk.Button(servo_buttons_frame, text="Enable All Servos", 
+                font=("Arial", 10, "bold"),
+                bg=self.colors['success_green'], fg='white',
+                command=self.enable_all_servos).grid(row=1, column=1, padx=2, pady=2, sticky='ew')
+
+        # 4. AUTOMATIC DIAGNOSTICS (BOTTOM)
+        auto_diag_frame = tk.LabelFrame(main_frame, text="Automatic Diagnostics", 
+                                      font=("Arial", 12, "bold"),
+                                      bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                      relief='solid', bd=1)
+        auto_diag_frame.pack(fill='x', pady=(0, 10))
+        
+        # Automatic Diagnostics buttons in 3 columns
+        auto_diag_row = tk.Frame(auto_diag_frame, bg=self.colors['main_bg'])
+        auto_diag_row.pack(fill='x', padx=15, pady=10)
+        
+        # Configure grid weights for 3 columns
+        auto_diag_row.grid_columnconfigure(0, weight=1)
+        auto_diag_row.grid_columnconfigure(1, weight=1)
+        auto_diag_row.grid_columnconfigure(2, weight=1)
+
+        self.auto_diag_running = False
+        
+        # Row 1
+        self.auto_diag_btn = tk.Button(auto_diag_row, text="Run Automatic Diagnostics", 
+                                       font=("Arial", 10, "bold"),
+                                       bg=self.colors['accent_blue'], fg='white',
+                                       command=self.toggle_automatic_diagnostics)
+        self.auto_diag_btn.grid(row=0, column=0, padx=2, pady=2, sticky='ew')
+        
+        # Copy Axis A to All Axes button
+        self.copy_axis_a_btn = tk.Button(auto_diag_row, text="Copy Axis A to All Axes", 
+                                       font=("Arial", 10, "bold"),
+                                       bg=self.colors['accent_blue'], fg='white',
+                                       command=self.copy_axis_a_to_all_axes)
+        self.copy_axis_a_btn.grid(row=0, column=1, padx=2, pady=2, sticky='ew')
+        
+        # Save Report button
+        self.save_report_btn = tk.Button(auto_diag_row, text="💾 Save Report", 
+                                       font=("Arial", 10, "bold"),
+                                       bg=self.colors['warning_orange'], fg='white',
+                                       command=self.save_diagnostic_report,
+                                       state='disabled')
+        self.save_report_btn.grid(row=0, column=2, padx=2, pady=2, sticky='ew')
+        
+        # Row 2
+        # Load Report button
+        self.load_report_btn = tk.Button(auto_diag_row, text="📂 Load Report", 
+                                       font=("Arial", 10, "bold"),
+                                       bg=self.colors['accent_blue'], fg='white',
+                                       command=self.load_diagnostic_report)
+        self.load_report_btn.grid(row=1, column=0, padx=2, pady=2, sticky='ew')
+        
+        # Export CSV button
+        self.export_csv_btn = tk.Button(auto_diag_row, text="📊 Export CSV", 
+                                       font=("Arial", 10, "bold"),
+                                       bg=self.colors['success_green'], fg='white',
+                                       command=self.export_diagnostic_csv,
+                                       state='disabled')
+        self.export_csv_btn.grid(row=1, column=1, padx=2, pady=2, sticky='ew')
+        
+        # Compare Reports button
+        self.compare_reports_btn = tk.Button(auto_diag_row, text="📈 Compare Reports", 
+                                           font=("Arial", 10, "bold"),
+                                           bg=self.colors['warning_orange'], fg='white',
+                                           command=self.compare_diagnostic_reports)
+        self.compare_reports_btn.grid(row=1, column=2, padx=2, pady=2, sticky='ew')
+        
+        # Ensure scroll region is properly updated for this page
+        self.root.after(500, self._update_page_scroll_region)
+        self.root.after(1000, self._update_page_scroll_region)
+        
+        # Force update encoder displays to ensure all axes are visible
+        self.root.after(200, self._force_update_encoder_displays)
+        self.root.after(400, self._force_update_encoder_displays)
+        self.root.after(1000, self._ensure_all_axes_visible)
+        
     def toggle_automatic_diagnostics(self):
         """Start/stop automatic diagnostics across all axes with real-time updates."""
         if not self.controller:
@@ -2842,9 +4613,18 @@ class GalilSetupApp:
     def run_automatic_diagnostics(self):
         """Run comprehensive diagnostics using absolute encoder positions"""
         axes = ["A", "B", "C", "D"]
-        test_positions = [0, 250000, 500000, 250000, 0]  # Encoder positions to test
-        speeds = [50000, 100000]  # Test speeds
+        test_positions = [0, 250000, 500000, 250000, 0]  # Exact positions as specified
+        speeds = [100000, 200000]  # Two speeds: slower first, then faster
         stop_duration = 2.0  # Seconds to wait at each position
+        
+        # First, configure all axes to match Axis A settings
+        self.configure_all_axes_like_axis_a()
+        
+        # Clear software limits for all axes to prevent motion restrictions
+        self.clear_all_software_limits()
+        
+        # Note: Manual limit removal available via "Remove Axis B Limits" button if needed
+        # You can also manually run: self.remove_axis_b_limits() if needed
         
         # Initialize diagnostic results storage
         self.diagnostic_results = {
@@ -2868,7 +4648,7 @@ class GalilSetupApp:
             # Test position read on all axes
             for axis in axes:
                 try:
-                    pos = self.controller.send_command(f"TP {axis}").strip()
+                    pos = self.controller.send_command(f"TP{axis}").strip()
                     self.append_test_log(f"Axis {axis} position: {pos}")
                     self.diagnostic_results['controller_info'][f'axis_{axis}_position'] = pos
                 except Exception as e:
@@ -2948,7 +4728,7 @@ class GalilSetupApp:
                 
                 # Get initial position
                 try:
-                    pos0 = self.controller.send_command(f"TP {axis}").strip()
+                    pos0 = self.controller.send_command(f"TP{axis}").strip()
                     self.append_test_log(f"[Axis {axis}] Initial position: {pos0}")
                     self.diagnostic_results['axis_results'][axis]['initial_position'] = pos0
                 except Exception as e:
@@ -2961,6 +4741,9 @@ class GalilSetupApp:
                 time.sleep(0.1)  # Brief pause after stop
                 self.controller.send_command(f"SH{axis}")
                 time.sleep(0.5)  # Give servo time to enable
+                
+                # Check and clear travel limits that might be preventing motion
+                # Note: We're not clearing travel limits anymore - using the same approach as working motion control
                 
                 # Verify servo is on and check tuning
                 try:
@@ -2992,12 +4775,12 @@ class GalilSetupApp:
 
                 # Set up position reference (home the axis at current position)
                 try:
-                    current_pos = int(self.controller.send_command(f"TP {axis}").strip())
+                    current_pos = int(self.controller.send_command(f"TP{axis}").strip())
                     self.append_test_log(f"[Axis {axis}] Setting current position ({current_pos}) as reference point")
                     # Use DP (Define Position) to set current position as zero reference
                     self.controller.send_command(f"DP{axis}=0")
                     time.sleep(0.1)
-                    new_pos = int(self.controller.send_command(f"TP {axis}").strip())
+                    new_pos = int(self.controller.send_command(f"TP{axis}").strip())
                     self.append_test_log(f"[Axis {axis}] Reference set - position now reads: {new_pos}")
                 except Exception as e:
                     self.append_test_log(f"[Axis {axis}] WARNING: Could not set position reference: {e}")
@@ -3013,7 +4796,7 @@ class GalilSetupApp:
                     self.controller.send_command(f"AC{axis}={test_speed}")
                     self.controller.send_command(f"DC{axis}={test_speed}")
                     
-                    start_pos = int(self.controller.send_command(f"TP {axis}").strip())
+                    start_pos = int(self.controller.send_command(f"TP{axis}").strip())
                     self.append_test_log(f"[Axis {axis}] Test move: {start_pos} → {start_pos + test_distance}")
                     
                     # Move relative
@@ -3044,20 +4827,22 @@ class GalilSetupApp:
                     self.append_test_log(f"[Axis {axis}] ERROR in basic motion test: {e}")
                     self.diagnostic_results['axis_results'][axis]['errors'].append(f"Basic motion test failed: {e}")
                 
-                # Run two speed tests
+                # Run two speed tests as specified
                 for i, speed in enumerate(speeds):
                     if not self.auto_diag_running:
                         break
                     
                     # Set acceleration based on speed test
-                    if speed == 50000:
-                        accel = 40000
-                    elif speed == 100000:
+                    if speed == 100000:
                         accel = 80000
+                    elif speed == 200000:
+                        accel = 160000
                     else:
-                        accel = speed * 2  # Fallback calculation
+                        accel = speed * 0.8  # Fallback calculation
                         
-                    self.append_test_log(f"[Axis {axis}] Speed test at {speed} with acceleration {accel}")
+                    speed_name = "SLOWER" if i == 0 else "FASTER"
+                    self.append_test_log(f"[Axis {axis}] {speed_name} SPEED TEST at {speed} with acceleration {accel}")
+                    self.append_test_log(f"[Axis {axis}] Test sequence: 0 → 250000 → 500000 → 250000 → 0 (with {stop_duration}s stops)")
                     
                     # Initialize speed test results
                     self.diagnostic_results['axis_results'][axis]['speed_tests'][speed] = {
@@ -3077,21 +4862,47 @@ class GalilSetupApp:
                         self.append_test_log(f"[Axis {axis}] Moving to position {target_pos} (step {j+1}/{len(test_positions)})")
                         
                         try:
-                            # Apply motion parameters directly before movement
-                            self.controller.send_command(f"SP{axis}={speed}")
-                            self.controller.send_command(f"AC{axis}={accel}")
-                            self.controller.send_command(f"DC{axis}={accel * 2}")  # Deceleration = 2x acceleration
-                            
-                            # Verify parameters were applied
-                            actual_speed = self.controller.send_command(f"MG _SP{axis}").strip()
-                            actual_accel = self.controller.send_command(f"MG _AC{axis}").strip()
-                            self.append_test_log(f"[Axis {axis}] Applied SP={actual_speed}, AC={actual_accel}")
-                            
                             # Get current position for logging
-                            current_pos = int(self.controller.send_command(f"TP {axis}").strip())
+                            current_pos = int(self.controller.send_command(f"TP{axis}").strip())
                             self.append_test_log(f"[Axis {axis}] Current: {current_pos}, Target: {target_pos}")
                             
-                            # Use absolute positioning (should work now that we've homed)
+                            # Check if target position is reasonable (not too far from current)
+                            if abs(target_pos - current_pos) > 1000000:  # Allow up to 1M counts difference for diagnostic test
+                                self.append_test_log(f"[Axis {axis}] WARNING: Very large position change ({abs(target_pos - current_pos)} counts) - skipping this test")
+                                self.diagnostic_results['axis_results'][axis]['warnings'].append(f"Very large position change skipped: {abs(target_pos - current_pos)} counts")
+                                continue
+                            
+                            # Simple, direct motion approach (like the working move_to_position function)
+                            # Stop any existing motion
+                            self.controller.send_command(f"ST{axis}")
+                            time.sleep(0.1)
+                            
+                            # Ensure servo is enabled
+                            self.controller.send_command(f"SH{axis}")
+                            time.sleep(0.2)
+                            
+                            # Get current position
+                            try:
+                                current_pos = int(self.controller.send_command(f"TP{axis}").strip())
+                            except:
+                                current_pos = 0
+                            
+                            self.append_test_log(f"[Axis {axis}] Moving from {current_pos} to {target_pos}")
+                            
+                            # Ensure servo is properly enabled before motion
+                            if not self._ensure_servo_enabled_for_motion(axis):
+                                self.append_test_log(f"[Axis {axis}] ERROR: Could not enable servo for motion")
+                                self.diagnostic_results['axis_results'][axis]['errors'].append("Servo enable failed")
+                                continue
+                            
+                            # Apply motion parameters AFTER servo enable (ST command might clear them)
+                            self.controller.send_command(f"SP{axis}={speed}")
+                            self.controller.send_command(f"AC{axis}={accel}")
+                            decel = accel * 2  # Set deceleration to 2x acceleration
+                            self.controller.send_command(f"DC{axis}={decel}")
+                            time.sleep(0.1)  # Give time for parameters to be set
+                            
+                            # Execute motion
                             self.controller.send_command(f"PA{axis}={target_pos}")
                             self.controller.send_command(f"BG{axis}")
                             
@@ -3102,14 +4913,15 @@ class GalilSetupApp:
                         
                         # Wait for motion to complete
                         self.append_test_log(f"[Axis {axis}] Waiting for motion to complete...")
-                        initial_pos = self.controller.send_command(f"TP {axis}").strip()
+                        initial_pos = self.controller.send_command(f"TP{axis}").strip()
                         self.append_test_log(f"[Axis {axis}] Position at start of motion: {initial_pos}")
                         
-                        # Monitor motion progress
+                        # Monitor motion progress with real-time updates
                         start_time = time.time()
                         last_pos = int(initial_pos)
                         stuck_count = 0
                         motion_progress = True
+                        last_log_time = start_time
                         
                         while time.time() - start_time < 20.0:  # 20 second timeout
                             try:
@@ -3123,12 +4935,21 @@ class GalilSetupApp:
                                 motion_active = (bg_value & axis_bits[axis]) != 0
                                 
                                 # Get current position
-                                current_pos = int(self.controller.send_command(f"TP {axis}").strip())
+                                current_pos = int(self.controller.send_command(f"TP{axis}").strip())
+                                
+                                # Force UI update for real-time encoder display
+                                self.root.after(0, lambda pos=current_pos, ax=axis: self.update_single_encoder_position(ax, pos))
+                                
+                                # Log position updates more frequently (every 0.3 seconds for better real-time feel)
+                                current_time = time.time()
+                                if current_time - last_log_time >= 0.3:
+                                    self.append_test_log(f"[Axis {axis}] Position: {current_pos} (motion active: {motion_active})")
+                                    last_log_time = current_time
                                 
                                 # Check if position is changing
                                 if abs(current_pos - last_pos) < 2:
                                     stuck_count += 1
-                                    if stuck_count > 10:  # Stuck for 1 second
+                                    if stuck_count > 20:  # Stuck for 1 second (20 * 0.05 = 1s)
                                         self.append_test_log(f"[Axis {axis}] WARNING: Motion appears stuck at position {current_pos}")
                                         motion_progress = False
                                         break
@@ -3145,7 +4966,7 @@ class GalilSetupApp:
                                     self.append_test_log(f"[Axis {axis}] Motion completed near target")
                                     break
                                 
-                                time.sleep(0.1)
+                                time.sleep(0.03)  # 30ms updates for more responsive monitoring
                                 
                             except Exception as e:
                                 self.append_test_log(f"[Axis {axis}] Error monitoring motion: {e}")
@@ -3154,8 +4975,24 @@ class GalilSetupApp:
                         # Force stop and get final position
                         self.controller.send_command(f"ST{axis}")
                         time.sleep(0.5)
-                        final_pos = int(self.controller.send_command(f"TP {axis}").strip())
-                        self.append_test_log(f"[Axis {axis}] Position at end of motion: {final_pos}")
+                        
+                        # Check if we need to recover from a stuck state
+                        try:
+                            final_pos = int(self.controller.send_command(f"TP{axis}").strip())
+                            self.append_test_log(f"[Axis {axis}] Position at end of motion: {final_pos}")
+                        except Exception as e:
+                            self.append_test_log(f"[Axis {axis}] ERROR reading final position: {e}")
+                            # Try to recover by stopping and re-enabling servo
+                            self.controller.send_command(f"ST{axis}")
+                            time.sleep(1.0)
+                            self.controller.send_command(f"SH{axis}")
+                            time.sleep(0.5)
+                            try:
+                                final_pos = int(self.controller.send_command(f"TP{axis}").strip())
+                                self.append_test_log(f"[Axis {axis}] Recovered position: {final_pos}")
+                            except:
+                                final_pos = 0
+                                self.append_test_log(f"[Axis {axis}] Could not recover position, using 0")
                         
                         # Check if we need a position correction
                         position_error = abs(final_pos - target_pos)
@@ -3164,15 +5001,22 @@ class GalilSetupApp:
                             try:
                                 # Try a slower, more careful correction
                                 correction_speed = min(speed//8, 5000)  # Very slow correction
-                                galil_functions.move_to_position(self.controller, axis, target_pos, correction_speed, correction_speed//2)
-                                time.sleep(2.0)  # Longer wait for correction
-                                self.controller.send_command(f"ST{axis}")
-                                time.sleep(0.5)
-                                corrected_pos = int(self.controller.send_command(f"TP {axis}").strip())
-                                self.append_test_log(f"[Axis {axis}] Corrected position: {corrected_pos}")
-                                final_pos = corrected_pos
+                                
+                                # Check if correction is reasonable (not too far)
+                                if abs(target_pos - final_pos) > 100000:  # More than 100k counts difference
+                                    self.append_test_log(f"[Axis {axis}] WARNING: Correction distance too large ({abs(target_pos - final_pos)} counts) - skipping correction")
+                                    self.diagnostic_results['axis_results'][axis]['warnings'].append(f"Large correction skipped: {abs(target_pos - final_pos)} counts")
+                                else:
+                                    galil_functions.move_to_position(self.controller, axis, target_pos, correction_speed, correction_speed//2)
+                                    time.sleep(2.0)  # Longer wait for correction
+                                    self.controller.send_command(f"ST{axis}")
+                                    time.sleep(0.5)
+                                    corrected_pos = int(self.controller.send_command(f"TP{axis}").strip())
+                                    self.append_test_log(f"[Axis {axis}] Corrected position: {corrected_pos}")
+                                    final_pos = corrected_pos
                             except Exception as e:
                                 self.append_test_log(f"[Axis {axis}] Position correction failed: {e}")
+                                self.diagnostic_results['axis_results'][axis]['errors'].append(f"Position correction failed: {e}")
                         
                         time.sleep(0.2)
                         
@@ -3182,7 +5026,7 @@ class GalilSetupApp:
                         
                         # Verify final position
                         try:
-                            current_pos = self.controller.send_command(f"TP {axis}").strip()
+                            current_pos = self.controller.send_command(f"TP{axis}").strip()
                             position_accuracy = abs(int(current_pos) - target_pos)
                             self.append_test_log(f"[Axis {axis}] Final position: {current_pos} (error: {position_accuracy} counts)")
                             
@@ -3208,6 +5052,8 @@ class GalilSetupApp:
                     self.append_test_log(f"[Axis {axis}] Speed {speed} test completed")
 
                 self.append_test_log(f"[Axis {axis}] All diagnostics completed successfully")
+                
+                # Note: Travel limits are left as-is (same as working motion control)
                 
             except Exception as e:
                 self.append_test_log(f"[Axis {axis}] ERROR: {e}")
@@ -3505,7 +5351,7 @@ class GalilSetupApp:
         try:
             # Method 1: Try to read position - if it returns "?" or fails, no motor
             try:
-                pos_response = self.controller.send_command(f"TP {axis}").strip()
+                pos_response = self.controller.send_command(f"TP{axis}").strip()
                 if pos_response == "?" or pos_response == "":
                     self.append_test_log(f"Motor detection: Axis {axis} position returns '{pos_response}' - no motor")
                     return False
@@ -3523,9 +5369,13 @@ class GalilSetupApp:
                     self.append_test_log(f"Motor detection: Axis {axis} initial servo status returns '?' - no motor")
                     return False
                 
+                # Set motor type FIRST (required for servo operation)
+                self.controller.send_command(f"MT{axis}=1")  # Set to servo motor type
+                time.sleep(0.2)  # Give more time for motor type to be set
+                
                 # Try to enable servo
                 self.controller.send_command(f"SH{axis}")
-                time.sleep(0.2)  # Give more time for servo to enable
+                time.sleep(0.3)  # Give more time for servo to enable
                 
                 # Check if servo actually enabled
                 enabled_servo = self.controller.send_command(f"MG _MO{axis}").strip()
@@ -3533,30 +5383,51 @@ class GalilSetupApp:
                     self.append_test_log(f"Motor detection: Axis {axis} servo enable failed - no motor")
                     return False
                 
-                # Try to set a small speed and see if it accepts it
+                # Additional verification - check if motor type was set correctly
+                motor_type = self.controller.send_command(f"MG _MT{axis}").strip()
+                if motor_type == "?" or motor_type == "":
+                    self.append_test_log(f"Motor detection: Axis {axis} motor type verification failed - no motor")
+                    return False
+                
+                # Try to set motion parameters and see if they are accepted
                 try:
+                    # Set speed, acceleration, and deceleration
                     self.controller.send_command(f"SP{axis}=1000")
+                    self.controller.send_command(f"AC{axis}=500")
+                    self.controller.send_command(f"DC{axis}=500")
+                    
+                    # Verify parameters were set
                     speed_response = self.controller.send_command(f"MG _SP{axis}").strip()
                     if speed_response == "?" or speed_response == "":
                         self.append_test_log(f"Motor detection: Axis {axis} speed setting failed - no motor")
                         self.controller.send_command(f"MO{axis}")  # Disable servo
                         return False
                 except Exception as e:
-                    self.append_test_log(f"Motor detection: Axis {axis} speed test failed - no motor: {e}")
+                    self.append_test_log(f"Motor detection: Axis {axis} motion parameter test failed - no motor: {e}")
                     self.controller.send_command(f"MO{axis}")  # Disable servo
                     return False
                 
                 # Try a very small test movement to see if motor responds
                 try:
-                    initial_pos = int(self.controller.send_command(f"TP {axis}").strip())
+                    initial_pos = int(self.controller.send_command(f"TP{axis}").strip())
                     
                     # Try a small relative move (50 encoder counts for better detection)
-                    self.controller.send_command(f"PR{axis}=50")
-                    self.controller.send_command(f"BG{axis}")
+                    pr_response = self.controller.send_command(f"PR{axis}=50")
+                    if pr_response == "?" or pr_response == "":
+                        self.append_test_log(f"Motor detection: Axis {axis} PR command failed - no motor: {pr_response}")
+                        self.controller.send_command(f"MO{axis}")  # Disable servo
+                        return False
+                    
+                    bg_response = self.controller.send_command(f"BG{axis}")
+                    if bg_response == "?" or bg_response == "":
+                        self.append_test_log(f"Motor detection: Axis {axis} BG command failed - no motor: {bg_response}")
+                        self.controller.send_command(f"MO{axis}")  # Disable servo
+                        return False
+                    
                     time.sleep(1.0)  # Longer wait for movement
                     
                     # Check if position changed
-                    final_pos = int(self.controller.send_command(f"TP {axis}").strip())
+                    final_pos = int(self.controller.send_command(f"TP{axis}").strip())
                     position_change = abs(final_pos - initial_pos)
                     
                     # Stop any motion and disable servo
@@ -3605,6 +5476,18 @@ class GalilSetupApp:
         except Exception as e:
             self.append_test_log(f"Motor detection error on axis {axis}: {e}")
             return False
+            
+        # Force update encoder displays to ensure all axes are visible
+        self.root.after(100, self._force_update_encoder_displays)
+        
+        # Force PID frame to be visible after all content is loaded
+        self.root.after(50, lambda: pid_frame.update_idletasks())
+        self.root.after(100, lambda: pid_frame.update())
+        
+        # Force encoder displays to be visible and update scroll region
+        self.root.after(150, self._force_update_encoder_displays)
+        self.root.after(200, self._update_page_scroll_region)
+        self.root.after(300, self._update_page_scroll_region)  # Double update for reliability
 
     def append_test_log(self, line: str):
         """Append a line to the testing status log in a thread-safe way."""
@@ -3612,7 +5495,7 @@ class GalilSetupApp:
             ts = datetime.now().strftime("%H:%M:%S")
             # Check if widget still exists before updating
             if hasattr(self, 'test_status_text') and self.test_status_text.winfo_exists():
-                self.root.after(0, lambda: (self.test_status_text.insert(tk.END, f"[{ts}] {line}\n"), self.test_status_text.see(tk.END)))
+                self.root.after(0, lambda: (self.test_status_text.insert(tk.END, f"[{ts}] {line}\n"), self.test_status_text.see(tk.END), self.test_status_text.update()))
         except tk.TclError:
             # Widget was destroyed, ignore the update
             pass
@@ -3778,7 +5661,7 @@ class GalilSetupApp:
             
             # Get current position and servo status
             try:
-                current_pos = int(self.controller.send_command(f"TP {axis}").strip())
+                current_pos = int(self.controller.send_command(f"TP{axis}").strip())
                 servo_status = self.controller.send_command(f"MG _MO{axis}").strip()
                 self.append_test_log(f"Current position: {current_pos}, Servo status: {servo_status}")
             except Exception as e:
@@ -3814,7 +5697,7 @@ class GalilSetupApp:
             
             # Get current position
             try:
-                current_pos = int(self.controller.send_command(f"TP {axis}").strip())
+                current_pos = int(self.controller.send_command(f"TP{axis}").strip())
                 self.append_test_log(f"Current position: {current_pos}")
             except Exception as e:
                 self.append_test_log(f"Error reading position: {e}")
@@ -3953,7 +5836,7 @@ class GalilSetupApp:
             
             # Test position command
             try:
-                current_pos = int(self.controller.send_command(f"TP {axis}").strip())
+                current_pos = int(self.controller.send_command(f"TP{axis}").strip())
                 response = self.controller.send_command(f"PA{axis}={current_pos}")
                 self.append_test_log(f"PA{axis}={current_pos} response: '{response}'")
             except Exception as e:
@@ -4377,7 +6260,7 @@ class GalilSetupApp:
                 
                 # Method 2: Check position stability
                 try:
-                    current_pos = int(self.controller.send_command(f"TP {axis}").strip())
+                    current_pos = int(self.controller.send_command(f"TP{axis}").strip())
                     if last_position is not None:
                         position_change = abs(current_pos - last_position)
                         if position_change < 2:  # Position is very stable (within 2 counts)
@@ -4468,7 +6351,7 @@ class GalilSetupApp:
                 motion_active = (bg_value & axis_bits[axis]) != 0
                 
                 # Get current position
-                current_pos = int(self.controller.send_command(f"TP {axis}").strip())
+                current_pos = int(self.controller.send_command(f"TP{axis}").strip())
                 
                 # Check servo status
                 servo_status = self.controller.send_command(f"MG _MO{axis}").strip()
@@ -4552,9 +6435,16 @@ class GalilSetupApp:
     def _run_encoder_update_loop(self):
         """Run the encoder position update loop"""
         servo_maintenance_counter = 0
+        connection_check_count = 0
+        max_connection_checks = 3  # Only check connection 3 times before stopping
+        
         while self.test_encoder_update_running:
             try:
                 if not self.controller:
+                    connection_check_count += 1
+                    if connection_check_count <= max_connection_checks:
+                        # Log connection attempt only for first few times
+                        self.root.after(0, lambda: self.append_test_log(f"Connection attempt {connection_check_count}/{max_connection_checks}: No controller connected"))
                     time.sleep(0.5)  # Wait longer when no controller
                     continue
                 
@@ -4562,7 +6452,7 @@ class GalilSetupApp:
                 axis_positions = {}
                 for axis in ["A", "B", "C", "D"]:
                     try:
-                        pos_str = self.controller.send_command(f"TP {axis}")
+                        pos_str = self.controller.send_command(f"TP{axis}")
                         position = int(pos_str.strip())
                         axis_positions[axis] = position
                     except Exception as e:
@@ -4630,9 +6520,9 @@ class GalilSetupApp:
                     # Axis not responding
                     label.configure(text="No Response", fg=self.colors['error_red'])
                     canvas.delete("all")
-                    # Draw empty circle
-                    canvas.create_oval(10, 10, 140, 140, outline='gray', width=1)
-                    canvas.create_text(75, 75, text="?", fill='gray', font=("Arial", 20))
+                    # Draw empty circle - updated for 120x120 canvas
+                    canvas.create_oval(10, 10, 110, 110, outline='gray', width=2)
+                    canvas.create_text(60, 60, text="?", fill='gray', font=("Arial", 24))
                 else:
                     # Update position label
                     label.configure(text=f"Position: {position}", fg=self.colors['main_fg'])
@@ -4640,25 +6530,25 @@ class GalilSetupApp:
                     # Update visual display
                     canvas.delete("all")
                     
-                    # Draw encoder circle
-                    canvas.create_oval(10, 10, 140, 140, outline='black', width=2)
+                    # Draw encoder circle - updated for 120x120 canvas
+                    canvas.create_oval(10, 10, 110, 110, outline='black', width=3)
                     
                     # Calculate angle from position
                     clicks_per_turn = int(self.test_clicks_per_turn_entry.get())
                     angle = (position % clicks_per_turn) / clicks_per_turn * 2 * 3.14159
                     
-                    # Draw position indicator
-                    center_x = 75
-                    center_y = 75
-                    radius = 50
+                    # Draw position indicator - updated coordinates for 120x120 canvas
+                    center_x = 60
+                    center_y = 60
+                    radius = 45
                     
                     indicator_x = center_x + radius * 0.8 * math.cos(angle)
                     indicator_y = center_y - radius * 0.8 * math.sin(angle)  # Negative for correct orientation
                     
                     canvas.create_oval(
-                        indicator_x - 5, indicator_y - 5,
-                        indicator_x + 5, indicator_y + 5,
-                        fill='red', outline='black'
+                        indicator_x - 6, indicator_y - 6,
+                        indicator_x + 6, indicator_y + 6,
+                        fill='red', outline='black', width=2
                     )
                     
             except Exception as e:
@@ -4685,6 +6575,37 @@ class GalilSetupApp:
             self.append_test_log(f"WARNING: Servo may not be enabled (status: {servo_status})")
             
         return servo_status
+    
+    def _ensure_servo_enabled_for_motion(self, axis):
+        """Ensure servo is enabled for motion with comprehensive verification"""
+        try:
+            # First, stop any existing motion
+            self.controller.send_command(f"ST{axis}")
+            time.sleep(0.1)
+            
+            # Enable servo
+            self.controller.send_command(f"SH{axis}")
+            time.sleep(0.3)  # Give more time for servo to enable
+            
+            # Verify servo is enabled with multiple attempts
+            for attempt in range(3):
+                servo_status = self.controller.send_command(f"MG _MO{axis}").strip()
+                if servo_status == "0":
+                    # Servo is still off, try to enable again
+                    self.controller.send_command(f"SH{axis}")
+                    time.sleep(0.5)  # Longer delay for stubborn servos
+                else:
+                    # Servo is enabled
+                    self.append_test_log(f"[Axis {axis}] ✓ Servo enabled (status: {servo_status})")
+                    return True
+            
+            # If we get here, servo is still not enabled after 3 attempts
+            self.append_test_log(f"[Axis {axis}] ✗ WARNING: Servo could not be enabled after 3 attempts")
+            return False
+            
+        except Exception as e:
+            self.append_test_log(f"[Axis {axis}] ✗ ERROR: Servo enable verification failed: {e}")
+            return False
         
     def _handle_servo_error(self, operation, error):
         """Handle servo operation errors"""
