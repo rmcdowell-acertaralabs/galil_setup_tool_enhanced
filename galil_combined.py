@@ -60,21 +60,21 @@ def tune_axis(controller, axis, kp, ki, kd):
 
     try:
         # Stop axis
-        controller.send_command(f"ST{axis}")
+        controller.send_command(f"ST {axis}")
 
         # Set PID
-        controller.send_command(f"KP{axis}={kp}")
-        controller.send_command(f"KI{axis}={ki}")
-        controller.send_command(f"KD{axis}={kd}")
+        controller.send_command(f"KP {axis}={kp}")
+        controller.send_command(f"KI {axis}={ki}")
+        controller.send_command(f"KD {axis}={kd}")
 
         # Servo on - use axis letter (no space)
-        controller.send_command(f"SH{axis}")
+        controller.send_command(f"SH {axis}")
 
         # Wait a moment for servo to stabilize
         time.sleep(0.1)
 
         # Stop any existing motion
-        controller.send_command(f"ST{axis}")
+        controller.send_command(f"ST {axis}")
 
         logger.info(f"[TUNE] Axis {axis} tune sequence complete")
     except Exception as e:
@@ -91,19 +91,19 @@ def configure_axis(controller, axis, preset):
         raise ValueError(f"Invalid axis '{axis}'. Must be one of {list(SERVO_BITS.keys())}")
     try:
         if "kp" in preset:
-            controller.send_command(f"KP{axis}={float(preset['kp'])}")
+            controller.send_command(f"KP {axis}={float(preset['kp'])}")
         if "ki" in preset:
-            controller.send_command(f"KI{axis}={float(preset['ki'])}")
+            controller.send_command(f"KI {axis}={float(preset['ki'])}")
         if "kd" in preset:
-            controller.send_command(f"KD{axis}={float(preset['kd'])}")
+            controller.send_command(f"KD {axis}={float(preset['kd'])}")
         if "sp" in preset:
-            controller.send_command(f"SP{axis}={int(float(preset['sp']))}")
+            controller.send_command(f"SP {axis}={int(float(preset['sp']))}")
         if "ac" in preset:
-            controller.send_command(f"AC{axis}={int(float(preset['ac']))}")
+            controller.send_command(f"AC {axis}={int(float(preset['ac']))}")
         if "dc" in preset:
-            controller.send_command(f"DC{axis}={int(float(preset['dc']))}")
+            controller.send_command(f"DC {axis}={int(float(preset['dc']))}")
         if "tl" in preset:
-            controller.send_command(f"TL{axis}={float(preset['tl'])}")
+            controller.send_command(f"TL {axis}={float(preset['tl'])}")
 
         logger.info(f"[CONFIG] Axis {axis} configured with preset {preset}")
     except Exception as e:
@@ -120,18 +120,18 @@ def jog_distance(controller, axis, distance_mm, turns_per_mm, clicks_per_turn, s
     """
     try:
         # Stop any existing motion
-        controller.send_command(f"ST{axis}")
+        controller.send_command(f"ST {axis}")
         time.sleep(0.1)  # Wait for stop to take effect
         
         # Ensure servo is on
-        controller.send_command(f"SH{axis}")
+        controller.send_command(f"SH {axis}")
         time.sleep(0.1)  # Wait for servo to stabilize
         
         # Check servo status
         servo_status = controller.send_command(f"MG _MO{axis}").strip()
         if servo_status == "0":
             # Try to enable servo again
-            controller.send_command(f"SH{axis}")
+            controller.send_command(f"SH {axis}")
             time.sleep(0.2)
             servo_status = controller.send_command(f"MG _MO{axis}").strip()
             if servo_status == "0":
@@ -144,31 +144,31 @@ def jog_distance(controller, axis, distance_mm, turns_per_mm, clicks_per_turn, s
             decel = speed * 4  # 4x speed for deceleration
         
         # Apply speed/accel/decel parameters with more conservative fallbacks
-        sp_response = controller.send_command(f"SP{axis}={speed}")
+        sp_response = controller.send_command(f"SP {axis}={speed}")
         if sp_response.strip() == "?":
             # Try more conservative values
             for fallback_speed in [1000, 500, 100]:
-                sp_response = controller.send_command(f"SP{axis}={fallback_speed}")
+                sp_response = controller.send_command(f"SP {axis}={fallback_speed}")
                 if sp_response.strip() != "?":
                     break
             if sp_response.strip() == "?":
                 raise RuntimeError(f"Could not set speed for axis {axis}")
         
-        ac_response = controller.send_command(f"AC{axis}={accel}")
+        ac_response = controller.send_command(f"AC {axis}={accel}")
         if ac_response.strip() == "?":
             # Try more conservative acceleration values
             for fallback_accel in [1000, 500, 100]:
-                ac_response = controller.send_command(f"AC{axis}={fallback_accel}")
+                ac_response = controller.send_command(f"AC {axis}={fallback_accel}")
                 if ac_response.strip() != "?":
                     break
             if ac_response.strip() == "?":
                 raise RuntimeError(f"Could not set acceleration for axis {axis}")
         
-        dc_response = controller.send_command(f"DC{axis}={decel}")
+        dc_response = controller.send_command(f"DC {axis}={decel}")
         if dc_response.strip() == "?":
             # Try more conservative deceleration values
             for fallback_decel in [2000, 1000, 200]:
-                dc_response = controller.send_command(f"DC{axis}={fallback_decel}")
+                dc_response = controller.send_command(f"DC {axis}={fallback_decel}")
                 if dc_response.strip() != "?":
                     break
             if dc_response.strip() == "?":
@@ -179,10 +179,10 @@ def jog_distance(controller, axis, distance_mm, turns_per_mm, clicks_per_turn, s
         counts = int(round(turns * clicks_per_turn))
 
         # Use PR for relative distance move (not JG)
-        response = controller.send_command(f"PR{axis}={counts}")
+        response = controller.send_command(f"PR {axis}={counts}")
         if response.strip() == "?":
             raise RuntimeError(f"Invalid relative move for axis {axis}")
-        response = controller.send_command(f"BG{axis}")
+        response = controller.send_command(f"BG {axis}")
         if response.strip() == "?":
             raise RuntimeError(f"Invalid begin command for axis {axis}")
         
@@ -195,11 +195,11 @@ def move_to_position(controller, axis, position_counts, speed=5000, accel=None, 
     """
     try:
         # Stop any existing motion
-        controller.send_command(f"ST{axis}")
+        controller.send_command(f"ST {axis}")
         time.sleep(0.1)  # Wait for stop to take effect
         
         # Ensure servo is on and stays on
-        controller.send_command(f"SH{axis}")
+        controller.send_command(f"SH {axis}")
         time.sleep(0.2)  # Wait longer for servo to stabilize
         
         # Verify servo is enabled
@@ -207,7 +207,7 @@ def move_to_position(controller, axis, position_counts, speed=5000, accel=None, 
         if servo_status == "0":
             # Try to enable servo again with more attempts
             for attempt in range(3):
-                controller.send_command(f"SH{axis}")
+                controller.send_command(f"SH {axis}")
                 time.sleep(0.3)
                 servo_status = controller.send_command(f"MG _MO{axis}").strip()
                 if servo_status != "0":
@@ -222,31 +222,31 @@ def move_to_position(controller, axis, position_counts, speed=5000, accel=None, 
             decel = speed * 4  # 4x speed for deceleration
         
         # Apply speed/accel/decel parameters with more conservative fallbacks
-        sp_response = controller.send_command(f"SP{axis}={speed}")
+        sp_response = controller.send_command(f"SP {axis}={speed}")
         if sp_response.strip() == "?":
             # Try more conservative values
             for fallback_speed in [1000, 500, 100]:
-                sp_response = controller.send_command(f"SP{axis}={fallback_speed}")
+                sp_response = controller.send_command(f"SP {axis}={fallback_speed}")
                 if sp_response.strip() != "?":
                     break
             if sp_response.strip() == "?":
                 raise RuntimeError(f"Could not set speed for axis {axis}")
         
-        ac_response = controller.send_command(f"AC{axis}={accel}")
+        ac_response = controller.send_command(f"AC {axis}={accel}")
         if ac_response.strip() == "?":
             # Try more conservative acceleration values
             for fallback_accel in [1000, 500, 100]:
-                ac_response = controller.send_command(f"AC{axis}={fallback_accel}")
+                ac_response = controller.send_command(f"AC {axis}={fallback_accel}")
                 if ac_response.strip() != "?":
                     break
             if ac_response.strip() == "?":
                 raise RuntimeError(f"Could not set acceleration for axis {axis}")
         
-        dc_response = controller.send_command(f"DC{axis}={decel}")
+        dc_response = controller.send_command(f"DC {axis}={decel}")
         if dc_response.strip() == "?":
             # Try more conservative deceleration values
             for fallback_decel in [2000, 1000, 200]:
-                dc_response = controller.send_command(f"DC{axis}={fallback_decel}")
+                dc_response = controller.send_command(f"DC {axis}={fallback_decel}")
                 if dc_response.strip() != "?":
                     break
             if dc_response.strip() == "?":
@@ -259,11 +259,11 @@ def move_to_position(controller, axis, position_counts, speed=5000, accel=None, 
             current_pos = 0
         
         # Use absolute positioning (PA) for precise position control
-        pa_response = controller.send_command(f"PA{axis}={position_counts}")
+        pa_response = controller.send_command(f"PA {axis}={position_counts}")
         if pa_response.strip() == "?":
             raise RuntimeError(f"Invalid position command for axis {axis}")
         
-        bg_response = controller.send_command(f"BG{axis}")
+        bg_response = controller.send_command(f"BG {axis}")
         if bg_response.strip() == "?":
             raise RuntimeError(f"Invalid begin command for axis {axis}")
         
@@ -272,7 +272,7 @@ def move_to_position(controller, axis, position_counts, speed=5000, accel=None, 
         servo_status = controller.send_command(f"MG _MO{axis}").strip()
         if servo_status == "0":
             # Re-enable servo if it got disabled
-            controller.send_command(f"SH{axis}")
+            controller.send_command(f"SH {axis}")
             
     except Exception as e:
         raise RuntimeError(f"Move to position error on axis {axis}: {e}")
@@ -427,8 +427,8 @@ def apply_axis_settings_from_config(
         raise ValueError(f"Invalid axis {axis}")
 
     try:
-        controller.send_command(f"ST{axis}")
-        controller.send_command(f"SH{axis}")
+        controller.send_command(f"ST {axis}")
+        controller.send_command(f"SH {axis}")
 
         # Fetch values with safe fallbacks
         speed_val = int(settings.get("motor_speed", [0] * 4)[axis_index]) if settings.get("motor_speed") else None
@@ -436,17 +436,17 @@ def apply_axis_settings_from_config(
         decel_val = int(settings.get("motor_decel", [0] * 4)[axis_index]) if settings.get("motor_decel") else None
 
         if speed_val is not None:
-            resp = controller.send_command(f"SP{axis}={speed_val}")
+            resp = controller.send_command(f"SP {axis}={speed_val}")
             if resp.strip() == "?":
                 raise RuntimeError(f"Controller rejected SP for axis {axis} with value {speed_val}")
 
         if accel_val is not None:
-            resp = controller.send_command(f"AC{axis}={accel_val}")
+            resp = controller.send_command(f"AC {axis}={accel_val}")
             if resp.strip() == "?":
                 raise RuntimeError(f"Controller rejected AC for axis {axis} with value {accel_val}")
 
         if decel_val is not None:
-            resp = controller.send_command(f"DC{axis}={decel_val}")
+            resp = controller.send_command(f"DC {axis}={decel_val}")
             if resp.strip() == "?":
                 raise RuntimeError(f"Controller rejected DC for axis {axis} with value {decel_val}")
     except Exception as e:

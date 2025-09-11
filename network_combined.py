@@ -13,6 +13,8 @@ import platform
 import time
 from typing import Dict, List, Optional, Tuple
 from tkinter import messagebox
+from galil_combined import GalilController
+from controller_commands import ControllerCommands
 
 # ============================================================================
 # NETWORK CONFIGURATION CLASS
@@ -1655,3 +1657,168 @@ def check_network_configuration_permissions() -> bool:
         return False
     
     return True
+
+# ============================================================================
+# CONTROLLER CONNECTION METHODS
+# ============================================================================
+
+class ControllerConnectionManager:
+    """Manages controller connections and network operations"""
+    
+    def __init__(self, log_callback=None):
+        self.log_callback = log_callback or self._default_log
+        self.controller = None
+        self.controller_commands = None
+        
+    def _default_log(self, message: str):
+        """Default logging function if no callback provided"""
+        print(message)
+    
+    def log(self, message: str):
+        """Log a message using the callback"""
+        self.log_callback(message)
+    
+    def connect_to_controller(self, ip_address: str, update_connection_status_callback=None):
+        """Connect to the Galil controller"""
+        if not ip_address:
+            messagebox.showerror("Error", "Please enter an IP address")
+            return False
+            
+        if not validate_ip_address(ip_address):
+            messagebox.showerror("Error", "Invalid IP address format")
+            return False
+            
+        self.log(f"Connecting to controller at {ip_address}...")
+        
+        try:
+            # Close existing connection if any
+            if self.controller:
+                try:
+                    self.controller.disconnect()
+                except:
+                    pass
+                self.controller = None
+            
+            # Create new controller connection
+            self.controller = GalilController()
+            self.controller.connect(ip_address)
+            
+            # Initialize controller commands handler
+            self.controller_commands = ControllerCommands(self.controller, self.log)
+            
+            # Test if it's actually a Galil controller
+            try:
+                response = self.controller.send_command("MG _BN")
+                if response and response.strip() != "?":
+                    self.log(f"Successfully connected to controller at {ip_address}")
+                    self.log(f"Controller serial: {response.strip()}")
+                    messagebox.showinfo("Success", f"Connected to controller at {ip_address}")
+                    
+                    # Update UI to show connected state
+                    if update_connection_status_callback:
+                        update_connection_status_callback(True)
+                    return True
+                else:
+                    self.log(f"Controller at {ip_address} is not responding to Galil commands")
+                    self.controller.disconnect()
+                    self.controller = None
+                    self.controller_commands = None
+                    messagebox.showerror("Connection Error", f"Controller at {ip_address} is not responding to Galil commands")
+                    return False
+            except Exception as e:
+                self.log(f"Controller validation failed: {e}")
+                if self.controller:
+                    self.controller.disconnect()
+                    self.controller = None
+                    self.controller_commands = None
+                messagebox.showerror("Connection Error", f"Controller validation failed: {e}")
+                return False
+                
+        except Exception as e:
+            self.log(f"Connection failed: {e}")
+            messagebox.showerror("Connection Error", f"Failed to connect to {ip_address}: {e}")
+            return False
+    
+    def disconnect_controller(self, update_connection_status_callback=None):
+        """Disconnect from the controller"""
+        try:
+            if self.controller:
+                self.controller.disconnect()
+                self.controller = None
+                self.controller_commands = None
+                self.log("Disconnected from controller")
+                
+                # Update UI to show disconnected state
+                if update_connection_status_callback:
+                    update_connection_status_callback(False)
+                return True
+        except Exception as e:
+            self.log(f"Error disconnecting: {e}")
+            return False
+    
+    def discover_controllers(self, log_callback=None):
+        """Discover Galil controllers on the network"""
+        if log_callback:
+            self.log_callback = log_callback
+            
+        self.log("Discovering Galil controllers on the network...")
+        
+        try:
+            # Use the existing discovery function
+            controllers = discover_galil_controllers()
+            
+            if controllers:
+                self.log(f"Found {len(controllers)} controller(s):")
+                for i, controller in enumerate(controllers, 1):
+                    self.log(f"  {i}. {controller['ip']} - {controller['name']}")
+            else:
+                self.log("No Galil controllers found on the network")
+                
+            return controllers
+        except Exception as e:
+            self.log(f"Discovery failed: {e}")
+            return []
+    
+    def auto_connect_to_controller(self, default_ip="10.1.0.21", update_connection_status_callback=None):
+        """Auto-connect to controller on startup"""
+        def auto_connect_thread():
+            try:
+                self.log("=== AUTO-CONNECTION ATTEMPT ===")
+                self.log(f"Attempting to connect to default IP: {default_ip}")
+                
+                # Test if controller is reachable
+                if ping_controller(default_ip):
+                    self.log(f"✓ Controller at {default_ip} is reachable")
+                    
+                    # Try to connect
+                    if self.connect_to_controller(default_ip, update_connection_status_callback):
+                        self.log("=== AUTO-CONNECTION SUCCESS ===")
+                        return
+                    else:
+                        self.log("✗ Failed to connect to controller")
+                else:
+                    self.log(f"✗ Controller at {default_ip} is not reachable")
+                    
+                # If auto-connect failed, try discovery
+                self.log("Attempting controller discovery...")
+                controllers = self.discover_controllers()
+                
+                if controllers:
+                    # Try to connect to the first discovered controller
+                    first_controller = controllers[0]
+                    self.log(f"Attempting to connect to discovered controller: {first_controller['ip']}")
+                    
+                    if self.connect_to_controller(first_controller['ip'], update_connection_status_callback):
+                        self.log("=== AUTO-CONNECTION SUCCESS (via discovery) ===")
+                        return
+                
+                self.log("=== AUTO-CONNECTION FAILED ===")
+                self.log("Please connect manually using the Network Config page")
+                
+            except Exception as e:
+                self.log(f"Auto-connection error: {e}")
+        
+        # Run auto-connect in a separate thread
+        import threading
+        thread = threading.Thread(target=auto_connect_thread, daemon=True)
+        thread.start()
