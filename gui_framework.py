@@ -1306,9 +1306,9 @@ class GUIFramework:
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
     
     def create_diagnostics_page(self, main_app):
-        """Create the Diagnostics page GUI"""
+        """Create the comprehensive Diagnostics page GUI"""
         # Title
-        title = tk.Label(self.scrollable_frame, text="Diagnostics", 
+        title = tk.Label(self.scrollable_frame, text="DMC-4103 Diagnostics", 
                         font=("Arial", 24, "bold"), 
                         bg=self.colors['main_bg'], fg=self.colors['main_fg'])
         title.pack(anchor='w', pady=(0, 20))
@@ -1340,21 +1340,165 @@ class GUIFramework:
                                                   bg=self.colors['main_bg'], fg=self.colors['error_red'])
         main_app.controller_status_label.pack(side='left', padx=(10, 0))
         
-        # Test buttons
-        test_buttons_frame = tk.Frame(info_content, bg=self.colors['main_bg'])
-        test_buttons_frame.pack(fill='x', pady=(10, 0))
+        # Controller info display
+        info_display_frame = tk.Frame(info_content, bg=self.colors['main_bg'])
+        info_display_frame.pack(fill='x', pady=(10, 0))
         
-        test_connection_btn = tk.Button(test_buttons_frame, text="🔍 Test Connection", 
-                                       font=("Arial", 10, "bold"),
-                                       bg=self.colors['accent_blue'], fg='white',
-                                       command=main_app.test_controller_connection)
-        test_connection_btn.pack(side='left', padx=(0, 10))
+        main_app.controller_info_text = tk.Text(info_display_frame, height=6, width=80,
+                                              font=("Courier", 9), bg=self.colors['card_bg'],
+                                              fg=self.colors['main_fg'], relief='solid', bd=1)
+        main_app.controller_info_text.pack(fill='x')
         
-        test_commands_btn = tk.Button(test_buttons_frame, text="⚙️ Test Commands", 
-                                     font=("Arial", 10, "bold"),
-                                     bg=self.colors['success_green'], fg='white',
-                                     command=main_app.test_controller_commands)
-        test_commands_btn.pack(side='left')
+        # Diagnostics Control Section
+        control_frame = tk.LabelFrame(diag_frame, text="Diagnostics Control", 
+                                    font=("Arial", 12, "bold"),
+                                    bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                    relief='solid', bd=1)
+        control_frame.pack(fill='x', pady=(0, 20), padx=10)
+        
+        # Control content
+        control_content = tk.Frame(control_frame, bg=self.colors['main_bg'])
+        control_content.pack(fill='x', padx=15, pady=15)
+        
+        # IP Address input for testing
+        ip_frame = tk.Frame(control_content, bg=self.colors['main_bg'])
+        ip_frame.pack(fill='x', pady=(0, 10))
+        
+        tk.Label(ip_frame, text="Test IP Address:", font=("Arial", 10, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
+        
+        main_app.test_ip_entry = tk.Entry(ip_frame, font=("Arial", 10), width=15)
+        main_app.test_ip_entry.pack(side='left', padx=(10, 0))
+        main_app.test_ip_entry.insert(0, "10.1.0.21")  # Default IP
+        
+        # Safety mode checkbox
+        safety_frame = tk.Frame(control_content, bg=self.colors['main_bg'])
+        safety_frame.pack(fill='x', pady=(0, 10))
+        
+        main_app.safe_mode_var = tk.BooleanVar(value=True)
+        safety_checkbox = tk.Checkbutton(safety_frame, text="Safe Mode (Conservative test parameters)",
+                                       variable=main_app.safe_mode_var,
+                                       font=("Arial", 10), bg=self.colors['main_bg'],
+                                       fg=self.colors['main_fg'])
+        safety_checkbox.pack(anchor='w')
+        
+        # Control buttons
+        buttons_frame = tk.Frame(control_content, bg=self.colors['main_bg'])
+        buttons_frame.pack(fill='x', pady=(10, 0))
+        
+        main_app.run_diagnostics_btn = tk.Button(buttons_frame, text="🚀 Run Full Diagnostics", 
+                                               font=("Arial", 12, "bold"),
+                                               bg=self.colors['success_green'], fg='white',
+                                               command=main_app.run_full_diagnostics)
+        main_app.run_diagnostics_btn.pack(side='left', padx=(0, 10))
+        
+        main_app.stop_diagnostics_btn = tk.Button(buttons_frame, text="⏹️ Stop Diagnostics", 
+                                                font=("Arial", 12, "bold"),
+                                                bg=self.colors['error_red'], fg='white',
+                                                command=main_app.stop_diagnostics,
+                                                state='disabled')
+        main_app.stop_diagnostics_btn.pack(side='left', padx=(0, 10))
+        
+        main_app.save_report_btn = tk.Button(buttons_frame, text="💾 Save Report", 
+                                           font=("Arial", 12, "bold"),
+                                           bg=self.colors['accent_blue'], fg='white',
+                                           command=main_app.save_diagnostics_report,
+                                           state='disabled')
+        main_app.save_report_btn.pack(side='left', padx=(0, 10))
+        
+        main_app.test_connection_btn = tk.Button(buttons_frame, text="🔍 Test Connection", 
+                                               font=("Arial", 12, "bold"),
+                                               bg=self.colors['warning_orange'], fg='white',
+                                               command=main_app.test_controller_connection_diagnostics)
+        main_app.test_connection_btn.pack(side='left', padx=(0, 10))
+        
+        main_app.scan_network_btn = tk.Button(buttons_frame, text="🌐 Scan Network", 
+                                            font=("Arial", 12, "bold"),
+                                            bg=self.colors['accent_blue'], fg='white',
+                                            command=main_app.scan_network_for_controllers)
+        main_app.scan_network_btn.pack(side='left', padx=(0, 10))
+        
+        main_app.quick_connect_btn = tk.Button(buttons_frame, text="🔌 Quick Connect", 
+                                             font=("Arial", 12, "bold"),
+                                             bg=self.colors['success_green'], fg='white',
+                                             command=main_app.quick_connect_to_ip)
+        main_app.quick_connect_btn.pack(side='left', padx=(0, 10))
+        
+        main_app.telnet_test_btn = tk.Button(buttons_frame, text="📡 Telnet Test", 
+                                           font=("Arial", 12, "bold"),
+                                           bg=self.colors['warning_orange'], fg='white',
+                                           command=main_app.test_telnet_connection)
+        main_app.telnet_test_btn.pack(side='left', padx=(0, 10))
+        
+        main_app.connect_keep_btn = tk.Button(buttons_frame, text="🔗 Connect & Keep", 
+                                            font=("Arial", 12, "bold"),
+                                            bg=self.colors['accent_blue'], fg='white',
+                                            command=main_app.connect_and_keep_connected)
+        main_app.connect_keep_btn.pack(side='left')
+        
+        # Progress Section
+        progress_frame = tk.LabelFrame(diag_frame, text="Progress", 
+                                     font=("Arial", 12, "bold"),
+                                     bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                     relief='solid', bd=1)
+        progress_frame.pack(fill='x', pady=(0, 20), padx=10)
+        
+        # Progress content
+        progress_content = tk.Frame(progress_frame, bg=self.colors['main_bg'])
+        progress_content.pack(fill='x', padx=15, pady=15)
+        
+        # Progress bar
+        main_app.diagnostics_progress = tk.DoubleVar()
+        progress_bar = ttk.Progressbar(progress_content, variable=main_app.diagnostics_progress,
+                                     maximum=100, length=400, mode='determinate')
+        progress_bar.pack(fill='x', pady=(0, 10))
+        
+        # Progress label
+        main_app.diagnostics_progress_label = tk.Label(progress_content, text="Ready to run diagnostics",
+                                                      font=("Arial", 10),
+                                                      bg=self.colors['main_bg'], fg=self.colors['main_fg'])
+        main_app.diagnostics_progress_label.pack(anchor='w')
+        
+        # Results Section
+        results_frame = tk.LabelFrame(diag_frame, text="Test Results", 
+                                    font=("Arial", 12, "bold"),
+                                    bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                    relief='solid', bd=1)
+        results_frame.pack(fill='both', expand=True, pady=(0, 20), padx=10)
+        
+        # Results content
+        results_content = tk.Frame(results_frame, bg=self.colors['main_bg'])
+        results_content.pack(fill='both', expand=True, padx=15, pady=15)
+        
+        # Results text with scrollbar
+        results_text_frame = tk.Frame(results_content, bg=self.colors['main_bg'])
+        results_text_frame.pack(fill='both', expand=True)
+        
+        main_app.diagnostics_results_text = tk.Text(results_text_frame, height=20, width=100,
+                                                   font=("Courier", 9), bg=self.colors['card_bg'],
+                                                   fg=self.colors['main_fg'], relief='solid', bd=1)
+        results_scrollbar = tk.Scrollbar(results_text_frame, orient='vertical',
+                                       command=main_app.diagnostics_results_text.yview)
+        main_app.diagnostics_results_text.configure(yscrollcommand=results_scrollbar.set)
+        
+        main_app.diagnostics_results_text.pack(side='left', fill='both', expand=True)
+        results_scrollbar.pack(side='right', fill='y')
+        
+        # Summary Section
+        summary_frame = tk.LabelFrame(diag_frame, text="Summary", 
+                                    font=("Arial", 12, "bold"),
+                                    bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                    relief='solid', bd=1)
+        summary_frame.pack(fill='x', pady=(0, 20), padx=10)
+        
+        # Summary content
+        summary_content = tk.Frame(summary_frame, bg=self.colors['main_bg'])
+        summary_content.pack(fill='x', padx=15, pady=15)
+        
+        main_app.diagnostics_summary_label = tk.Label(summary_content, text="No diagnostics run yet",
+                                                     font=("Arial", 10),
+                                                     bg=self.colors['main_bg'], fg=self.colors['main_fg'])
+        main_app.diagnostics_summary_label.pack(anchor='w')
         
         # Axis Diagnostics Section
         axis_frame = tk.LabelFrame(diag_frame, text="Axis Diagnostics", 

@@ -5,7 +5,10 @@
 # Note: gclib is provided as gclib.py in the repository
 # tkinter is included with Python installation
 
-# Optional dependencies for development
+# External dependencies
+pyserial>=3.5      # For serial port communication
+psutil>=5.8.0      # For process management (GDK launch feature)
+
+# Development/Build dependencies (optional)
 # pyinstaller>=4.0  # For building executables
 # pytest>=6.0      # For testing (optional)
-psutil>=5.8.0      # For process management (GDK launch feature)

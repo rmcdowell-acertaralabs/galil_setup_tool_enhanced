@@ -27,6 +27,7 @@ from command_compatibility_checker import GalilCommandChecker
 from controller_commands import ControllerCommands
 from gui_framework import GUIFramework
 from utils import LoggingUtils, estimate_bm_from_movement, calculate_motion_parameters, validate_motion_parameters
+from diagnostics import GalilDiagnostics, TestResult
 
 class GalilSetupApp:
     def __init__(self, root):
@@ -51,6 +52,7 @@ class GalilSetupApp:
         self.test_encoder_update_running = False
         self.auto_connect_running = False
         self.motor_direction_test_active = False  # Flag to control encoder position logging
+        self.diagnostics = None  # Will be initialized when controller connects
         
         # Initialize managers
         self.gui_framework = None  # Will be initialized after colors are set
@@ -88,6 +90,9 @@ class GalilSetupApp:
         
         # Auto-detect and connect to controller on startup (delay to ensure UI is ready)
         self.root.after(1000, self.auto_connect_to_controller)
+        
+        # Initial connection status refresh (delay to ensure GUI framework is ready)
+        self.root.after(1500, self.refresh_connection_status_display)
         
     def setup_ui(self):
         """Setup the main UI with Acertara-style layout"""
@@ -305,7 +310,7 @@ class GalilSetupApp:
                             canvas.create_oval(10, 10, 110, 110, outline='black', width=3)
                             canvas.create_text(60, 60, text="0", fill='blue', font=("Arial", 16, "bold"))
                         
-                print(f"Successfully ensured all {len(expected_axes)} axes are visible")
+                # All axes are now visible
             else:
                 # For pages without encoder_displays (like motor setup), just return silently
                 return
@@ -471,31 +476,49 @@ class GalilSetupApp:
         """Show motion controls interface using GUI framework"""
         self.clear_main_content()
         self.gui_framework.create_motion_controls_page(self)
+        
+        # Refresh connection status display
+        self.refresh_connection_status_display()
     
     def show_encoder_overlay_new(self):
         """Show encoder overlay interface using GUI framework"""
         self.clear_main_content()
         self.gui_framework.create_encoder_overlay_page(self)
+        
+        # Refresh connection status display
+        self.refresh_connection_status_display()
     
     def show_diagnostics_new(self):
         """Show diagnostics interface using GUI framework"""
         self.clear_main_content()
         self.gui_framework.create_diagnostics_page(self)
+        
+        # Refresh connection status display
+        self.refresh_connection_status_display()
     
     def show_network_config_new(self):
         """Show network config interface using GUI framework"""
         self.clear_main_content()
         self.gui_framework.create_network_config_page(self)
+        
+        # Refresh connection status display
+        self.refresh_connection_status_display()
     
     def show_settings_new(self):
         """Show settings interface using GUI framework"""
         self.clear_main_content()
         self.gui_framework.create_settings_page(self)
+        
+        # Refresh connection status display
+        self.refresh_connection_status_display()
     
     def show_controller_testing_new(self):
         """Show controller testing interface using GUI framework"""
         self.clear_main_content()
         self.gui_framework.create_controller_testing_page(self)
+        
+        # Refresh connection status display
+        self.refresh_connection_status_display()
             
     def show_motor_setup_new(self):
         """Show motor setup interface using GUI framework"""
@@ -503,6 +526,9 @@ class GalilSetupApp:
         
         # Create the GUI using the framework
         self.gui_framework.create_motor_setup_page(self)
+        
+        # Refresh connection status display
+        self.refresh_connection_status_display()
         
         # Set up page show/hide handlers
         self.root.bind('<Visibility>', self._on_visibility_change)
@@ -659,6 +685,9 @@ class GalilSetupApp:
     def show_diagnostics(self):
         """Show diagnostics interface"""
         self.show_diagnostics_new()
+        
+        # Update controller info display
+        self.update_controller_info_display()
             
     def show_network_config(self):
         """Show network config interface"""
@@ -851,6 +880,15 @@ class GalilSetupApp:
                 # Update local references
                 self.controller = self.connection_manager.controller
                 self.controller_commands = self.connection_manager.controller_commands
+                # Initialize diagnostics
+                self.diagnostics = GalilDiagnostics(self.controller, safe_mode=True)
+                
+                # Debug: Log controller reference status
+                self.append_test_log(f"DEBUG: Controller reference set: {self.controller is not None}")
+                if self.controller:
+                    self.append_test_log(f"DEBUG: Controller type: {type(self.controller)}")
+                else:
+                    self.append_test_log("DEBUG: Controller reference is None after connection!")
             else:
                 messagebox.showerror("Error", "Failed to connect to controller")
         else:
@@ -862,11 +900,15 @@ class GalilSetupApp:
             # Stop any ongoing motion
             self._stop_all_motion()
             
+            # Stop encoder update loops
+            self._stop_all_encoder_updates()
+            
             success = self.connection_manager.disconnect_controller(self.update_connection_status)
             if success:
                 # Update local references
                 self.controller = None
                 self.controller_commands = None
+                self.diagnostics = None
                 messagebox.showinfo("Success", "Disconnected from controller")
             else:
                 messagebox.showinfo("Info", "No controller connected")
@@ -1861,6 +1903,7 @@ class GalilSetupApp:
                         # This is the standard Galil command for getting axis position
                         position_response = self.controller.send_command(f"TP {axis}")
                         
+                        
                         # Handle different response formats
                         if position_response and position_response.strip():
                             try:
@@ -1978,8 +2021,8 @@ class GalilSetupApp:
                 if hasattr(self, 'encoder_labels') and self.encoder_labels:
                     self.update_encoder_positions()
                     if self.auto_update_var.get():
-                        # Update every 100ms for more responsive real-time updates
-                        self.encoder_update_job = self.root.after(100, update_loop)
+                        # Update every 500ms to reduce controller load
+                        self.encoder_update_job = self.root.after(500, update_loop)
             except Exception as e:
                 # If there's an error, stop the update loop
                 if hasattr(self, 'encoder_update_job'):
@@ -1988,7 +2031,7 @@ class GalilSetupApp:
                 timestamp = time.strftime("%H:%M:%S")
                 self.log_message(f"[{timestamp}] Auto-update error: {str(e)}")
         
-        self.encoder_update_job = self.root.after(50, update_loop)  # Start immediately with minimal delay
+        self.encoder_update_job = self.root.after(100, update_loop)  # Start with small delay
     
     def stop_encoder_auto_update(self):
         """Stop automatic encoder position updates"""
@@ -2312,8 +2355,8 @@ class GalilSetupApp:
                 # Update UI in main thread with all positions
                 self.root.after(0, self.update_all_encoder_positions, positions)
                 
-                # Sleep for update interval - reduced for more responsive updates
-                time.sleep(0.03)  # 30ms updates for better responsiveness
+                # Sleep for update interval - increased to reduce controller load
+                time.sleep(0.2)  # 200ms updates (5 updates per second)
                 
             except Exception as e:
                 # Update UI with error in main thread
@@ -3028,7 +3071,7 @@ class GalilSetupApp:
             self.encoder_labels[axis] = position_label
             
             # Initialize the displays
-            self.append_test_log(f"DEBUG: Initializing encoder display for axis {axis}")
+            # Initializing encoder display for axis
             self._initialize_encoder_display(axis)
             
             # Force update for each axis frame
@@ -3512,23 +3555,60 @@ class GalilSetupApp:
         else:
             self.append_test_log("ERROR: Connection manager not initialized")
 
+    def refresh_connection_status_display(self):
+        """Refresh the connection status display based on current connection state"""
+        try:
+            if self.controller:
+                self.update_connection_status(True)
+            else:
+                self.update_connection_status(False)
+        except Exception as e:
+            # Log the error but don't crash the application
+            print(f"Error refreshing connection status display: {e}")
+            # Try to update just the global header if possible
+            try:
+                if hasattr(self, 'gui_framework') and hasattr(self.gui_framework, 'connection_status') and self.gui_framework.connection_status.winfo_exists():
+                    if self.controller:
+                        self.gui_framework.connection_status.config(text="Connected", fg=self.colors['success_green'])
+                    else:
+                        self.gui_framework.connection_status.config(text="Disconnected", fg=self.colors['error_red'])
+            except:
+                pass  # If even this fails, just continue
+    
     def update_connection_status(self, connected):
         """Update UI elements to reflect connection status"""
+        # Debug: Log connection status updates
+        self.append_test_log(f"DEBUG: update_connection_status called with connected={connected}")
+        
         if connected:
-            # Update any connection status indicators
-            if hasattr(self, 'connection_status_label'):
+            # Update global header connection status
+            if hasattr(self, 'gui_framework') and hasattr(self.gui_framework, 'connection_status') and self.gui_framework.connection_status.winfo_exists():
+                self.gui_framework.connection_status.config(text="Connected", fg=self.colors['success_green'])
+            
+            # Update local connection status label (if it exists in network config tab)
+            if hasattr(self, 'connection_status_label') and self.connection_status_label.winfo_exists():
                 self.connection_status_label.config(text="Connected", fg=self.colors['success_green'])
             
             # Start encoder update loop with a small delay to ensure controller is fully initialized
             self.root.after(100, self.start_encoder_update)
                 
         else:
+            # Clear controller reference when disconnected
+            self.controller = None
+            self.controller_commands = None
+            self.diagnostics = None
+            
             # Stop encoder update loop
             self.test_encoder_update_running = False
             if hasattr(self, 'test_encoder_update_thread') and self.test_encoder_update_thread.is_alive():
                 self.test_encoder_update_thread.join(timeout=1.0)
             
-            if hasattr(self, 'connection_status_label'):
+            # Update global header connection status
+            if hasattr(self, 'gui_framework') and hasattr(self.gui_framework, 'connection_status') and self.gui_framework.connection_status.winfo_exists():
+                self.gui_framework.connection_status.config(text="Disconnected", fg=self.colors['error_red'])
+            
+            # Update local connection status label (if it exists in network config tab)
+            if hasattr(self, 'connection_status_label') and self.connection_status_label.winfo_exists():
                 self.connection_status_label.config(text="Disconnected", fg=self.colors['error_red'])
             
             # Update all position labels to show disconnected
@@ -3666,8 +3746,22 @@ class GalilSetupApp:
 
     def start_encoder_update(self):
         """Start the encoder position update loop if controller is connected"""
+        # Debug: Log controller reference status
+        self.append_test_log(f"DEBUG: start_encoder_update called, controller is None: {self.controller is None}")
+        if self.controller:
+            self.append_test_log(f"DEBUG: Controller type: {type(self.controller)}")
+        
         if not self.controller:
             self.append_test_log("Cannot start encoder update: No controller connected")
+            return False
+        
+        # Check if controller is actually connected by testing a simple command
+        try:
+            self.append_test_log("DEBUG: Testing controller with TP A command...")
+            response = self.controller.send_command("TP A")
+            self.append_test_log(f"DEBUG: TP A response: {response}")
+        except Exception as e:
+            self.append_test_log(f"Cannot start encoder update: Controller not responding ({e})")
             return False
             
         try:
@@ -3802,12 +3896,12 @@ class GalilSetupApp:
 
     def _initialize_encoder_display(self, axis):
         """Initialize the speed bar and position dial for an axis"""
-        self.append_test_log(f"DEBUG: _initialize_encoder_display called for axis {axis}")
+        # Initialize encoder display for axis
         if axis not in self.encoder_displays:
-            self.append_test_log(f"DEBUG: Axis {axis} not found in encoder_displays")
+            # Axis not found in encoder_displays
             return
             
-        self.append_test_log(f"DEBUG: Drawing speed bar and position dial for axis {axis}")
+        # Drawing speed bar and position dial for axis
         # Initialize speed bar
         self._draw_speed_bar(axis, 0)
         
@@ -3835,22 +3929,23 @@ class GalilSetupApp:
                     
                     # Debug: Log the actual command responses for axis A
                     if axis == "A":
-                        self.append_test_log(f"DEBUG: TP {axis} -> {pos_str.strip()}")
-                        self.append_test_log(f"DEBUG: TV {axis} -> {vel_str.strip()}")
+                        # Position and velocity read successfully
+                        pass
                         
                 except Exception as e:
                     positions[axis] = 0
                     velocities[axis] = 0
                     if axis == "A":
-                        self.append_test_log(f"DEBUG: Error reading {axis}: {e}")
+                        # Error reading axis
+                        pass
             
-            self.append_test_log(f"DEBUG: Updating displays with current positions: {positions}")
-            self.append_test_log(f"DEBUG: Updating displays with current velocities: {velocities}")
+            # Updating displays with current positions and velocities
             # Update all displays with current positions and velocities
             self._update_all_axis_displays(positions, velocities)
             
         except Exception as e:
-            self.append_test_log(f"DEBUG: Error getting current positions: {e}")
+            # Error getting current positions
+            pass
     
     def _start_periodic_display_updates(self):
         """Start periodic updates to ensure displays stay current when encoder loop is not running"""
@@ -3881,14 +3976,15 @@ class GalilSetupApp:
             self._update_all_axis_displays(positions, velocities)
             
         except Exception as e:
-            self.append_test_log(f"DEBUG: Error in periodic update: {e}")
+            # Error in periodic update
+            pass
         
         # Schedule next update in 500ms (slower when encoder loop is not running)
         self.root.after(500, self._start_periodic_display_updates)
     
     def _force_immediate_display_update(self):
         """Force an immediate update of all displays with test data"""
-        self.append_test_log("DEBUG: Forcing immediate display update with test data")
+        # Force immediate display update with test data
         
         # Test with some sample data
         test_positions = {'A': 123456, 'B': 78901, 'C': 234567, 'D': 345678}
@@ -3901,12 +3997,12 @@ class GalilSetupApp:
         
         # Also try with real data if controller is available
         if self.controller:
-            self.append_test_log("DEBUG: Also updating with real controller data")
+            # Also updating with real controller data
             self._update_displays_with_current_positions()
     
     def _test_smooth_position_updates(self):
         """Test smooth position updates with changing data"""
-        self.append_test_log("DEBUG: Testing smooth position updates")
+        # Testing smooth position updates
         
         # Test with changing positions to demonstrate smooth movement
         test_positions = {'A': 150000, 'B': 100000, 'C': 300000, 'D': 400000}
@@ -3917,7 +4013,7 @@ class GalilSetupApp:
     def _ensure_encoder_displays_exist(self):
         """Ensure encoder displays exist and are properly initialized"""
         if not hasattr(self, 'encoder_displays') or not self.encoder_displays:
-            self.append_test_log("DEBUG: Encoder displays not found, initializing...")
+            # Encoder displays not found, initializing
             # Initialize empty displays
             self.encoder_displays = {}
             self.encoder_labels = {}
@@ -3925,7 +4021,7 @@ class GalilSetupApp:
         # Check if all axes have displays
         for axis in ['A', 'B', 'C', 'D']:
             if axis not in self.encoder_displays:
-                self.append_test_log(f"DEBUG: Missing encoder display for axis {axis}")
+                # Missing encoder display for axis
                 return False
                 
         return True
@@ -3941,15 +4037,15 @@ class GalilSetupApp:
     def _draw_speed_bar(self, axis, speed):
         """Draw the half-moon speed bar with gradient from green to red"""
         if axis not in self.encoder_displays or 'speed' not in self.encoder_displays[axis]:
-            self.append_test_log(f"DEBUG: _draw_speed_bar: No speed canvas for axis {axis}")
+            # No speed canvas for axis
             return
             
         canvas = self.encoder_displays[axis]['speed']
         if not canvas.winfo_exists():
-            self.append_test_log(f"DEBUG: _draw_speed_bar: Speed canvas for axis {axis} does not exist")
+            # Speed canvas for axis does not exist
             return
             
-        self.append_test_log(f"DEBUG: _draw_speed_bar: Drawing speed {speed} for axis {axis}")
+        # Drawing speed bar for axis
         canvas.delete("all")
         
         # Canvas dimensions - updated for much larger canvas
@@ -4019,12 +4115,12 @@ class GalilSetupApp:
     def _draw_position_dial(self, axis, position):
         """Draw the clock-like position dial with tick marks and needle"""
         if axis not in self.encoder_displays or 'position' not in self.encoder_displays[axis]:
-            self.append_test_log(f"DEBUG: _draw_position_dial: No position canvas for axis {axis}")
+            # No position canvas for axis
             return
             
         canvas = self.encoder_displays[axis]['position']
         if not canvas.winfo_exists():
-            self.append_test_log(f"DEBUG: _draw_position_dial: Position canvas for axis {axis} does not exist")
+            # Position canvas for axis does not exist
             return
             
         # Only log occasionally to avoid spam
@@ -4034,7 +4130,8 @@ class GalilSetupApp:
             self._debug_counter = 1
             
         if self._debug_counter % 10 == 0:  # Log every 10th update
-            self.append_test_log(f"DEBUG: _draw_position_dial: Drawing position {position} for axis {axis}")
+            # Drawing position dial for axis
+            pass
         
         canvas.delete("all")
         
@@ -4842,6 +4939,26 @@ class GalilSetupApp:
             self.controller.send_command("ST")
         except:
             pass
+    
+    def _stop_all_encoder_updates(self):
+        """Stop all encoder update loops"""
+        try:
+            # Stop test encoder update loop
+            if hasattr(self, 'test_encoder_update_running'):
+                self.test_encoder_update_running = False
+            if hasattr(self, 'test_encoder_update_thread') and self.test_encoder_update_thread.is_alive():
+                self.test_encoder_update_thread.join(timeout=1.0)
+            
+            # Stop auto encoder update loop
+            if hasattr(self, 'encoder_update_running'):
+                self.encoder_update_running = False
+            if hasattr(self, 'encoder_update_thread') and self.encoder_update_thread.is_alive():
+                self.encoder_update_thread.join(timeout=1.0)
+            
+            # Stop GUI-based encoder update
+            self.stop_encoder_auto_update()
+        except:
+            pass
             
     def _disconnect_controller(self):
         """Disconnect from the controller"""
@@ -4988,9 +5105,26 @@ class GalilSetupApp:
                     connection_check_count += 1
                     if connection_check_count <= max_connection_checks:
                         # Log connection attempt only for first few times
-                        self.root.after(0, lambda: self.append_test_log(f"Connection attempt {connection_check_count}/{max_connection_checks}: No controller connected"))
-                    time.sleep(0.5)  # Wait longer when no controller
+                        count = connection_check_count
+                        max_count = max_connection_checks
+                        self.root.after(0, lambda c=count, m=max_count: self.append_test_log(f"Connection attempt {c}/{m}: No controller connected"))
+                    else:
+                        # Stop the loop if no controller for too long
+                        self.test_encoder_update_running = False
+                        self.root.after(0, lambda: self.append_test_log("Stopping encoder updates: No controller connected"))
+                        break
+                    time.sleep(1.0)  # Wait longer when no controller
                     continue
+                
+                # Check if controller is still connected by testing a simple command
+                try:
+                    self.controller.send_command("TP A")
+                except Exception as conn_error:
+                    # Controller is disconnected, stop the loop
+                    self.test_encoder_update_running = False
+                    error_msg = str(conn_error)
+                    self.root.after(0, lambda msg=error_msg: self.append_test_log(f"Stopping encoder updates: Controller disconnected ({msg})"))
+                    break
                 
                 # Read positions and velocities from all axes
                 axis_positions = {}
@@ -5007,35 +5141,52 @@ class GalilSetupApp:
                         velocity = abs(float(vel_str.strip()))  # Use absolute value for speed display
                         axis_velocities[axis] = velocity
                         
-                        # Debug: Log the actual command responses
-                        if axis == "A":  # Only log for axis A to avoid spam
-                            self.root.after(0, lambda: self.append_test_log(f"DEBUG: TP {axis} -> {pos_str.strip()}"))
-                            self.root.after(0, lambda: self.append_test_log(f"DEBUG: TV {axis} -> {vel_str.strip()}"))
-                        
                     except Exception as e:
-                        # If axis doesn't respond, mark as error
+                        # Check if this is a connection error - if so, stop the entire loop
+                        error_msg = str(e).lower()
+                        if "not connected" in error_msg or "connection" in error_msg:
+                            self.test_encoder_update_running = False
+                            error_str = str(e)
+                            self.root.after(0, lambda msg=error_str: self.append_test_log(f"Stopping encoder updates: Connection lost ({msg})"))
+                            break
+                        
+                        # If axis doesn't respond, mark as error but don't log every error
                         axis_positions[axis] = None
                         axis_velocities[axis] = 0
+                        # Only log errors occasionally to avoid spam
+                        if hasattr(self, '_encoder_error_count'):
+                            self._encoder_error_count += 1
+                        else:
+                            self._encoder_error_count = 1
+                        
+                        # Log error only every 10th occurrence to avoid spam
+                        if self._encoder_error_count % 10 == 1:
+                            error_axis = axis
+                            error_msg = str(e)
+                            self.root.after(0, lambda ax=error_axis, msg=error_msg: self.append_test_log(f"Encoder read error for axis {ax}: {msg}"))
                 
                 # Update all encoder displays in main thread
                 if self.test_encoder_update_running:  # Double-check before updating UI
-                    self.root.after(0, lambda: self.append_test_log(f"DEBUG: Sending positions to UI: {axis_positions}"))
-                    self.root.after(0, lambda: self.append_test_log(f"DEBUG: Sending velocities to UI: {axis_velocities}"))
+                    # Sending positions and velocities to UI
                     self.root.after(0, self.test_update_all_encoder_displays, axis_positions, axis_velocities)
                 
-                # Perform servo maintenance every 50 updates (5 seconds)
+                # Perform servo maintenance every 20 updates (10 seconds with 500ms intervals)
                 servo_maintenance_counter += 1
-                if servo_maintenance_counter >= 50:
+                if servo_maintenance_counter >= 20:
                     self.maintain_servo_status()
                     servo_maintenance_counter = 0
                 
-                # Sleep for update interval
-                time.sleep(0.1)  # 100ms updates
+                # Sleep for update interval - increased to reduce controller load
+                time.sleep(0.5)  # 500ms updates (2 updates per second instead of 10)
                 
             except Exception as e:
-                # Update UI with error in main thread
+                # Update UI with error in main thread - ensure we only pass string error messages
                 if self.test_encoder_update_running:  # Double-check before updating UI
-                    self.root.after(0, self.test_update_all_encoder_displays, None, str(e))
+                    error_msg = str(e) if e else "Unknown error"
+                    # Ensure error message doesn't contain widget references
+                    if "!" in error_msg and ("frame" in error_msg or "canvas" in error_msg or "label" in error_msg):
+                        error_msg = "Widget reference error in encoder update"
+                    self.root.after(0, self.test_update_all_encoder_displays, None, error_msg)
                 time.sleep(1)  # Wait longer before retrying on error
                 
     def _ensure_encoder_update_running(self):
@@ -5063,12 +5214,11 @@ class GalilSetupApp:
             
     def _update_all_axis_displays(self, axis_positions, axis_velocities=None):
         """Update all axis displays with position and velocity data"""
-        # Debug: Log the positions being received
-        self.append_test_log(f"DEBUG: Updating displays with positions: {axis_positions}")
+        # Update displays with position data
         
         # Check if encoder displays exist - if not, just return (displays will be created later)
         if not hasattr(self, 'encoder_displays') or not self.encoder_displays:
-            self.append_test_log(f"DEBUG: Encoder displays not yet created, skipping update")
+            # Encoder displays not yet created, skipping update
             return
             
         # Check if all axes have displays
@@ -5078,7 +5228,7 @@ class GalilSetupApp:
                 missing_axes.append(axis)
         
         if missing_axes:
-            self.append_test_log(f"DEBUG: Missing encoder displays for axes: {missing_axes}, skipping update")
+            # Missing encoder displays for axes, skipping update
             return
             
         for axis in ['A', 'B', 'C', 'D']:
@@ -5146,7 +5296,7 @@ class GalilSetupApp:
                         self.axis_speeds[axis] = speed
                         
                         # Update speed bar
-                        self.append_test_log(f"DEBUG: Drawing speed bar for axis {axis} with speed {speed}")
+                        # Drawing speed bar for axis
                         self._draw_speed_bar(axis, speed)
                         
                         # Update position dial with smooth interpolation
@@ -5558,6 +5708,898 @@ class GalilSetupApp:
                 self.append_test_log(f"Average System Health Score: {avg_score:.1f}")
         
         self.append_test_log("\n" + "="*80)
+
+    # ============================================================================
+    # DIAGNOSTICS METHODS
+    # ============================================================================
+    
+    def update_controller_info_display(self):
+        """Update the controller information display in diagnostics page"""
+        if hasattr(self, 'controller_info_text') and self.controller_info_text:
+            self.controller_info_text.delete(1.0, tk.END)
+            
+            if self.controller:
+                try:
+                    # Get basic controller information
+                    info_lines = []
+                    info_lines.append("Controller Information:")
+                    info_lines.append("-" * 30)
+                    
+                    # Try to get controller info
+                    try:
+                        firmware = self.controller.send_command("MG _REV")
+                        info_lines.append(f"Firmware: {firmware}")
+                    except:
+                        info_lines.append("Firmware: Unable to read")
+                    
+                    try:
+                        model = self.controller.send_command("MG _BM")
+                        info_lines.append(f"Model: {model}")
+                    except:
+                        info_lines.append("Model: Unable to read")
+                    
+                    try:
+                        burn_count = self.controller.send_command("MG _BN")
+                        info_lines.append(f"Burn Count: {burn_count}")
+                    except:
+                        info_lines.append("Burn Count: Unable to read")
+                    
+                    try:
+                        mac = self.controller.send_command("TH")
+                        info_lines.append(f"MAC Address: {mac}")
+                    except:
+                        info_lines.append("MAC Address: Unable to read")
+                    
+                    try:
+                        ip = self.controller.send_command("IA")
+                        info_lines.append(f"IP Address: {ip}")
+                    except:
+                        info_lines.append("IP Address: Unable to read")
+                    
+                    info_text = "\n".join(info_lines)
+                    self.controller_info_text.insert(1.0, info_text)
+                    
+                except Exception as e:
+                    self.controller_info_text.insert(1.0, f"Error reading controller info: {e}")
+            else:
+                self.controller_info_text.insert(1.0, "No controller connected")
+    
+    def run_full_diagnostics(self):
+        """Run the complete diagnostics suite"""
+        if not self.controller:
+            messagebox.showerror("Error", "Please connect to a controller first")
+            return
+        
+        if not self.diagnostics:
+            messagebox.showerror("Error", "Diagnostics not initialized")
+            return
+        
+        # Update safe mode setting
+        safe_mode = getattr(self, 'safe_mode_var', None)
+        if safe_mode:
+            self.diagnostics.safe_mode = safe_mode.get()
+        
+        # Disable run button and enable stop button
+        if hasattr(self, 'run_diagnostics_btn'):
+            self.run_diagnostics_btn.config(state='disabled')
+        if hasattr(self, 'stop_diagnostics_btn'):
+            self.stop_diagnostics_btn.config(state='normal')
+        
+        # Clear previous results
+        if hasattr(self, 'diagnostics_results_text'):
+            self.diagnostics_results_text.delete(1.0, tk.END)
+        
+        # Start diagnostics in a separate thread
+        def run_diagnostics_thread():
+            try:
+                # Progress callback
+                def progress_callback(message, current, total):
+                    progress_percent = (current / total) * 100
+                    self.root.after(0, lambda: self.update_diagnostics_progress(progress_percent, message))
+                
+                # Run diagnostics
+                report = self.diagnostics.run_diagnostics(callback=progress_callback)
+                
+                # Update UI with results
+                self.root.after(0, lambda: self.display_diagnostics_results(report))
+                
+            except Exception as e:
+                self.root.after(0, lambda: self.handle_diagnostics_error(e))
+            finally:
+                # Re-enable run button and disable stop button
+                self.root.after(0, lambda: self.reset_diagnostics_buttons())
+        
+        # Start the thread
+        diagnostics_thread = threading.Thread(target=run_diagnostics_thread, daemon=True)
+        diagnostics_thread.start()
+    
+    def update_diagnostics_progress(self, progress, message):
+        """Update the diagnostics progress display"""
+        if hasattr(self, 'diagnostics_progress'):
+            self.diagnostics_progress.set(progress)
+        if hasattr(self, 'diagnostics_progress_label'):
+            self.diagnostics_progress_label.config(text=message)
+    
+    def display_diagnostics_results(self, report):
+        """Display the diagnostics results"""
+        if not hasattr(self, 'diagnostics_results_text'):
+            return
+        
+        # Clear previous results
+        self.diagnostics_results_text.delete(1.0, tk.END)
+        
+        # Display results
+        results_text = []
+        results_text.append("DMC-4103 DIAGNOSTICS RESULTS")
+        results_text.append("=" * 50)
+        results_text.append(f"Timestamp: {report.timestamp}")
+        results_text.append(f"Overall Result: {report.overall_result.value}")
+        results_text.append(f"Execution Time: {report.total_execution_time:.2f} seconds")
+        results_text.append("")
+        
+        # Display summary
+        if report.summary:
+            results_text.append("SUMMARY")
+            results_text.append("-" * 20)
+            results_text.append(f"Total Categories: {report.summary.get('total_categories', 0)}")
+            results_text.append(f"Total Steps: {report.summary.get('total_steps', 0)}")
+            results_text.append(f"Passed Steps: {report.summary.get('passed_steps', 0)}")
+            results_text.append(f"Failed Steps: {report.summary.get('failed_steps', 0)}")
+            results_text.append(f"Error Steps: {report.summary.get('error_steps', 0)}")
+            results_text.append(f"Pass Rate: {report.summary.get('pass_rate', 0):.1f}%")
+            results_text.append("")
+        
+        # Display category results
+        for category in report.test_categories:
+            results_text.append(f"{category.name.upper()}")
+            results_text.append("-" * len(category.name))
+            results_text.append(f"Result: {category.overall_result.value}")
+            results_text.append(f"Execution Time: {category.execution_time:.2f}s")
+            
+            if category.notes:
+                results_text.append(f"Notes: {category.notes}")
+            
+            # Show failed steps
+            failed_steps = [s for s in category.steps if s.result == TestResult.FAIL]
+            if failed_steps:
+                results_text.append("Failed Steps:")
+                for step in failed_steps:
+                    results_text.append(f"  - {step.description}")
+                    if step.actual_response:
+                        results_text.append(f"    Response: {step.actual_response}")
+                    if step.notes:
+                        results_text.append(f"    Notes: {step.notes}")
+            
+            results_text.append("")
+        
+        # Update results text
+        self.diagnostics_results_text.insert(1.0, "\n".join(results_text))
+        
+        # Update summary label
+        if hasattr(self, 'diagnostics_summary_label'):
+            summary_text = f"Result: {report.overall_result.value} | Pass Rate: {report.summary.get('pass_rate', 0):.1f}% | Time: {report.total_execution_time:.2f}s"
+            self.diagnostics_summary_label.config(text=summary_text)
+        
+        # Enable save button
+        if hasattr(self, 'save_report_btn'):
+            self.save_report_btn.config(state='normal')
+        
+        # Store the report for saving
+        self.last_diagnostics_report = report
+    
+    def handle_diagnostics_error(self, error):
+        """Handle diagnostics errors"""
+        if hasattr(self, 'diagnostics_results_text'):
+            self.diagnostics_results_text.delete(1.0, tk.END)
+            self.diagnostics_results_text.insert(1.0, f"Diagnostics Error: {error}")
+        
+        if hasattr(self, 'diagnostics_summary_label'):
+            self.diagnostics_summary_label.config(text=f"Error: {error}")
+        
+        messagebox.showerror("Diagnostics Error", f"An error occurred during diagnostics: {error}")
+    
+    def reset_diagnostics_buttons(self):
+        """Reset the diagnostics control buttons"""
+        if hasattr(self, 'run_diagnostics_btn'):
+            self.run_diagnostics_btn.config(state='normal')
+        if hasattr(self, 'stop_diagnostics_btn'):
+            self.stop_diagnostics_btn.config(state='disabled')
+    
+    def stop_diagnostics(self):
+        """Stop running diagnostics"""
+        if self.diagnostics:
+            self.diagnostics.stop_diagnostics()
+            if hasattr(self, 'diagnostics_progress_label'):
+                self.diagnostics_progress_label.config(text="Stopping diagnostics...")
+    
+    def save_diagnostics_report(self):
+        """Save the diagnostics report to a file"""
+        if not hasattr(self, 'last_diagnostics_report') or not self.last_diagnostics_report:
+            messagebox.showerror("Error", "No diagnostics report to save")
+            return
+        
+        # Ask user for filename
+        filename = filedialog.asksaveasfilename(
+            defaultextension=".json",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+            title="Save Diagnostics Report"
+        )
+        
+        if filename:
+            try:
+                self.diagnostics.save_report(filename)
+                messagebox.showinfo("Success", f"Report saved to {filename}")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to save report: {e}")
+    
+    def test_controller_connection_diagnostics(self):
+        """Test controller connection from diagnostics page"""
+        if hasattr(self, 'diagnostics_results_text'):
+            self.diagnostics_results_text.delete(1.0, tk.END)
+            self.diagnostics_results_text.insert(1.0, "Testing controller connection...\n")
+        
+        # Test connection in a separate thread
+        def test_connection_thread():
+            try:
+                # Test basic connectivity
+                test_results = []
+                test_results.append("CONTROLLER CONNECTION TEST")
+                test_results.append("=" * 40)
+                test_results.append("")
+                
+                # Test 1: Ping test
+                test_results.append("1. PING TEST")
+                test_results.append("-" * 20)
+                try:
+                    ip = self.test_ip_entry.get().strip() if hasattr(self, 'test_ip_entry') else "10.1.0.21"
+                    ping_result = ping_controller(ip)
+                    if ping_result:
+                        test_results.append(f"✓ Ping to {ip}: SUCCESS")
+                    else:
+                        test_results.append(f"✗ Ping to {ip}: FAILED")
+                except Exception as e:
+                    test_results.append(f"✗ Ping test error: {e}")
+                test_results.append("")
+                
+                # Test 2: Network discovery
+                test_results.append("2. NETWORK DISCOVERY")
+                test_results.append("-" * 20)
+                try:
+                    controllers = discover_galil_controllers()
+                    if controllers:
+                        test_results.append(f"✓ Found {len(controllers)} controller(s):")
+                        for controller in controllers:
+                            test_results.append(f"  - {controller}")
+                    else:
+                        test_results.append("✗ No controllers found on network")
+                except Exception as e:
+                    test_results.append(f"✗ Discovery error: {e}")
+                test_results.append("")
+                
+                # Test 3: Direct connection attempt
+                test_results.append("3. DIRECT CONNECTION TEST")
+                test_results.append("-" * 20)
+                try:
+                    if self.connection_manager:
+                        ip = self.test_ip_entry.get().strip() if hasattr(self, 'test_ip_entry') else "10.1.0.21"
+                        
+                        # Try different connection methods
+                        test_results.append(f"Testing connection to {ip}...")
+                        
+                        # Method 1: Standard connection
+                        try:
+                            success = self.connection_manager.connect_to_controller(ip, self.update_connection_status)
+                            if success:
+                                test_results.append(f"✓ Standard connection: SUCCESS")
+                                test_results.append("✓ Controller is reachable and responding")
+                                
+                                # Keep the connection alive for further testing
+                                test_results.append("✓ Connection maintained for testing")
+                            else:
+                                test_results.append(f"✗ Standard connection: FAILED")
+                        except Exception as e:
+                            test_results.append(f"✗ Standard connection error: {e}")
+                        
+                        # Method 2: Direct gclib connection test
+                        test_results.append("Testing direct gclib connection...")
+                        try:
+                            import gclib
+                            g = gclib.py()
+                            g.GOpen(f"{ip} --direct")
+                            test_results.append("✓ Direct gclib connection: SUCCESS")
+                            g.GClose()
+                        except Exception as e:
+                            test_results.append(f"✗ Direct gclib connection error: {e}")
+                        
+                        # Method 3: TCP socket test
+                        test_results.append("Testing TCP socket connection...")
+                        try:
+                            import socket
+                            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                            sock.settimeout(5)
+                            result = sock.connect_ex((ip, 23))  # Galil default port
+                            if result == 0:
+                                test_results.append("✓ TCP socket connection: SUCCESS")
+                                sock.close()
+                            else:
+                                test_results.append(f"✗ TCP socket connection: FAILED (error {result})")
+                        except Exception as e:
+                            test_results.append(f"✗ TCP socket connection error: {e}")
+                        
+                        # Method 4: Try different ports
+                        test_results.append("Testing different ports...")
+                        ports_to_test = [23, 22, 80, 443, 8080]
+                        for port in ports_to_test:
+                            try:
+                                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                                sock.settimeout(2)
+                                result = sock.connect_ex((ip, port))
+                                if result == 0:
+                                    test_results.append(f"✓ Port {port}: OPEN")
+                                else:
+                                    test_results.append(f"✗ Port {port}: CLOSED")
+                                sock.close()
+                            except:
+                                test_results.append(f"✗ Port {port}: ERROR")
+                        
+                    else:
+                        test_results.append("✗ Connection manager not available")
+                except Exception as e:
+                    test_results.append(f"✗ Connection error: {e}")
+                test_results.append("")
+                
+                # Test 4: Basic command test
+                test_results.append("4. BASIC COMMAND TEST")
+                test_results.append("-" * 20)
+                
+                # Try to use existing connection or create new one
+                controller_available = False
+                if self.controller:
+                    controller_available = True
+                    test_results.append("✓ Using existing controller connection")
+                else:
+                    # Try to connect if we don't have a connection
+                    try:
+                        if self.connection_manager:
+                            ip = self.test_ip_entry.get().strip() if hasattr(self, 'test_ip_entry') else "10.1.0.21"
+                            success = self.connection_manager.connect_to_controller(ip, self.update_connection_status)
+                            if success:
+                                controller_available = True
+                                test_results.append("✓ Connected to controller for testing")
+                            else:
+                                test_results.append("✗ Failed to connect to controller")
+                        else:
+                            test_results.append("✗ Connection manager not available")
+                    except Exception as e:
+                        test_results.append(f"✗ Connection error: {e}")
+                
+                if controller_available and self.controller:
+                    try:
+                        response = self.controller.send_command("TP A")
+                        test_results.append(f"✓ TP A command: {response}")
+                        
+                        response = self.controller.send_command("MG _REV")
+                        test_results.append(f"✓ Firmware: {response}")
+                        
+                        response = self.controller.send_command("MG _BM")
+                        test_results.append(f"✓ Model: {response}")
+                        
+                        response = self.controller.send_command("MG _BN")
+                        test_results.append(f"✓ Burn count: {response}")
+                        
+                    except Exception as e:
+                        test_results.append(f"✗ Command test error: {e}")
+                else:
+                    test_results.append("✗ No controller connection available for command testing")
+                
+                # Add troubleshooting recommendations
+                test_results.append("5. TROUBLESHOOTING RECOMMENDATIONS")
+                test_results.append("-" * 30)
+                
+                # Analyze the results to provide specific recommendations
+                ping_success = any("✓ Ping to" in line for line in test_results)
+                discovery_success = any("✓ Found" in line for line in test_results)
+                connection_failed = any("✗ Standard connection: FAILED" in line for line in test_results)
+                tcp_success = any("✓ TCP socket connection: SUCCESS" in line for line in test_results)
+                
+                if ping_success and discovery_success and connection_failed:
+                    test_results.append("DIAGNOSIS: Controller is reachable but connection protocol issue")
+                    test_results.append("")
+                    test_results.append("SOLUTIONS TO TRY:")
+                    test_results.append("1. Controller may be in a different mode")
+                    test_results.append("2. Try connecting with different software first (Galil Tools)")
+                    test_results.append("3. Controller may need to be reset")
+                    test_results.append("4. Check if controller is in program mode")
+                    test_results.append("5. Try sending a simple command via telnet:")
+                    test_results.append(f"   telnet {ip} 23")
+                    test_results.append("   Then type: TP A")
+                    test_results.append("")
+                    test_results.append("6. If telnet works, try these commands:")
+                    test_results.append("   RS (reset)")
+                    test_results.append("   MG _REV (get firmware)")
+                    test_results.append("   MG _BM (get model)")
+                elif ping_success and not tcp_success:
+                    test_results.append("DIAGNOSIS: Network reachable but Galil service not responding")
+                    test_results.append("")
+                    test_results.append("SOLUTIONS TO TRY:")
+                    test_results.append("1. Controller may not be powered on")
+                    test_results.append("2. Controller may be in boot mode")
+                    test_results.append("3. Check network cable connection")
+                    test_results.append("4. Try power cycling the controller")
+                else:
+                    test_results.append("DIAGNOSIS: General connectivity issue")
+                    test_results.append("")
+                    test_results.append("SOLUTIONS TO TRY:")
+                    test_results.append("1. Check controller power")
+                    test_results.append("2. Verify network cable")
+                    test_results.append("3. Check IP address configuration")
+                    test_results.append("4. Try different network port")
+                
+                # Update UI with results
+                self.root.after(0, lambda: self.display_connection_test_results(test_results))
+                
+            except Exception as e:
+                self.root.after(0, lambda: self.display_connection_test_results([f"Connection test failed: {e}"]))
+        
+        # Start the test thread
+        test_thread = threading.Thread(target=test_connection_thread, daemon=True)
+        test_thread.start()
+    
+    def display_connection_test_results(self, results):
+        """Display connection test results"""
+        if hasattr(self, 'diagnostics_results_text'):
+            self.diagnostics_results_text.delete(1.0, tk.END)
+            self.diagnostics_results_text.insert(1.0, "\n".join(results))
+        
+        if hasattr(self, 'diagnostics_summary_label'):
+            # Count successes and failures
+            success_count = sum(1 for line in results if line.startswith("✓"))
+            fail_count = sum(1 for line in results if line.startswith("✗"))
+            self.diagnostics_summary_label.config(text=f"Connection Test: {success_count} passed, {fail_count} failed")
+    
+    def scan_network_for_controllers(self):
+        """Scan the network for Galil controllers"""
+        if hasattr(self, 'diagnostics_results_text'):
+            self.diagnostics_results_text.delete(1.0, tk.END)
+            self.diagnostics_results_text.insert(1.0, "Scanning network for Galil controllers...\n")
+        
+        # Update progress
+        if hasattr(self, 'diagnostics_progress_label'):
+            self.diagnostics_progress_label.config(text="Scanning network...")
+        
+        # Scan in a separate thread
+        def scan_network_thread():
+            try:
+                scan_results = []
+                scan_results.append("NETWORK SCAN FOR GALIL CONTROLLERS")
+                scan_results.append("=" * 50)
+                scan_results.append("")
+                
+                # Get local network information
+                scan_results.append("1. LOCAL NETWORK INFORMATION")
+                scan_results.append("-" * 30)
+                try:
+                    import socket
+                    hostname = socket.gethostname()
+                    local_ip = socket.gethostbyname(hostname)
+                    scan_results.append(f"Hostname: {hostname}")
+                    scan_results.append(f"Local IP: {local_ip}")
+                    
+                    # Determine network range
+                    ip_parts = local_ip.split('.')
+                    network_base = f"{ip_parts[0]}.{ip_parts[1]}.{ip_parts[2]}"
+                    scan_results.append(f"Network Range: {network_base}.0/24")
+                    scan_results.append("")
+                except Exception as e:
+                    scan_results.append(f"Error getting network info: {e}")
+                    scan_results.append("")
+                
+                # Test common Galil IP addresses
+                scan_results.append("2. TESTING COMMON GALIL IP ADDRESSES")
+                scan_results.append("-" * 30)
+                common_ips = [
+                    "10.1.0.21", "10.1.0.20", "10.1.0.22", "10.1.0.23",
+                    "192.168.1.100", "192.168.1.101", "192.168.1.102",
+                    "192.168.0.100", "192.168.0.101", "192.168.0.102",
+                    "10.0.0.100", "10.0.0.101", "10.0.0.102"
+                ]
+                
+                found_controllers = []
+                for ip in common_ips:
+                    try:
+                        if ping_controller(ip):
+                            scan_results.append(f"✓ {ip}: PING SUCCESS")
+                            # Try to connect and get controller info
+                            try:
+                                temp_controller = GalilController()
+                                temp_controller.connect(ip)
+                                try:
+                                    model = temp_controller.send_command("MG _BM")
+                                    firmware = temp_controller.send_command("MG _REV")
+                                    scan_results.append(f"  → Model: {model}")
+                                    scan_results.append(f"  → Firmware: {firmware}")
+                                    found_controllers.append({
+                                        'ip': ip,
+                                        'model': model,
+                                        'firmware': firmware
+                                    })
+                                except:
+                                    scan_results.append(f"  → Galil controller detected (no info)")
+                                    found_controllers.append({'ip': ip, 'model': 'Unknown', 'firmware': 'Unknown'})
+                                finally:
+                                    temp_controller.disconnect()
+                            except:
+                                scan_results.append(f"  → Device responds to ping but not Galil commands")
+                        else:
+                            scan_results.append(f"✗ {ip}: No response")
+                    except Exception as e:
+                        scan_results.append(f"✗ {ip}: Error - {e}")
+                
+                scan_results.append("")
+                
+                # Network discovery scan
+                scan_results.append("3. NETWORK DISCOVERY SCAN")
+                scan_results.append("-" * 30)
+                try:
+                    discovered = discover_galil_controllers()
+                    if discovered:
+                        scan_results.append(f"✓ Discovery found {len(discovered)} controller(s):")
+                        for controller in discovered:
+                            scan_results.append(f"  → {controller}")
+                    else:
+                        scan_results.append("✗ No controllers found via discovery")
+                except Exception as e:
+                    scan_results.append(f"✗ Discovery error: {e}")
+                scan_results.append("")
+                
+                # Summary
+                scan_results.append("4. SCAN SUMMARY")
+                scan_results.append("-" * 30)
+                if found_controllers:
+                    scan_results.append(f"✓ Found {len(found_controllers)} Galil controller(s):")
+                    for controller in found_controllers:
+                        scan_results.append(f"  → {controller['ip']} ({controller['model']}, {controller['firmware']})")
+                    scan_results.append("")
+                    scan_results.append("RECOMMENDATION:")
+                    scan_results.append(f"Try connecting to: {found_controllers[0]['ip']}")
+                else:
+                    scan_results.append("✗ No Galil controllers found")
+                    scan_results.append("")
+                    scan_results.append("TROUBLESHOOTING SUGGESTIONS:")
+                    scan_results.append("1. Check if controller is powered on")
+                    scan_results.append("2. Verify network cable connection")
+                    scan_results.append("3. Check controller IP configuration")
+                    scan_results.append("4. Try different network ranges")
+                    scan_results.append("5. Check firewall settings")
+                
+                # Update UI with results
+                self.root.after(0, lambda: self.display_network_scan_results(scan_results, found_controllers))
+                
+            except Exception as e:
+                self.root.after(0, lambda: self.display_network_scan_results([f"Network scan failed: {e}"], []))
+        
+        # Start the scan thread
+        scan_thread = threading.Thread(target=scan_network_thread, daemon=True)
+        scan_thread.start()
+    
+    def display_network_scan_results(self, results, found_controllers):
+        """Display network scan results"""
+        if hasattr(self, 'diagnostics_results_text'):
+            self.diagnostics_results_text.delete(1.0, tk.END)
+            self.diagnostics_results_text.insert(1.0, "\n".join(results))
+        
+        if hasattr(self, 'diagnostics_summary_label'):
+            if found_controllers:
+                summary = f"Network Scan: Found {len(found_controllers)} controller(s)"
+            else:
+                summary = "Network Scan: No controllers found"
+            self.diagnostics_summary_label.config(text=summary)
+        
+        # Update progress
+        if hasattr(self, 'diagnostics_progress_label'):
+            self.diagnostics_progress_label.config(text="Network scan completed")
+    
+    def quick_connect_to_ip(self):
+        """Quickly connect to the IP address specified in the test IP field"""
+        if not hasattr(self, 'test_ip_entry'):
+            messagebox.showerror("Error", "IP address input field not found")
+            return
+        
+        ip = self.test_ip_entry.get().strip()
+        if not ip:
+            messagebox.showerror("Error", "Please enter an IP address")
+            return
+        
+        if not validate_ip_address(ip):
+            messagebox.showerror("Error", "Invalid IP address format")
+            return
+        
+        # Update progress
+        if hasattr(self, 'diagnostics_progress_label'):
+            self.diagnostics_progress_label.config(text=f"Connecting to {ip}...")
+        
+        # Connect in a separate thread
+        def connect_thread():
+            try:
+                if self.connection_manager:
+                    success = self.connection_manager.connect_to_controller(ip, self.update_connection_status)
+                    if success:
+                        self.root.after(0, lambda: self.show_connection_success(ip))
+                    else:
+                        self.root.after(0, lambda: self.show_connection_failure(ip))
+                else:
+                    self.root.after(0, lambda: self.show_connection_failure(ip, "Connection manager not available"))
+            except Exception as e:
+                self.root.after(0, lambda: self.show_connection_failure(ip, str(e)))
+        
+        # Start the connection thread
+        connect_thread_obj = threading.Thread(target=connect_thread, daemon=True)
+        connect_thread_obj.start()
+    
+    def show_connection_success(self, ip):
+        """Show connection success message"""
+        messagebox.showinfo("Success", f"Successfully connected to controller at {ip}")
+        if hasattr(self, 'diagnostics_progress_label'):
+            self.diagnostics_progress_label.config(text=f"Connected to {ip}")
+        if hasattr(self, 'diagnostics_summary_label'):
+            self.diagnostics_summary_label.config(text=f"Connected to {ip}")
+    
+    def show_connection_failure(self, ip, error_msg=None):
+        """Show connection failure message"""
+        if error_msg:
+            messagebox.showerror("Connection Failed", f"Failed to connect to {ip}\n\nError: {error_msg}")
+        else:
+            messagebox.showerror("Connection Failed", f"Failed to connect to {ip}\n\nController may not be reachable or powered on.")
+        if hasattr(self, 'diagnostics_progress_label'):
+            self.diagnostics_progress_label.config(text=f"Connection to {ip} failed")
+        if hasattr(self, 'diagnostics_summary_label'):
+            self.diagnostics_summary_label.config(text=f"Connection to {ip} failed")
+    
+    def test_telnet_connection(self):
+        """Test telnet connection to the controller"""
+        if not hasattr(self, 'test_ip_entry'):
+            messagebox.showerror("Error", "IP address input field not found")
+            return
+        
+        ip = self.test_ip_entry.get().strip()
+        if not ip:
+            messagebox.showerror("Error", "Please enter an IP address")
+            return
+        
+        if not validate_ip_address(ip):
+            messagebox.showerror("Error", "Invalid IP address format")
+            return
+        
+        # Update progress
+        if hasattr(self, 'diagnostics_progress_label'):
+            self.diagnostics_progress_label.config(text=f"Testing telnet connection to {ip}...")
+        
+        # Test telnet in a separate thread
+        def telnet_test_thread():
+            try:
+                telnet_results = []
+                telnet_results.append("TELNET CONNECTION TEST")
+                telnet_results.append("=" * 30)
+                telnet_results.append(f"Testing telnet connection to {ip}:23")
+                telnet_results.append("")
+                
+                # Test 1: Basic telnet connection
+                telnet_results.append("1. BASIC TELNET CONNECTION")
+                telnet_results.append("-" * 25)
+                try:
+                    import socket
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.settimeout(10)
+                    result = sock.connect_ex((ip, 23))
+                    if result == 0:
+                        telnet_results.append("✓ Telnet connection: SUCCESS")
+                        sock.close()
+                    else:
+                        telnet_results.append(f"✗ Telnet connection: FAILED (error {result})")
+                except Exception as e:
+                    telnet_results.append(f"✗ Telnet connection error: {e}")
+                telnet_results.append("")
+                
+                # Test 2: Try to send a simple command
+                telnet_results.append("2. COMMAND TEST")
+                telnet_results.append("-" * 25)
+                try:
+                    import socket
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.settimeout(10)
+                    sock.connect((ip, 23))
+                    
+                    # Send a simple command
+                    command = "TP A\r\n"
+                    sock.send(command.encode())
+                    
+                    # Try to receive response
+                    sock.settimeout(5)
+                    response = sock.recv(1024).decode('utf-8', errors='ignore')
+                    if response:
+                        telnet_results.append("✓ Command sent and response received:")
+                        telnet_results.append(f"  Command: {command.strip()}")
+                        telnet_results.append(f"  Response: {response.strip()}")
+                    else:
+                        telnet_results.append("✗ No response to command")
+                    
+                    sock.close()
+                except Exception as e:
+                    telnet_results.append(f"✗ Command test error: {e}")
+                telnet_results.append("")
+                
+                # Test 3: Try different commands
+                telnet_results.append("3. MULTIPLE COMMAND TEST")
+                telnet_results.append("-" * 25)
+                commands_to_test = ["TP A", "MG _REV", "MG _BM", "RS"]
+                for cmd in commands_to_test:
+                    try:
+                        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        sock.settimeout(5)
+                        sock.connect((ip, 23))
+                        
+                        command = f"{cmd}\r\n"
+                        sock.send(command.encode())
+                        
+                        sock.settimeout(3)
+                        response = sock.recv(1024).decode('utf-8', errors='ignore')
+                        if response:
+                            telnet_results.append(f"✓ {cmd}: {response.strip()}")
+                        else:
+                            telnet_results.append(f"✗ {cmd}: No response")
+                        
+                        sock.close()
+                    except Exception as e:
+                        telnet_results.append(f"✗ {cmd}: Error - {e}")
+                
+                telnet_results.append("")
+                telnet_results.append("4. RECOMMENDATIONS")
+                telnet_results.append("-" * 25)
+                if any("✓ Telnet connection: SUCCESS" in line for line in telnet_results):
+                    telnet_results.append("✓ Controller is responding to telnet")
+                    telnet_results.append("")
+                    telnet_results.append("NEXT STEPS:")
+                    telnet_results.append("1. Controller is reachable via telnet")
+                    telnet_results.append("2. Try connecting with Galil Tools software")
+                    telnet_results.append("3. If Galil Tools works, the issue is with gclib")
+                    telnet_results.append("4. Try updating gclib or using different version")
+                    telnet_results.append("")
+                    telnet_results.append("MANUAL TELNET TEST:")
+                    telnet_results.append(f"1. Open Command Prompt as Administrator")
+                    telnet_results.append("2. Enable telnet: dism /online /Enable-Feature /FeatureName:TelnetClient")
+                    telnet_results.append(f"3. Type: telnet {ip} 23")
+                    telnet_results.append("4. Try commands: TP A, MG _REV, MG _BM")
+                    telnet_results.append("")
+                    telnet_results.append("ALTERNATIVE: Use PowerShell:")
+                    telnet_results.append(f"Test-NetConnection -ComputerName {ip} -Port 23")
+                else:
+                    telnet_results.append("✗ Controller not responding to telnet")
+                    telnet_results.append("")
+                    telnet_results.append("TROUBLESHOOTING:")
+                    telnet_results.append("1. Check if controller is powered on")
+                    telnet_results.append("2. Verify network cable connection")
+                    telnet_results.append("3. Try power cycling the controller")
+                    telnet_results.append("4. Check if controller is in boot mode")
+                
+                # Update UI with results
+                self.root.after(0, lambda: self.display_telnet_test_results(telnet_results))
+                
+            except Exception as e:
+                self.root.after(0, lambda: self.display_telnet_test_results([f"Telnet test failed: {e}"]))
+        
+        # Start the telnet test thread
+        telnet_thread = threading.Thread(target=telnet_test_thread, daemon=True)
+        telnet_thread.start()
+    
+    def display_telnet_test_results(self, results):
+        """Display telnet test results"""
+        if hasattr(self, 'diagnostics_results_text'):
+            self.diagnostics_results_text.delete(1.0, tk.END)
+            self.diagnostics_results_text.insert(1.0, "\n".join(results))
+        
+        if hasattr(self, 'diagnostics_summary_label'):
+            if any("✓ Telnet connection: SUCCESS" in line for line in results):
+                summary = "Telnet Test: Controller responding"
+            else:
+                summary = "Telnet Test: Controller not responding"
+            self.diagnostics_summary_label.config(text=summary)
+        
+        # Update progress
+        if hasattr(self, 'diagnostics_progress_label'):
+            self.diagnostics_progress_label.config(text="Telnet test completed")
+    
+    def connect_and_keep_connected(self):
+        """Connect to controller and maintain the connection"""
+        if not hasattr(self, 'test_ip_entry'):
+            messagebox.showerror("Error", "IP address input field not found")
+            return
+        
+        ip = self.test_ip_entry.get().strip()
+        if not ip:
+            messagebox.showerror("Error", "Please enter an IP address")
+            return
+        
+        if not validate_ip_address(ip):
+            messagebox.showerror("Error", "Invalid IP address format")
+            return
+        
+        # Update progress
+        if hasattr(self, 'diagnostics_progress_label'):
+            self.diagnostics_progress_label.config(text=f"Connecting to {ip} and maintaining connection...")
+        
+        # Connect in a separate thread
+        def connect_thread():
+            try:
+                if self.connection_manager:
+                    success = self.connection_manager.connect_to_controller(ip, self.update_connection_status)
+                    if success:
+                        # Test the connection with a few commands
+                        test_results = []
+                        test_results.append("CONNECTION ESTABLISHED")
+                        test_results.append("=" * 30)
+                        test_results.append(f"✓ Connected to {ip}")
+                        test_results.append("")
+                        
+                        # Test basic commands
+                        test_results.append("TESTING CONNECTION:")
+                        test_results.append("-" * 20)
+                        
+                        try:
+                            response = self.controller.send_command("TP A")
+                            test_results.append(f"✓ TP A: {response}")
+                            
+                            response = self.controller.send_command("MG _REV")
+                            test_results.append(f"✓ MG _REV: {response}")
+                            
+                            response = self.controller.send_command("MG _BM")
+                            test_results.append(f"✓ MG _BM: {response}")
+                            
+                            response = self.controller.send_command("MG _BN")
+                            test_results.append(f"✓ MG _BN: {response}")
+                            
+                            test_results.append("")
+                            test_results.append("✓ CONNECTION IS STABLE AND READY")
+                            test_results.append("✓ You can now use all controller features")
+                            test_results.append("✓ Connection will be maintained")
+                            
+                        except Exception as e:
+                            test_results.append(f"✗ Command test failed: {e}")
+                            test_results.append("✗ Connection may not be stable")
+                        
+                        # Update UI with results
+                        self.root.after(0, lambda: self.display_connection_results(test_results, True))
+                        
+                    else:
+                        self.root.after(0, lambda: self.display_connection_results([f"Failed to connect to {ip}"], False))
+                else:
+                    self.root.after(0, lambda: self.display_connection_results(["Connection manager not available"], False))
+                    
+            except Exception as e:
+                self.root.after(0, lambda: self.display_connection_results([f"Connection error: {e}"], False))
+        
+        # Start the connection thread
+        connect_thread_obj = threading.Thread(target=connect_thread, daemon=True)
+        connect_thread_obj.start()
+    
+    def display_connection_results(self, results, success):
+        """Display connection results"""
+        if hasattr(self, 'diagnostics_results_text'):
+            self.diagnostics_results_text.delete(1.0, tk.END)
+            self.diagnostics_results_text.insert(1.0, "\n".join(results))
+        
+        if hasattr(self, 'diagnostics_summary_label'):
+            if success:
+                summary = "✓ Controller Connected and Ready"
+            else:
+                summary = "✗ Connection Failed"
+            self.diagnostics_summary_label.config(text=summary)
+        
+        # Update progress
+        if hasattr(self, 'diagnostics_progress_label'):
+            if success:
+                self.diagnostics_progress_label.config(text="Connection established and maintained")
+            else:
+                self.diagnostics_progress_label.config(text="Connection failed")
 
 def main():
     root = tk.Tk()

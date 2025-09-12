@@ -1706,23 +1706,56 @@ class ControllerConnectionManager:
             # Initialize controller commands handler
             self.controller_commands = ControllerCommands(self.controller, self.log)
             
+            # Give controller time to stabilize after connection
+            time.sleep(0.2)
+            
             # Test if it's actually a Galil controller
             try:
-                response = self.controller.send_command("MG _BN")
-                if response and response.strip() != "?":
-                    self.log(f"Successfully connected to controller at {ip_address}")
-                    self.log(f"Controller serial: {response.strip()}")
+                # Try multiple commands to validate the connection
+                validation_commands = ["TP A", "MG _BN", "MG _REV", "MG _BM"]
+                validation_success = False
+                working_command = None
+                
+                for cmd in validation_commands:
+                    try:
+                        # Debug: Log the command being sent
+                        self.log(f"DEBUG: Sending validation command: '{cmd}' (type: {type(cmd)})")
+                        response = self.controller.send_command(cmd)
+                        if response and response.strip() != "?" and response.strip():
+                            self.log(f"Successfully connected to controller at {ip_address}")
+                            self.log(f"Validation command '{cmd}' returned: {response.strip()}")
+                            validation_success = True
+                            working_command = cmd
+                            break
+                        # Add small delay between commands to avoid overwhelming controller
+                        time.sleep(0.1)
+                    except Exception as cmd_error:
+                        self.log(f"Command '{cmd}' failed: {cmd_error}")
+                        # Add delay even on failure to avoid rapid retries
+                        time.sleep(0.1)
+                        continue
+                
+                if validation_success:
                     messagebox.showinfo("Success", f"Connected to controller at {ip_address}")
                     
                     # Update UI to show connected state
                     if update_connection_status_callback:
                         update_connection_status_callback(True)
+                    
+                    # Debug: Log controller reference status
+                    self.log(f"DEBUG: Connection successful, controller reference: {self.controller is not None}")
+                    if self.controller:
+                        self.log(f"DEBUG: Controller type: {type(self.controller)}")
+                    
                     return True
                 else:
-                    self.log(f"Controller at {ip_address} is not responding to Galil commands")
+                    self.log(f"Controller at {ip_address} is not responding to any Galil commands")
                     self.controller.disconnect()
                     self.controller = None
                     self.controller_commands = None
+                    # Update UI to show disconnected state
+                    if update_connection_status_callback:
+                        update_connection_status_callback(False)
                     messagebox.showerror("Connection Error", f"Controller at {ip_address} is not responding to Galil commands")
                     return False
             except Exception as e:
@@ -1731,11 +1764,17 @@ class ControllerConnectionManager:
                     self.controller.disconnect()
                     self.controller = None
                     self.controller_commands = None
+                # Update UI to show disconnected state
+                if update_connection_status_callback:
+                    update_connection_status_callback(False)
                 messagebox.showerror("Connection Error", f"Controller validation failed: {e}")
                 return False
                 
         except Exception as e:
             self.log(f"Connection failed: {e}")
+            # Update UI to show disconnected state
+            if update_connection_status_callback:
+                update_connection_status_callback(False)
             messagebox.showerror("Connection Error", f"Failed to connect to {ip_address}: {e}")
             return False
     

@@ -22,13 +22,48 @@ class GalilController:
         self.g = None
 
     def connect(self, address):
-        self.g = gclib.py()
-        self.g.GOpen(f"{address}")
+        try:
+            self.g = gclib.py()
+            self.g.GOpen(f"{address}")
+            # Test the connection with a simple command that works on DMC-4103
+            test_response = self.g.GCommand("TP A")
+            print(f"DEBUG: Connection test successful, response: {test_response}")
+        except Exception as e:
+            print(f"DEBUG: Connection failed: {e}")
+            if self.g:
+                try:
+                    self.g.GClose()
+                except:
+                    pass
+                self.g = None
+            raise
 
     def send_command(self, command):
         if not self.g:
             raise ConnectionError("Controller not connected.")
-        return self.g.GCommand(command)
+        
+        # Safety check: ensure command is a string and doesn't contain widget references
+        if not isinstance(command, str):
+            raise ValueError(f"Command must be a string, got {type(command)}: {command}")
+        
+        # Check for widget references (Tkinter widget paths start with ".")
+        if command.startswith(".") and ("frame" in command or "canvas" in command or "label" in command):
+            raise ValueError(f"Invalid command contains widget reference: {command}")
+        
+        try:
+            # Debug: Log the command being sent
+            print(f"DEBUG: GalilController sending command: '{command}' (type: {type(command)})")
+            response = self.g.GCommand(command)
+            print(f"DEBUG: Command '{command}' response: {response}")
+            return response
+        except Exception as e:
+            # Log the error for debugging
+            print(f"Command '{command}' failed: {e}")
+            # Check if this is a connection error
+            if "not connected" in str(e).lower() or "connection" in str(e).lower():
+                print(f"DEBUG: Connection lost, setting g to None")
+                self.g = None
+            raise
 
     def disconnect(self):
         if self.g:
