@@ -265,16 +265,227 @@ class NetworkConfigurator:
 def discover_galil_controllers() -> Dict[str, str]:
     """
     Discover Galil controllers on the network using gclib's GAddresses function.
-    
+    Returns both network devices and COM ports.
+
     Returns:
         Dictionary mapping controller addresses to their information
     """
     try:
         g = gclib.py()
         addresses = g.GAddresses()
-        return addresses
+
+        # Return all discovered controllers (both network and COM ports)
+        controllers = {}
+        for address, info in addresses.items():
+            controllers[address] = info
+
+        return controllers
     except Exception as e:
         print(f"Error discovering controllers: {e}")
+        return {}
+
+def discover_network_controllers() -> Dict[str, str]:
+    """
+    Discover only network-based Galil controllers (IP addresses).
+
+    Returns:
+        Dictionary mapping controller IP addresses to their information
+    """
+    try:
+        g = gclib.py()
+        addresses = g.GAddresses()
+
+        # Filter for network addresses only (IP addresses)
+        network_controllers = {}
+        for address, info in addresses.items():
+            # Skip serial ports (COM ports) and only include IP addresses
+            if not address.upper().startswith('COM') and '.' in address:
+                # Validate it's a proper IP address format
+                try:
+                    parts = address.split('.')
+                    if len(parts) == 4 and all(part.isdigit() and 0 <= int(part) <= 255 for part in parts):
+                        network_controllers[address] = info
+                except:
+                    continue
+
+        return network_controllers
+    except Exception as e:
+        print(f"Error discovering network controllers: {e}")
+        return {}
+
+def discover_com_port_controllers() -> Dict[str, str]:
+    """
+    Discover only COM port-based Galil controllers.
+
+    Returns:
+        Dictionary mapping COM port addresses to their information
+    """
+    try:
+        g = gclib.py()
+        addresses = g.GAddresses()
+
+        # Filter for COM ports only
+        com_controllers = {}
+        for address, info in addresses.items():
+            # Only include COM ports
+            if address.upper().startswith('COM'):
+                com_controllers[address] = info
+
+        return com_controllers
+    except Exception as e:
+        print(f"Error discovering COM port controllers: {e}")
+        return {}
+
+def check_com_port_availability(com_port: str) -> Dict[str, any]:
+    """
+    Check if a COM port is available and can be opened.
+    
+    Args:
+        com_port: The COM port to check (e.g., "COM3")
+        
+    Returns:
+        Dictionary with availability status and troubleshooting info
+    """
+    result = {
+        'port': com_port,
+        'available': False,
+        'error': None,
+        'troubleshooting': []
+    }
+    
+    try:
+        # Try to create a gclib instance and open the port with baud and direct
+        g = gclib.py()
+        
+        # Use the same open string logic as the main connection code
+        baud_candidates = [115200, 57600, 38400, 19200, 9600]
+        open_attempts = []
+        for baud in baud_candidates:
+            open_attempts.extend([
+                f"{com_port} --direct --baud {baud}",
+                f"{com_port} --baud {baud}",
+                f"{com_port} --direct",
+                f"{com_port}",
+                f"{com_port} --baud {baud} --direct",
+                f"{com_port} --timeout 5000 --baud {baud}",
+                f"{com_port} --timeout 10000 --baud {baud}",
+                f"{com_port} --timeout 5000 --direct --baud {baud}",
+                f"{com_port} --timeout 10000 --direct --baud {baud}"
+            ])
+        
+        last_error = None
+        for open_str in open_attempts:
+            try:
+                g.GOpen(open_str)
+                break  # Success!
+            except Exception as e:
+                last_error = e
+                error_msg = str(e).lower()
+                # If port is already open or access denied, rethrow immediately
+                if "already open" in error_msg or "access denied" in error_msg:
+                    raise
+                # For timeouts, try a longer wait before next attempt
+                if "timeout" in error_msg:
+                    time.sleep(1.0)
+                else:
+                    time.sleep(0.2)
+        else:
+            # If we exhausted attempts without break, raise last error
+            if last_error:
+                raise last_error
+        g.GClose()
+        result['available'] = True
+        result['troubleshooting'].append("✓ COM port is available and can be opened")
+    except Exception as e:
+        error_msg = str(e)
+        result['error'] = error_msg
+        
+        # If we get timeouts, the port can be opened but controller isn't responding
+        if "timeout" in error_msg.lower():
+            result['available'] = True  # Port can be opened
+            result['troubleshooting'].append("✓ COM port can be opened but controller is not responding")
+            result['troubleshooting'].append("• This indicates a firmware or hardware issue")
+            result['troubleshooting'].append("• Controller may need firmware recovery")
+        else:
+            result['available'] = False
+        
+        if "device failed to open" in error_msg.lower():
+            result['troubleshooting'].extend([
+                "✗ COM port cannot be opened",
+                "• Check if device is properly connected via USB",
+                "• Verify COM port exists in Device Manager",
+                "• Ensure no other application is using the COM port",
+                "• Try unplugging and reconnecting the USB cable",
+                "• Check if Galil drivers are properly installed"
+            ])
+        elif "access denied" in error_msg.lower():
+            result['troubleshooting'].extend([
+                "✗ Access denied to COM port",
+                "• Another application may be using the port",
+                "• Try closing other applications that might use COM ports",
+                "• Check if a terminal program is connected to the port"
+            ])
+        else:
+            result['troubleshooting'].append(f"✗ Error: {error_msg}")
+    
+    return result
+
+def discover_controllers_network_scan() -> Dict[str, str]:
+    """
+    Alternative discovery method that scans common network ranges for Galil controllers.
+    This method tries to connect to potential IP addresses directly.
+    
+    Returns:
+        Dictionary mapping controller IP addresses to their information
+    """
+    discovered_controllers = {}
+    
+    try:
+        import socket
+        import threading
+        import time
+        
+        # Get local network info
+        hostname = socket.gethostname()
+        local_ip = socket.gethostbyname(hostname)
+        local_network = '.'.join(local_ip.split('.')[:-1])
+        
+        # Common IP ranges to scan
+        ip_ranges_to_scan = [
+            f"{local_network}.",  # Local network
+            "10.1.0.",           # Common Galil default
+            "192.168.1.",        # Common home network
+            "192.168.0.",        # Alternative home network
+        ]
+        
+        def test_ip(ip_address):
+            """Test if a specific IP address has a Galil controller"""
+            try:
+                # Test with gclib connection
+                g = gclib.py()
+                g.GOpen(f"{ip_address}")
+                # Try a simple command to verify it's a Galil controller
+                response = g.GCommand("TP A")
+                g.GClose()
+                
+                if response is not None:
+                    discovered_controllers[ip_address] = "Galil Controller"
+                    return True
+            except:
+                pass
+            return False
+        
+        # Scan each range
+        for network_base in ip_ranges_to_scan:
+            # Scan IPs 1-50 in each range (limit to avoid long scan times)
+            for i in range(1, 51):
+                ip_address = f"{network_base}{i}"
+                test_ip(ip_address)
+        
+        return discovered_controllers
+        
+    except Exception as e:
+        print(f"Error in network scan discovery: {e}")
         return {}
 
 def ping_controller(ip_address: str, timeout: float = 1.0) -> bool:
@@ -428,28 +639,23 @@ def configure_controller_network_complete(controller, ip_address: str, subnet_ma
     Returns:
         Dictionary with success status for each operation
     """
-    # For backward compatibility, call the DMC-4143 specific function
-    return configure_controller_network_dmc4143(controller, ip_address, subnet_mask, gateway)
+    # For backward compatibility, call the DMC-4143 specific function (IP only)
+    return configure_controller_network_dmc4143(controller, ip_address)
 
-def configure_controller_network_dmc4143(controller, ip_address: str, subnet_mask: str = "255.255.255.0", 
-                                       gateway: str = None) -> Dict[str, bool]:
+def configure_controller_network_dmc4143(controller, ip_address: str) -> Dict[str, bool]:
     """
-    Network configuration specifically for DMC-4143 controller.
-    Based on debug results, this controller accepts some network commands but not SAVE.
+    IP address configuration specifically for DMC-4143 controller.
+    Only sets the IP address on the controller, no subnet mask or gateway changes.
     
     Args:
         controller: Connected GalilController instance
         ip_address: New IP address for the controller
-        subnet_mask: Subnet mask (default: 255.255.255.0)
-        gateway: Gateway address (optional)
         
     Returns:
         Dictionary with success status for each operation
     """
     results = {
         'ip_set': False,
-        'subnet_set': False,
-        'gateway_set': False,
         'saved_to_flash': False,
         'reboot_required': True,
         'debug_info': []
@@ -592,56 +798,7 @@ def configure_controller_network_dmc4143(controller, ip_address: str, subnet_mas
                         break
                     continue
         
-        # Step 2: Set subnet mask - Use the format that worked in debug
-        results['debug_info'].append(f"Setting subnet mask to: {subnet_mask}")
-        subnet_commands = [
-            f"SM={subnet_mask}",         # This format worked in debug
-            f"SM{subnet_mask}",          # Standard format
-            f"SM {subnet_mask}",         # With space
-        ]
-        
-        for cmd in subnet_commands:
-            try:
-                results['debug_info'].append(f"Trying command: {cmd}")
-                response = controller.send_command(cmd)
-                results['debug_info'].append(f"Response: {response}")
-                
-                if not response or not response.startswith('?'):
-                    results['subnet_set'] = True
-                    results['debug_info'].append(f"Subnet command successful: {cmd}")
-                    break
-                else:
-                    results['debug_info'].append(f"Subnet command failed with response: {response}")
-            except Exception as e:
-                results['debug_info'].append(f"Command {cmd} failed: {str(e)}")
-                continue
-        
-        # Step 3: Set gateway (if provided) - Use the format that worked in debug
-        if gateway:
-            results['debug_info'].append(f"Setting gateway to: {gateway}")
-            gateway_commands = [
-                f"GW={gateway}",          # This format worked in debug
-                f"GW{gateway}",           # Standard format
-                f"GW {gateway}",          # With space
-            ]
-            
-            for cmd in gateway_commands:
-                try:
-                    results['debug_info'].append(f"Trying command: {cmd}")
-                    response = controller.send_command(cmd)
-                    results['debug_info'].append(f"Response: {response}")
-                    
-                    if not response or not response.startswith('?'):
-                        results['gateway_set'] = True
-                        results['debug_info'].append(f"Gateway command successful: {cmd}")
-                        break
-                    else:
-                        results['debug_info'].append(f"Gateway command failed with response: {response}")
-                except Exception as e:
-                    results['debug_info'].append(f"Command {cmd} failed: {str(e)}")
-                    continue
-        
-        # Step 4: Save settings using BN command (burn settings to non-volatile memory)
+        # Step 2: Save settings using BN command (burn settings to non-volatile memory)
         results['debug_info'].append("Saving settings using BN command...")
         
         # For DMC-4143, use BN command to burn settings to non-volatile memory
@@ -826,25 +983,21 @@ def reset_controller_network_to_dhcp(controller) -> Dict[str, bool]:
     
     return results
 
-def force_save_network_settings_dmc4143(controller, ip_address: str, subnet_mask: str = "255.255.255.0", 
-                                       gateway: str = None) -> Dict[str, bool]:
+def force_save_network_settings_dmc4143(controller, ip_address: str) -> Dict[str, bool]:
     """
-    Force save network settings to DMC-4143 controller using multiple methods.
+    Force save IP address settings to DMC-4143 controller using multiple methods.
     This function is specifically designed to handle DMC-4143 save issues.
+    Only sets IP address, no subnet mask or gateway changes.
     
     Args:
         controller: Connected GalilController instance
         ip_address: New IP address for the controller
-        subnet_mask: Subnet mask (default: 255.255.255.0)
-        gateway: Gateway address (optional)
         
     Returns:
         Dictionary with success status for each operation
     """
     results = {
         'ip_set': False,
-        'subnet_set': False,
-        'gateway_set': False,
         'saved_to_flash': False,
         'reboot_required': True,
         'debug_info': []
@@ -952,44 +1105,10 @@ def force_save_network_settings_dmc4143(controller, ip_address: str, subnet_mask
                     results['debug_info'].append(f"IP command failed: {cmd} - {str(e)}")
                     continue
         
-        # Set subnet mask
-        results['debug_info'].append(f"Setting subnet mask to: {subnet_mask}")
-        subnet_commands = [
-            f"SM={subnet_mask}",
-            f"SM{subnet_mask}",
-            f"SM {subnet_mask}",
-        ]
-        
-        for cmd in subnet_commands:
-            try:
-                response = controller.send_command(cmd)
-                if not response or not response.startswith('?'):
-                    results['subnet_set'] = True
-                    results['debug_info'].append(f"Subnet command successful: {cmd}")
-                    break
-            except Exception as e:
-                results['debug_info'].append(f"Subnet command failed: {cmd} - {str(e)}")
-                continue
-        
-        # Set gateway if provided
-        if gateway:
-            results['debug_info'].append(f"Setting gateway to: {gateway}")
-            gateway_commands = [
-                f"GW={gateway}",
-                f"GW{gateway}",
-                f"GW {gateway}",
-            ]
-            
-            for cmd in gateway_commands:
-                try:
-                    response = controller.send_command(cmd)
-                    if not response or not response.startswith('?'):
-                        results['gateway_set'] = True
-                        results['debug_info'].append(f"Gateway command successful: {cmd}")
-                        break
-                except Exception as e:
-                    results['debug_info'].append(f"Gateway command failed: {cmd} - {str(e)}")
-                    continue
+        # Note: Only IP address is configured on the controller
+        # Subnet mask and gateway are handled by the system's network configuration
+        results['debug_info'].append("ℹ️  Only IP address is configured on the controller")
+        results['debug_info'].append("ℹ️  Subnet mask and gateway are handled by your system's network configuration")
         
         # Step 2: Multiple save attempts with different methods
         results['debug_info'].append("=== MULTIPLE SAVE ATTEMPTS ===")
@@ -1101,16 +1220,8 @@ def force_save_network_settings_dmc4143(controller, ip_address: str, subnet_mask
             except Exception as e:
                 results['debug_info'].append(f"MG _IP verification failed: {str(e)}")
         
-        # Method 3: Try to read back subnet mask
-        try:
-            current_sm = controller.send_command("SM")
-            results['debug_info'].append(f"Subnet verification: '{current_sm}'")
-            if current_sm and current_sm.strip() == subnet_mask:
-                results['debug_info'].append("Subnet verification successful")
-            else:
-                results['debug_info'].append("Subnet verification failed")
-        except Exception as e:
-            results['debug_info'].append(f"Subnet verification failed: {str(e)}")
+        # Note: Subnet mask verification skipped - only IP address is configured on controller
+        results['debug_info'].append("ℹ️  Subnet mask verification skipped - only IP address is configured on controller")
         
         # Step 4: Determine if settings were actually saved
         if verification_success:
@@ -1669,6 +1780,11 @@ class ControllerConnectionManager:
         self.log_callback = log_callback or self._default_log
         self.controller = None
         self.controller_commands = None
+        self.connected_ip = None
+        self.connection_monitoring = False
+        self.connection_thread = None
+        self.last_heartbeat = None
+        self.connecting = False  # Flag to prevent multiple simultaneous connection attempts
         
     def _default_log(self, message: str):
         """Default logging function if no callback provided"""
@@ -1678,17 +1794,37 @@ class ControllerConnectionManager:
         """Log a message using the callback"""
         self.log_callback(message)
     
-    def connect_to_controller(self, ip_address: str, update_connection_status_callback=None):
-        """Connect to the Galil controller"""
-        if not ip_address:
-            messagebox.showerror("Error", "Please enter an IP address")
+    def connect_to_controller(self, address: str, update_connection_status_callback=None):
+        """Connect to the Galil controller (IP address or COM port)"""
+        return self._connect_to_controller_internal(address, update_connection_status_callback, start_monitoring=True)
+    
+    def _connect_to_controller_internal(self, address: str, update_connection_status_callback=None, start_monitoring=True):
+        """Internal connection method with optional monitoring control"""
+        if not address:
+            messagebox.showerror("Error", "Please enter an IP address or COM port")
             return False
-            
-        if not validate_ip_address(ip_address):
+        
+        # Determine if this is a COM port or IP address
+        is_com_port = address.upper().startswith('COM')
+        
+        if not is_com_port and not validate_ip_address(address):
             messagebox.showerror("Error", "Invalid IP address format")
             return False
+        
+        # Prevent multiple simultaneous connection attempts
+        if self.connecting:
+            self.log("Connection attempt already in progress, skipping...")
+            return False
             
-        self.log(f"Connecting to controller at {ip_address}...")
+        self.connecting = True
+        self.log(f"Connecting to controller at {address}...")
+        
+        # Test basic connectivity first (only for IP addresses, not COM ports)
+        if not is_com_port:
+            if not self.test_basic_connectivity(address):
+                self.log("Basic connectivity test failed, aborting connection attempt")
+                self.connecting = False
+                return False
         
         try:
             # Close existing connection if any
@@ -1701,7 +1837,7 @@ class ControllerConnectionManager:
             
             # Create new controller connection
             self.controller = GalilController()
-            self.controller.connect(ip_address)
+            self.controller.connect(address)
             
             # Initialize controller commands handler
             self.controller_commands = ControllerCommands(self.controller, self.log)
@@ -1709,82 +1845,55 @@ class ControllerConnectionManager:
             # Give controller time to stabilize after connection
             time.sleep(0.2)
             
-            # Test if it's actually a Galil controller
-            try:
-                # Try multiple commands to validate the connection
-                validation_commands = ["TP A", "MG _BN", "MG _REV", "MG _BM"]
-                validation_success = False
-                working_command = None
-                
-                for cmd in validation_commands:
-                    try:
-                        # Debug: Log the command being sent
-                        self.log(f"DEBUG: Sending validation command: '{cmd}' (type: {type(cmd)})")
-                        response = self.controller.send_command(cmd)
-                        if response and response.strip() != "?" and response.strip():
-                            self.log(f"Successfully connected to controller at {ip_address}")
-                            self.log(f"Validation command '{cmd}' returned: {response.strip()}")
-                            validation_success = True
-                            working_command = cmd
-                            break
-                        # Add small delay between commands to avoid overwhelming controller
-                        time.sleep(0.1)
-                    except Exception as cmd_error:
-                        self.log(f"Command '{cmd}' failed: {cmd_error}")
-                        # Add delay even on failure to avoid rapid retries
-                        time.sleep(0.1)
-                        continue
-                
-                if validation_success:
-                    messagebox.showinfo("Success", f"Connected to controller at {ip_address}")
-                    
-                    # Update UI to show connected state
-                    if update_connection_status_callback:
-                        update_connection_status_callback(True)
-                    
-                    # Debug: Log controller reference status
-                    self.log(f"DEBUG: Connection successful, controller reference: {self.controller is not None}")
-                    if self.controller:
-                        self.log(f"DEBUG: Controller type: {type(self.controller)}")
-                    
-                    return True
-                else:
-                    self.log(f"Controller at {ip_address} is not responding to any Galil commands")
-                    self.controller.disconnect()
-                    self.controller = None
-                    self.controller_commands = None
-                    # Update UI to show disconnected state
-                    if update_connection_status_callback:
-                        update_connection_status_callback(False)
-                    messagebox.showerror("Connection Error", f"Controller at {ip_address} is not responding to Galil commands")
-                    return False
-            except Exception as e:
-                self.log(f"Controller validation failed: {e}")
-                if self.controller:
-                    self.controller.disconnect()
-                    self.controller = None
-                    self.controller_commands = None
-                # Update UI to show disconnected state
-                if update_connection_status_callback:
-                    update_connection_status_callback(False)
-                messagebox.showerror("Connection Error", f"Controller validation failed: {e}")
-                return False
+            # Connection successful - GalilController.connect() already validated with TP A
+            self.log(f"Successfully connected to controller at {address}")
+            
+            if start_monitoring:
+                messagebox.showinfo("Success", f"Connected to controller at {address}")
+            
+            # Store connection info for persistence
+            self.connected_ip = address
+            self.last_heartbeat = time.time()
+            
+            # Start connection monitoring only if requested
+            if start_monitoring:
+                self.start_connection_monitoring()
+            
+            # Update UI to show connected state
+            if update_connection_status_callback:
+                update_connection_status_callback(True)
+            
+            # Debug: Log controller reference status
+            self.log(f"DEBUG: Connection successful, controller reference: {self.controller is not None}")
+            if self.controller:
+                self.log(f"DEBUG: Controller type: {type(self.controller)}")
+            
+            return True
                 
         except Exception as e:
             self.log(f"Connection failed: {e}")
             # Update UI to show disconnected state
             if update_connection_status_callback:
                 update_connection_status_callback(False)
-            messagebox.showerror("Connection Error", f"Failed to connect to {ip_address}: {e}")
+            if start_monitoring:
+                messagebox.showerror("Connection Error", f"Failed to connect to {address}: {e}")
             return False
+        finally:
+            # Always clear the connecting flag
+            self.connecting = False
     
     def disconnect_controller(self, update_connection_status_callback=None):
         """Disconnect from the controller"""
         try:
+            # Stop connection monitoring
+            self.stop_connection_monitoring()
+            
             if self.controller:
                 self.controller.disconnect()
                 self.controller = None
                 self.controller_commands = None
+                self.connected_ip = None
+                self.last_heartbeat = None
                 self.log("Disconnected from controller")
                 
                 # Update UI to show disconnected state
@@ -1795,24 +1904,64 @@ class ControllerConnectionManager:
             self.log(f"Error disconnecting: {e}")
             return False
     
-    def discover_controllers(self, log_callback=None):
-        """Discover Galil controllers on the network"""
+    def discover_controllers(self, log_callback=None, include_com_ports=True):
+        """Discover Galil controllers on the network and/or COM ports"""
         if log_callback:
             self.log_callback = log_callback
-            
-        self.log("Discovering Galil controllers on the network...")
-        
+
+        self.log("Discovering Galil controllers...")
+
         try:
-            # Use the existing discovery function
-            controllers = discover_galil_controllers()
+            # Try gclib discovery first
+            self.log("Trying gclib discovery...")
+            all_controllers = discover_galil_controllers()
             
+            # Separate network and COM controllers
+            network_controllers = {}
+            com_controllers = {}
+            
+            for address, info in all_controllers.items():
+                if address.upper().startswith('COM'):
+                    com_controllers[address] = info
+                else:
+                    # Validate it's a proper IP address format
+                    try:
+                        parts = address.split('.')
+                        if len(parts) == 4 and all(part.isdigit() and 0 <= int(part) <= 255 for part in parts):
+                            network_controllers[address] = info
+                    except:
+                        continue
+
+            controllers = {}
+            if include_com_ports:
+                controllers.update(com_controllers)
+            controllers.update(network_controllers)
+
+            if not network_controllers and not com_controllers:
+                # If gclib discovery fails, try network scan for network controllers only
+                self.log("gclib discovery found no controllers, trying network scan...")
+                network_controllers = discover_controllers_network_scan()
+                controllers.update(network_controllers)
+
             if controllers:
-                self.log(f"Found {len(controllers)} controller(s):")
-                for i, controller in enumerate(controllers, 1):
-                    self.log(f"  {i}. {controller['ip']} - {controller['name']}")
-            else:
-                self.log("No Galil controllers found on the network")
+                if com_controllers:
+                    self.log(f"Found {len(com_controllers)} COM port controller(s):")
+                    for i, (com, name) in enumerate(com_controllers.items(), 1):
+                        self.log(f"  {i}. {com} - {name}")
                 
+                if network_controllers:
+                    self.log(f"Found {len(network_controllers)} network controller(s):")
+                    for i, (ip, name) in enumerate(network_controllers.items(), 1):
+                        self.log(f"  {i}. {ip} - {name}")
+            else:
+                self.log("No Galil controllers found")
+                self.log("Possible reasons:")
+                self.log("  - Controller is powered off")
+                self.log("  - Controller is on different network")
+                self.log("  - Network cable disconnected")
+                self.log("  - Controller IP address changed")
+                self.log("  - USB cable disconnected (for COM ports)")
+
             return controllers
         except Exception as e:
             self.log(f"Discovery failed: {e}")
@@ -1844,10 +1993,10 @@ class ControllerConnectionManager:
                 
                 if controllers:
                     # Try to connect to the first discovered controller
-                    first_controller = controllers[0]
-                    self.log(f"Attempting to connect to discovered controller: {first_controller['ip']}")
+                    first_address = list(controllers.keys())[0]
+                    self.log(f"Attempting to connect to discovered controller: {first_address}")
                     
-                    if self.connect_to_controller(first_controller['ip'], update_connection_status_callback):
+                    if self.connect_to_controller(first_address, update_connection_status_callback):
                         self.log("=== AUTO-CONNECTION SUCCESS (via discovery) ===")
                         return
                 
@@ -1861,3 +2010,130 @@ class ControllerConnectionManager:
         import threading
         thread = threading.Thread(target=auto_connect_thread, daemon=True)
         thread.start()
+    
+    def start_connection_monitoring(self):
+        """Start monitoring the connection health"""
+        if self.connection_monitoring:
+            return  # Already monitoring
+            
+        self.connection_monitoring = True
+        
+        def monitor_connection():
+            while self.connection_monitoring and self.controller:
+                try:
+                    # Send a simple heartbeat command
+                    response = self.controller.send_command("TP A")
+                    if response and response.strip() != "?":
+                        self.last_heartbeat = time.time()
+                        time.sleep(2)  # Check every 2 seconds
+                    else:
+                        # Connection lost, try to reconnect
+                        self.log("Connection lost, attempting to reconnect...")
+                        self._attempt_reconnect()
+                        break
+                except Exception as e:
+                    # Connection error, try to reconnect
+                    self.log(f"Connection error: {e}, attempting to reconnect...")
+                    self._attempt_reconnect()
+                    break
+        
+        # Start monitoring thread
+        import threading
+        self.connection_thread = threading.Thread(target=monitor_connection, daemon=True)
+        self.connection_thread.start()
+    
+    def stop_connection_monitoring(self):
+        """Stop monitoring the connection health"""
+        self.connection_monitoring = False
+        if self.connection_thread and self.connection_thread.is_alive():
+            self.connection_thread.join(timeout=1.0)
+    
+    def _attempt_reconnect(self):
+        """Attempt to reconnect to the controller"""
+        if not self.connected_ip:
+            return False
+            
+        try:
+            self.log(f"Attempting to reconnect to {self.connected_ip}...")
+            
+            # Stop connection monitoring to prevent recursive calls
+            self.stop_connection_monitoring()
+            
+            # Close existing connection
+            if self.controller:
+                try:
+                    self.controller.disconnect()
+                except:
+                    pass
+                self.controller = None
+                self.controller_commands = None
+            
+            # Try to reconnect without starting monitoring (to prevent recursion)
+            if self._connect_to_controller_internal(self.connected_ip):
+                self.log("Reconnection successful!")
+                # Restart monitoring after successful reconnection
+                self.start_connection_monitoring()
+                return True
+            else:
+                self.log("Reconnection failed")
+                return False
+                
+        except Exception as e:
+            self.log(f"Reconnection error: {e}")
+            return False
+    
+    def is_connection_healthy(self):
+        """Check if the connection is healthy"""
+        if not self.controller or not self.last_heartbeat:
+            return False
+        
+        # Check if last heartbeat was recent (within 10 seconds)
+        return (time.time() - self.last_heartbeat) < 10
+    
+    def ensure_connection(self):
+        """Ensure we have a healthy connection, reconnect if necessary"""
+        if not self.is_connection_healthy():
+            if self.connected_ip:
+                self.log("Connection unhealthy, attempting to restore...")
+                return self._attempt_reconnect()
+        return True
+    
+    def reset_connection_state(self):
+        """Reset all connection state - useful for troubleshooting"""
+        self.log("Resetting connection state...")
+        
+        # Stop monitoring
+        self.stop_connection_monitoring()
+        
+        # Close any existing connection
+        if self.controller:
+            try:
+                self.controller.disconnect()
+            except:
+                pass
+        
+        # Clear all state
+        self.controller = None
+        self.controller_commands = None
+        self.connected_ip = None
+        self.last_heartbeat = None
+        self.connecting = False
+        
+        self.log("Connection state reset complete")
+    
+    def test_basic_connectivity(self, ip_address: str):
+        """Test basic network connectivity to the controller"""
+        self.log(f"Testing basic connectivity to {ip_address}...")
+        
+        try:
+            # Test with ping first
+            from network_combined import ping_controller
+            if ping_controller(ip_address):
+                self.log(f"✓ Ping to {ip_address} successful")
+                return True
+            else:
+                self.log(f"✗ Ping to {ip_address} failed")
+                return False
+        except Exception as e:
+            self.log(f"✗ Connectivity test failed: {e}")
+            return False

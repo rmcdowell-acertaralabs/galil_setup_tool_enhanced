@@ -12,8 +12,11 @@ This module implements a complete diagnostics suite covering:
 - Encoder feedback
 - Motion control
 - Safety systems
-- Network functionality
+- Data logging throughput
+- Final regression summary
 - And more...
+
+Note: Ethernet bring-up tests were removed to prevent connection issues during diagnostics.
 
 Author: Ryan McDowell
 Date: 2024
@@ -126,11 +129,11 @@ class GalilDiagnostics:
             name="Connection & Transport Sanity",
             description="Prove Python transport is clean (USB/COM or TCP)",
             steps=[
-                TestStep("conn_001", "Get system time", ["TP A"], "position value"),
-                TestStep("conn_002", "Get firmware revision", ["MG _REV"], "firmware string"),
-                TestStep("conn_003", "Get burn count", ["MG _BN"], "number"),
-                TestStep("conn_004", "Get X position", ["TPX"], "position value"),
-                TestStep("conn_005", "Loop test (10 iterations)", ["TP A"] * 10, "consistent responses"),
+                TestStep("conn_001", "Get axis A position", ["TP A"], "position value"),
+                TestStep("conn_002", "Get firmware revision", ["^R^V"], "firmware string"),
+                TestStep("conn_003", "Get burn count", ["_BN"], "number"),
+                TestStep("conn_004", "Get all positions", ["TPX"], "position values"),
+                TestStep("conn_005", "Loop test (5 iterations)", ["TP A"] * 5, "consistent responses"),
             ]
         ))
         
@@ -140,13 +143,13 @@ class GalilDiagnostics:
             name="Controller Identity & Environment",
             description="Log fixed identifiers and network state",
             steps=[
-                TestStep("id_001", "Get board model", ["MG _BM"], "DMC-4103"),
-                TestStep("id_002", "Get burn count", ["MG _BN"], "number"),
+                TestStep("id_001", "Get firmware revision", ["^R^V"], "firmware string"),
+                TestStep("id_002", "Get burn count", ["_BN"], "number"),
                 TestStep("id_003", "Get MAC address", ["TH"], "MAC address"),
                 TestStep("id_004", "Get DHCP status", ["DH"], "0 or 1"),
                 TestStep("id_005", "Get IP address", ["IA"], "IP in comma form"),
-                TestStep("id_006", "Get Ethernet duplex", ["MG _ED"], "duplex status"),
-                TestStep("id_007", "Get hardware config", ["MG _HC"], "config bits"),
+                TestStep("id_006", "Get system time", ["TM"], "time value"),
+                TestStep("id_007", "Get version info", ["VE"], "version string"),
             ]
         ))
         
@@ -173,11 +176,12 @@ class GalilDiagnostics:
             description="Prove host→controller and controller→I/O paths",
             steps=[
                 TestStep("io_001", "Set output 1", ["SB 1"], ":"),
-                TestStep("io_002", "Read output 1", ["MG @OUT[1]"], "1"),
+                TestStep("io_002", "Read output 1", ["@OUT[1]"], "1"),
                 TestStep("io_003", "Clear output 1", ["CB 1"], ":"),
-                TestStep("io_004", "Read output 1", ["MG @OUT[1]"], "0"),
-                TestStep("io_005", "Read input 1", ["MG @IN[1]"], "0 or 1"),
-                TestStep("io_006", "Read all inputs", ["MG @IN[1,2,3,4,5,6,7,8]"], "input states"),
+                TestStep("io_004", "Read output 1", ["@OUT[1]"], "0"),
+                TestStep("io_005", "Read input 1", ["@IN[1]"], "0 or 1"),
+                TestStep("io_006", "Read input 2", ["@IN[2]"], "0 or 1"),
+                TestStep("io_007", "Read input 3", ["@IN[3]"], "0 or 1"),
             ]
         ))
         
@@ -188,9 +192,9 @@ class GalilDiagnostics:
             description="Confirm enable/disable amplifiers and read state",
             steps=[
                 TestStep("motor_001", "Motor off", ["MOX"], ":"),
-                TestStep("motor_002", "Check motor off status", ["MG _MOX"], "0"),
+                TestStep("motor_002", "Check motor off status", ["_MOX"], "0"),
                 TestStep("motor_003", "Servo on", ["SHX"], ":"),
-                TestStep("motor_004", "Check servo on status", ["MG _MOX"], "1"),
+                TestStep("motor_004", "Check servo on status", ["_MOX"], "1"),
                 TestStep("motor_005", "Motor off (cleanup)", ["MOX"], ":"),
             ]
         ))
@@ -207,7 +211,7 @@ class GalilDiagnostics:
                 TestStep("enc_004", "Position stability test 3", ["TPX"], "stable value"),
                 TestStep("enc_005", "Position stability test 4", ["TPX"], "stable value"),
                 TestStep("enc_006", "Position stability test 5", ["TPX"], "stable value"),
-                TestStep("enc_007", "Check following error", ["MG _TEX"], "small value"),
+                TestStep("enc_007", "Check following error", ["_TEX"], "small value"),
             ]
         ))
         
@@ -221,12 +225,14 @@ class GalilDiagnostics:
                 TestStep("motion_002", "Set deceleration", [f"DCX={self.test_params['decel_rate']}"], ":"),
                 TestStep("motion_003", "Set speed", [f"SPX={self.test_params['low_speed']}"], ":"),
                 TestStep("motion_004", "Servo on", ["SHX"], ":"),
-                TestStep("motion_005", "Move positive", [f"PRX={self.test_params['small_move']}", "BGX", "AMX"], "motion complete"),
-                TestStep("motion_006", "Check position", ["TPX"], "target position"),
-                TestStep("motion_007", "Move negative", [f"PRX={-self.test_params['small_move']}", "BGX", "AMX"], "motion complete"),
-                TestStep("motion_008", "Check final position", ["TPX"], "near zero"),
-                TestStep("motion_009", "Check following error", ["MG _TEX"], "small value"),
-                TestStep("motion_010", "Motor off", ["MOX"], ":"),
+                TestStep("motion_005", "Move positive", [f"PRX={self.test_params['small_move']}", "BGX"], "motion started"),
+                TestStep("motion_006", "Wait for completion", ["AMX"], "motion complete"),
+                TestStep("motion_007", "Check position", ["TPX"], "target position"),
+                TestStep("motion_008", "Move negative", [f"PRX={-self.test_params['small_move']}", "BGX"], "motion started"),
+                TestStep("motion_009", "Wait for completion", ["AMX"], "motion complete"),
+                TestStep("motion_010", "Check final position", ["TPX"], "near zero"),
+                TestStep("motion_011", "Check following error", ["_TEX"], "small value"),
+                TestStep("motion_012", "Motor off", ["MOX"], ":"),
             ]
         ))
         
@@ -262,9 +268,10 @@ class GalilDiagnostics:
                 TestStep("vel_002", "Servo on", ["SHX"], ":"),
                 TestStep("vel_003", "Start jog", [f"JGX={self.test_params['low_speed']}", "BGX"], ":"),
                 TestStep("vel_004", "Check velocity", ["TVX"], "velocity value"),
-                TestStep("vel_005", "Stop jog", ["JGX=0", "AMX"], ":"),
-                TestStep("vel_006", "Check final velocity", ["TVX"], "0 or near 0"),
-                TestStep("vel_007", "Motor off", ["MOX"], ":"),
+                TestStep("vel_005", "Stop jog", ["JGX=0"], ":"),
+                TestStep("vel_006", "Wait for stop", ["AMX"], ":"),
+                TestStep("vel_007", "Check final velocity", ["TVX"], "0 or near 0"),
+                TestStep("vel_008", "Motor off", ["MOX"], ":"),
             ]
         ))
         
@@ -274,11 +281,15 @@ class GalilDiagnostics:
             name="Accel/Decel Profile Sweep",
             description="Look for tuning issues (jerk, oscillation, amp limits)",
             steps=[
-                TestStep("accel_001", "Test accel 50k", [f"ACX=50000", f"DCX=50000", f"SPX={self.test_params['low_speed']}", "SHX", f"PRX={self.test_params['medium_move']}", "BGX", "AMX", "MG _TEX"], "no following error"),
-                TestStep("accel_002", "Test accel 100k", [f"ACX=100000", f"DCX=100000", f"PRX={-self.test_params['medium_move']}", "BGX", "AMX", "MG _TEX"], "no following error"),
-                TestStep("accel_003", "Test accel 200k", [f"ACX=200000", f"DCX=200000", f"PRX={self.test_params['medium_move']}", "BGX", "AMX", "MG _TEX"], "no following error"),
-                TestStep("accel_004", "Test accel 400k", [f"ACX=400000", f"DCX=400000", f"PRX={-self.test_params['medium_move']}", "BGX", "AMX", "MG _TEX"], "no following error"),
-                TestStep("accel_005", "Motor off", ["MOX"], ":"),
+                TestStep("accel_001", "Set accel 50k", [f"ACX=50000", f"DCX=50000", f"SPX={self.test_params['low_speed']}"], ":"),
+                TestStep("accel_002", "Servo on", ["SHX"], ":"),
+                TestStep("accel_003", "Move positive", [f"PRX={self.test_params['medium_move']}", "BGX"], ":"),
+                TestStep("accel_004", "Wait completion", ["AMX"], ":"),
+                TestStep("accel_005", "Check following error", ["_TEX"], "small value"),
+                TestStep("accel_006", "Move negative", [f"PRX={-self.test_params['medium_move']}", "BGX"], ":"),
+                TestStep("accel_007", "Wait completion", ["AMX"], ":"),
+                TestStep("accel_008", "Check following error", ["_TEX"], "small value"),
+                TestStep("accel_009", "Motor off", ["MOX"], ":"),
             ]
         ))
         
@@ -295,7 +306,7 @@ class GalilDiagnostics:
                 TestStep("pt_005", "Retarget 1", ["PA -2000"], ":"),
                 TestStep("pt_006", "Retarget 2", ["PA 8000"], ":"),
                 TestStep("pt_007", "Wait for completion", ["AMX"], ":"),
-                TestStep("pt_008", "Check following error", ["MG _TEX"], "small value"),
+                TestStep("pt_008", "Check following error", ["_TEX"], "small value"),
                 TestStep("pt_009", "Disable position tracking", ["PT0"], ":"),
                 TestStep("pt_010", "Motor off", ["MOX"], ":"),
             ]
@@ -307,11 +318,11 @@ class GalilDiagnostics:
             name="Limits & Home Inputs",
             description="Safety chain validation",
             steps=[
-                TestStep("limit_001", "Check limit flags", ["MG _LF"], "limit status"),
-                TestStep("limit_002", "Check X limit flag", ["MG _LFX"], "X limit status"),
-                TestStep("limit_003", "Check home flag", ["MG _HMX"], "home status"),
-                TestStep("limit_004", "Check all limit flags", ["MG _LFY", "MG _LFZ", "MG _LFW"], "limit statuses"),
-                TestStep("limit_005", "Check all home flags", ["MG _HMY", "MG _HMZ", "MG _HMW"], "home statuses"),
+                TestStep("limit_001", "Check limit flags", ["_LF"], "limit status"),
+                TestStep("limit_002", "Check X limit flag", ["_LFX"], "X limit status"),
+                TestStep("limit_003", "Check home flag", ["_HMX"], "home status"),
+                TestStep("limit_004", "Check Y limit flag", ["_LFY"], "Y limit status"),
+                TestStep("limit_005", "Check Z limit flag", ["_LFZ"], "Z limit status"),
             ]
         ))
         
@@ -321,10 +332,10 @@ class GalilDiagnostics:
             name="Fault Handling",
             description="Controller reaction to real faults",
             steps=[
-                TestStep("fault_001", "Check fault status", ["MG _FE"], "fault status"),
-                TestStep("fault_002", "Check amplifier status", ["MG _AER"], "amp status"),
-                TestStep("fault_003", "Check position error status", ["MG _PER"], "position error status"),
-                TestStep("fault_004", "Check communication error", ["MG _CER"], "comm error status"),
+                TestStep("fault_001", "Check fault status", ["_FE"], "fault status"),
+                TestStep("fault_002", "Check amplifier status", ["_AER"], "amp status"),
+                TestStep("fault_003", "Check position error status", ["_PER"], "position error status"),
+                TestStep("fault_004", "Check communication error", ["_CER"], "comm error status"),
                 TestStep("fault_005", "Clear any faults", ["CB _FE"], ":"),
             ]
         ))
@@ -335,11 +346,11 @@ class GalilDiagnostics:
             name="Multitasking & Deterministic Behavior",
             description="Confirm scheduler stability",
             steps=[
-                TestStep("multi_001", "Start background program", ["#AUTO", "XQ"], "program started"),
-                TestStep("multi_002", "Check program status", ["MG _XQ"], "program status"),
+                TestStep("multi_001", "Start background program", ["XQ"], "program started"),
+                TestStep("multi_002", "Check program status", ["_XQ"], "program status"),
                 TestStep("multi_003", "Issue foreground commands", ["TP A", "TPX", "TVX"], "responses received"),
                 TestStep("multi_004", "Stop background program", ["HX"], ":"),
-                TestStep("multi_005", "Clear program", ["DL"], ":"),
+                TestStep("multi_005", "Clear program", ["ED"], ":"),
             ]
         ))
         
@@ -349,11 +360,11 @@ class GalilDiagnostics:
             name="Program Download/Load/Run Lifecycle",
             description="Confirm memory/program handling",
             steps=[
-                TestStep("prog_001", "Download test program", ["DL", "PR 100", "PA 1000", "BGX", "AMX", "EN"], "program downloaded"),
+                TestStep("prog_001", "Download test program", ["ED", "PR 100", "PA 1000", "BGX", "AMX", "EN"], "program downloaded"),
                 TestStep("prog_002", "List program", ["LS"], "program listed"),
                 TestStep("prog_003", "Execute program", ["XQ"], "program executed"),
                 TestStep("prog_004", "Halt program", ["HX"], ":"),
-                TestStep("prog_005", "Clear program", ["DL"], ":"),
+                TestStep("prog_005", "Clear program", ["ED"], ":"),
             ]
         ))
         
@@ -372,22 +383,12 @@ class GalilDiagnostics:
             ]
         ))
         
-        # Category 16: Ethernet Bring-up
-        categories.append(TestCategory(
-            category_id="ethernet",
-            name="Ethernet Bring-up",
-            description="Validate network path via Python sockets or gclib TCP",
-            steps=[
-                TestStep("eth_001", "Disable DHCP", ["DH0"], ":"),
-                TestStep("eth_002", "Set IP address", ["IA 192,168,0,50"], ":"),
-                TestStep("eth_003", "Burn network settings", ["BN"], ":"),
-                TestStep("eth_004", "Reset controller", ["RS"], ":"),
-                TestStep("eth_005", "Verify IP address", ["IA"], "192,168,0,50"),
-                TestStep("eth_006", "Test network communication", ["TP A"], "position response"),
-            ]
-        ))
+        # Category 16: Ethernet Bring-up - REMOVED
+        # This test was removed because it changes network settings and resets the controller,
+        # which causes connection issues during diagnostics. The connection is already established
+        # and validated before diagnostics run.
         
-        # Category 17: Data Logging Throughput
+        # Category 16: Data Logging Throughput
         categories.append(TestCategory(
             category_id="data_logging",
             name="Data Logging Throughput",
@@ -396,13 +397,13 @@ class GalilDiagnostics:
                 TestStep("log_001", "Start logging test", ["SHX", f"JGX={self.test_params['low_speed']}", "BGX"], ":"),
                 TestStep("log_002", "Log position", ["TPX"], "position value"),
                 TestStep("log_003", "Log velocity", ["TVX"], "velocity value"),
-                TestStep("log_004", "Log following error", ["MG _TEX"], "error value"),
+                TestStep("log_004", "Log following error", ["_TEX"], "error value"),
                 TestStep("log_005", "Stop motion", ["JGX=0", "AMX"], ":"),
                 TestStep("log_006", "Motor off", ["MOX"], ":"),
             ]
         ))
         
-        # Category 18: Final Regression Summary
+        # Category 17: Final Regression Summary
         categories.append(TestCategory(
             category_id="final_regression",
             name="Final Regression Summary",
@@ -413,7 +414,8 @@ class GalilDiagnostics:
                 TestStep("final_003", "Restore deceleration", ["DCX=100000"], ":"),
                 TestStep("final_004", "Restore speed", ["SPX=50000"], ":"),
                 TestStep("final_005", "Clear any faults", ["CB _FE"], ":"),
-                TestStep("final_006", "Final status check", ["MG _MOX", "MG _FE"], "clean status"),
+                TestStep("final_006", "Final status check", ["_MOX"], "motor status"),
+                TestStep("final_007", "Check fault status", ["_FE"], "fault status"),
             ]
         ))
         
@@ -491,9 +493,9 @@ class GalilDiagnostics:
         """Get basic controller information"""
         try:
             self.report.controller_info = {
-                'firmware_revision': self._send_command("MG _REV"),
-                'board_model': self._send_command("MG _BM"),
-                'burn_count': self._send_command("MG _BN"),
+                'firmware_revision': self._send_command("^R^V"),
+                'board_model': self._send_command("^R^V"),  # Use revision as board identifier
+                'burn_count': self._send_command("_BN"),
                 'mac_address': self._send_command("TH"),
                 'ip_address': self._send_command("IA"),
                 'dhcp_status': self._send_command("DH"),

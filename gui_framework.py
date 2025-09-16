@@ -50,6 +50,25 @@ class GUIFramework:
         """Default logging function if no callback provided"""
         print(message)
     
+    def _create_tooltip(self, widget, text):
+        """Create a tooltip for a widget"""
+        def show_tooltip(event):
+            tooltip = tk.Toplevel()
+            tooltip.wm_overrideredirect(True)
+            tooltip.wm_geometry(f"+{event.x_root+10}+{event.y_root+10}")
+            label = tk.Label(tooltip, text=text, background="lightyellow", 
+                           font=("Arial", 8), relief="solid", borderwidth=1)
+            label.pack()
+            widget.tooltip = tooltip
+        
+        def hide_tooltip(event):
+            if hasattr(widget, 'tooltip'):
+                widget.tooltip.destroy()
+                del widget.tooltip
+        
+        widget.bind("<Enter>", show_tooltip)
+        widget.bind("<Leave>", hide_tooltip)
+    
     def log(self, message: str):
         """Log a message using the callback"""
         self.log_callback(message)
@@ -1406,6 +1425,237 @@ class GUIFramework:
                                            state='disabled')
         main_app.save_report_btn.pack(side='left', padx=(0, 10))
         
+        # Encoder control buttons
+        encoder_frame = tk.Frame(control_content, bg=self.colors['main_bg'])
+        encoder_frame.pack(fill='x', pady=(10, 0))
+        
+        main_app.start_encoder_btn = tk.Button(encoder_frame, text="▶️ Start Encoder Updates", 
+                                             font=("Arial", 10, "bold"),
+                                             bg=self.colors['success_green'], fg='white',
+                                             command=main_app.start_encoder_update)
+        main_app.start_encoder_btn.pack(side='left', padx=(0, 10))
+        
+        main_app.stop_encoder_btn = tk.Button(encoder_frame, text="⏹️ Stop Encoder Updates", 
+                                            font=("Arial", 10, "bold"),
+                                            bg=self.colors['error_red'], fg='white',
+                                            command=main_app.stop_encoder_updates)
+        main_app.stop_encoder_btn.pack(side='left', padx=(0, 10))
+        
+        # Motor Setup Section
+        motor_setup_frame = tk.LabelFrame(diag_frame, text="🔧 Motor Setup & Tuning", 
+                                        font=("Arial", 12, "bold"),
+                                        bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                        relief='solid', bd=1)
+        motor_setup_frame.pack(fill='x', pady=(20, 20), padx=10)
+        
+        # Motor setup content
+        motor_setup_content = tk.Frame(motor_setup_frame, bg=self.colors['main_bg'])
+        motor_setup_content.pack(fill='x', padx=15, pady=15)
+        
+        # Axis selection
+        axis_frame = tk.Frame(motor_setup_content, bg=self.colors['main_bg'])
+        axis_frame.pack(fill='x', pady=(0, 10))
+        
+        tk.Label(axis_frame, text="Select Axis:", font=("Arial", 10, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
+        
+        main_app.motor_setup_axis_var = tk.StringVar(value="A")
+        axis_combo = ttk.Combobox(axis_frame, textvariable=main_app.motor_setup_axis_var, 
+                                values=["A", "B", "C", "D"], width=5, state="readonly")
+        axis_combo.pack(side='left', padx=(10, 0))
+        
+        # Motor presets
+        preset_frame = tk.Frame(motor_setup_content, bg=self.colors['main_bg'])
+        preset_frame.pack(fill='x', pady=(0, 10))
+        
+        tk.Label(preset_frame, text="Motor Presets:", font=("Arial", 10, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(anchor='w')
+        
+        main_app.motor_preset_var = tk.StringVar(value="axis_a_20k_4p")
+        preset_combo = ttk.Combobox(preset_frame, textvariable=main_app.motor_preset_var,
+                                  values=["axis_a_20k_4p", "axis_a_20k_4p_high_voltage", 
+                                         "axis_a_20k_4p_bz", "generic_template"],
+                                  width=40, state="readonly")
+        preset_combo.pack(anchor='w', pady=(5, 0))
+        
+        # Load preset button
+        load_preset_btn = tk.Button(preset_frame, text="📥 Load Preset", 
+                                  font=("Arial", 9, "bold"),
+                                  bg=self.colors['accent_blue'], fg='white',
+                                  command=main_app.load_motor_preset)
+        load_preset_btn.pack(anchor='w', pady=(5, 0))
+        
+        # Motor specifications
+        specs_frame = tk.Frame(motor_setup_content, bg=self.colors['main_bg'])
+        specs_frame.pack(fill='x', pady=(0, 10))
+        
+        tk.Label(specs_frame, text="Motor Specifications:", font=("Arial", 10, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(anchor='w')
+        
+        # Encoder counts per rev
+        encoder_frame = tk.Frame(specs_frame, bg=self.colors['main_bg'])
+        encoder_frame.pack(fill='x', pady=(5, 0))
+        
+        tk.Label(encoder_frame, text="Encoder Counts/Rev:", font=("Arial", 9),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
+        
+        main_app.encoder_counts_entry = tk.Entry(encoder_frame, font=("Arial", 9), width=10)
+        main_app.encoder_counts_entry.pack(side='left', padx=(10, 0))
+        
+        # Pole pairs
+        pole_frame = tk.Frame(specs_frame, bg=self.colors['main_bg'])
+        pole_frame.pack(fill='x', pady=(5, 0))
+        
+        tk.Label(pole_frame, text="Pole Pairs:", font=("Arial", 9),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
+        
+        main_app.pole_pairs_entry = tk.Entry(pole_frame, font=("Arial", 9), width=10)
+        main_app.pole_pairs_entry.pack(side='left', padx=(10, 0))
+        
+        # Checkboxes for features
+        features_frame = tk.Frame(specs_frame, bg=self.colors['main_bg'])
+        features_frame.pack(fill='x', pady=(5, 0))
+        
+        main_app.has_index_var = tk.BooleanVar(value=False)
+        index_check = tk.Checkbutton(features_frame, text="Has Index Pulse",
+                                   variable=main_app.has_index_var,
+                                   font=("Arial", 9), bg=self.colors['main_bg'],
+                                   fg=self.colors['main_fg'])
+        index_check.pack(side='left')
+        
+        main_app.has_halls_var = tk.BooleanVar(value=True)
+        halls_check = tk.Checkbutton(features_frame, text="Has Hall Sensors",
+                                   variable=main_app.has_halls_var,
+                                   font=("Arial", 9), bg=self.colors['main_bg'],
+                                   fg=self.colors['main_fg'])
+        halls_check.pack(side='left', padx=(20, 0))
+        
+        # Commutation method
+        comm_frame = tk.Frame(motor_setup_content, bg=self.colors['main_bg'])
+        comm_frame.pack(fill='x', pady=(0, 10))
+        
+        tk.Label(comm_frame, text="Commutation Method:", font=("Arial", 10, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(anchor='w')
+        
+        main_app.commutation_method_var = tk.StringVar(value="bx")
+        comm_combo = ttk.Combobox(comm_frame, textvariable=main_app.commutation_method_var,
+                                values=["bx", "bz", "bc_bi"],
+                                width=30, state="readonly")
+        comm_combo.pack(anchor='w', pady=(5, 0))
+        
+        # Add method descriptions
+        method_desc = tk.Label(comm_frame, 
+                             text="bx=Minimal Motion, bz=Drive to Electrical Zero, bc_bi=Hall-based",
+                             font=("Arial", 8), bg=self.colors['main_bg'], fg=self.colors['secondary_fg'])
+        method_desc.pack(anchor='w', pady=(2, 0))
+        
+        # Setup buttons
+        setup_buttons_frame = tk.Frame(motor_setup_content, bg=self.colors['main_bg'])
+        setup_buttons_frame.pack(fill='x', pady=(10, 0))
+        
+        main_app.run_motor_setup_btn = tk.Button(setup_buttons_frame, text="🚀 Run Complete Setup", 
+                                               font=("Arial", 10, "bold"),
+                                               bg=self.colors['success_green'], fg='white',
+                                               command=main_app.run_motor_setup)
+        main_app.run_motor_setup_btn.pack(side='left', padx=(0, 10))
+        
+        main_app.step_by_step_btn = tk.Button(setup_buttons_frame, text="📋 Step-by-Step Setup", 
+                                            font=("Arial", 10, "bold"),
+                                            bg=self.colors['accent_blue'], fg='white',
+                                            command=main_app.show_step_by_step_setup)
+        main_app.step_by_step_btn.pack(side='left', padx=(0, 10))
+        
+        main_app.stop_motor_setup_btn = tk.Button(setup_buttons_frame, text="⏹️ Stop Setup", 
+                                                font=("Arial", 10, "bold"),
+                                                bg=self.colors['error_red'], fg='white',
+                                                command=main_app.stop_motor_setup,
+                                                state='disabled')
+        main_app.stop_motor_setup_btn.pack(side='left', padx=(0, 10))
+        
+        # Command Interface Section
+        command_frame = tk.LabelFrame(diag_frame, text="💻 Command Interface", 
+                                    font=("Arial", 12, "bold"),
+                                    bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                    relief='solid', bd=1)
+        command_frame.pack(fill='x', pady=(20, 20), padx=10)
+        
+        # Command interface content
+        command_content = tk.Frame(command_frame, bg=self.colors['main_bg'])
+        command_content.pack(fill='x', padx=15, pady=15)
+        
+        # Command input
+        cmd_input_frame = tk.Frame(command_content, bg=self.colors['main_bg'])
+        cmd_input_frame.pack(fill='x', pady=(0, 10))
+        
+        tk.Label(cmd_input_frame, text="Send Command:", font=("Arial", 10, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
+        
+        main_app.command_entry = tk.Entry(cmd_input_frame, font=("Courier", 10), width=30)
+        main_app.command_entry.pack(side='left', padx=(10, 10))
+        main_app.command_entry.bind('<Return>', lambda e: main_app.send_command())
+        
+        main_app.send_command_btn = tk.Button(cmd_input_frame, text="Send", 
+                                            font=("Arial", 10, "bold"),
+                                            bg=self.colors['accent_blue'], fg='white',
+                                            command=main_app.send_command)
+        main_app.send_command_btn.pack(side='left', padx=(0, 10))
+        
+        main_app.clear_commands_btn = tk.Button(cmd_input_frame, text="Clear", 
+                                              font=("Arial", 10, "bold"),
+                                              bg=self.colors['warning_orange'], fg='white',
+                                              command=main_app.clear_command_history)
+        main_app.clear_commands_btn.pack(side='left')
+        
+        # Quick command buttons
+        quick_cmd_frame = tk.Frame(command_content, bg=self.colors['main_bg'])
+        quick_cmd_frame.pack(fill='x', pady=(10, 0))
+        
+        tk.Label(quick_cmd_frame, text="Quick Commands:", font=("Arial", 9, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(anchor='w')
+        
+        quick_buttons_frame = tk.Frame(quick_cmd_frame, bg=self.colors['main_bg'])
+        quick_buttons_frame.pack(fill='x', pady=(5, 0))
+        
+        # Common commands
+        common_commands = [
+            ("TPA", "Tell Position A"),
+            ("TPB", "Tell Position B"), 
+            ("TPC", "Tell Position C"),
+            ("TPD", "Tell Position D"),
+            ("MOA", "Motor Off A"),
+            ("SHA", "Servo Here A"),
+            ("QHA", "Query Hall A"),
+            ("MG _BMA", "Brushless Modulo A")
+        ]
+        
+        for i, (cmd, desc) in enumerate(common_commands):
+            btn = tk.Button(quick_buttons_frame, text=f"{cmd}", 
+                          font=("Arial", 8), width=8,
+                          bg=self.colors['secondary_bg'], fg=self.colors['main_fg'],
+                          command=lambda c=cmd: main_app.insert_command(c))
+            btn.pack(side='left', padx=(0, 5), pady=2)
+            
+            # Add tooltip description
+            self._create_tooltip(btn, desc)
+        
+        # Command history
+        cmd_history_frame = tk.Frame(command_content, bg=self.colors['main_bg'])
+        cmd_history_frame.pack(fill='both', expand=True, pady=(10, 0))
+        
+        tk.Label(cmd_history_frame, text="Command History:", font=("Arial", 10, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(anchor='w')
+        
+        main_app.command_history_text = tk.Text(cmd_history_frame, height=8, width=80,
+                                              font=("Courier", 9), bg=self.colors['card_bg'],
+                                              fg=self.colors['main_fg'], relief='solid', bd=1)
+        main_app.command_history_text.pack(fill='both', expand=True, pady=(5, 0))
+        
+        # Add scrollbar to command history
+        cmd_scrollbar = tk.Scrollbar(cmd_history_frame, orient="vertical", 
+                                   command=main_app.command_history_text.yview)
+        main_app.command_history_text.configure(yscrollcommand=cmd_scrollbar.set)
+        cmd_scrollbar.pack(side="right", fill="y")
+        
         main_app.test_connection_btn = tk.Button(buttons_frame, text="🔍 Test Connection", 
                                                font=("Arial", 12, "bold"),
                                                bg=self.colors['warning_orange'], fg='white',
@@ -1567,7 +1817,7 @@ class GUIFramework:
         
         main_app.ip_entry = tk.Entry(ip_frame, font=("Arial", 10), width=15)
         main_app.ip_entry.pack(side='left', padx=(10, 0))
-        main_app.ip_entry.insert(0, "10.1.0.21")
+        # IP entry starts blank - no default value
         
         # Connect button
         connect_btn = tk.Button(ip_frame, text="Connect", 
@@ -1583,13 +1833,191 @@ class GUIFramework:
                                command=main_app.discover_controllers)
         discover_btn.pack(side='left', padx=(10, 0))
         
+        # Quick IP change button (only show when connected)
+        main_app.quick_ip_change_btn = tk.Button(ip_frame, text="🔧 Change IP", 
+                                               font=("Arial", 10, "bold"),
+                                               bg=self.colors['accent_blue'], fg='white',
+                                               command=main_app.show_ip_change_walkthrough,
+                                               state='disabled')
+        main_app.quick_ip_change_btn.pack(side='left', padx=(10, 0))
+        
         # Connection status label
         main_app.connection_status_label = tk.Label(ip_frame, text="Not Connected", 
                                               font=("Arial", 10, "bold"),
                                               bg=self.colors['main_bg'], fg=self.colors['error_red'])
         main_app.connection_status_label.pack(side='right', padx=(10, 0))
         
-        # IP Address Configuration section
+        # Controller Information Section
+        controller_info_frame = tk.LabelFrame(network_frame, text="📋 Controller Information", 
+                                           font=("Arial", 12, "bold"),
+                                           bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                           relief='solid', bd=1)
+        controller_info_frame.pack(fill='x', pady=(20, 20), padx=10)
+        
+        # Controller info content
+        controller_info_content = tk.Frame(controller_info_frame, bg=self.colors['main_bg'])
+        controller_info_content.pack(fill='x', padx=15, pady=15)
+        
+        # Current controller IP display
+        current_ip_frame = tk.Frame(controller_info_content, bg=self.colors['main_bg'])
+        current_ip_frame.pack(fill='x', pady=(0, 10))
+        
+        tk.Label(current_ip_frame, text="Current Controller IP:", font=("Arial", 10, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
+        
+        main_app.current_controller_ip_label = tk.Label(current_ip_frame, text="Not Connected", 
+                                                      font=("Arial", 10, "bold"),
+                                                      bg=self.colors['main_bg'], fg=self.colors['error_red'])
+        main_app.current_controller_ip_label.pack(side='left', padx=(10, 0))
+        
+        # Controller details display
+        details_frame = tk.Frame(controller_info_content, bg=self.colors['main_bg'])
+        details_frame.pack(fill='x', pady=(0, 10))
+        
+        tk.Label(details_frame, text="Controller Details:", font=("Arial", 10, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(anchor='w')
+        
+        main_app.controller_details_label = tk.Label(details_frame, text="No controller connected", 
+                                                   font=("Arial", 9),
+                                                   bg=self.colors['main_bg'], fg=self.colors['secondary_fg'],
+                                                   justify='left')
+        main_app.controller_details_label.pack(anchor='w', pady=(5, 0))
+        
+        # Refresh controller info button
+        refresh_info_btn = tk.Button(controller_info_content, text="🔄 Refresh Controller Info",
+                                   font=("Arial", 9, "bold"),
+                                   bg=self.colors['accent_blue'], fg='white',
+                                   command=main_app.refresh_controller_info)
+        refresh_info_btn.pack(anchor='w', pady=(10, 0))
+        
+        # COM Port Connection Section
+        com_frame = tk.LabelFrame(network_frame, text="🔌 USB/COM Port Connection",
+                                font=("Arial", 12, "bold"),
+                                bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                relief='solid', bd=1)
+        com_frame.pack(fill='x', pady=(0, 20), padx=10)
+
+        # COM port content
+        com_content = tk.Frame(com_frame, bg=self.colors['main_bg'])
+        com_content.pack(fill='x', padx=15, pady=15)
+
+        # COM port description
+        com_desc = tk.Label(com_content,
+                          text="Connect to Galil controller via USB cable (COM port)",
+                          font=("Arial", 10), bg=self.colors['main_bg'],
+                          fg=self.colors['main_fg'])
+        com_desc.pack(anchor='w', pady=(0, 10))
+
+        # COM port selection
+        com_selection_frame = tk.Frame(com_content, bg=self.colors['main_bg'])
+        com_selection_frame.pack(fill='x', pady=(0, 10))
+
+        tk.Label(com_selection_frame, text="COM Port:", font=("Arial", 10, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
+
+        # COM port dropdown
+        main_app.com_port_var = tk.StringVar()
+        main_app.com_port_dropdown = tk.ttk.Combobox(com_selection_frame, 
+                                                    textvariable=main_app.com_port_var,
+                                                    width=10, state="readonly")
+        main_app.com_port_dropdown.pack(side='left', padx=(10, 10))
+
+        # Refresh COM ports button
+        refresh_com_btn = tk.Button(com_selection_frame, text="🔄 Refresh COM Ports",
+                                  font=("Arial", 9, "bold"),
+                                  bg=self.colors['accent_blue'], fg='white',
+                                  command=main_app.refresh_com_ports)
+        refresh_com_btn.pack(side='left', padx=(0, 10))
+
+        # Connect via COM port button
+        connect_com_btn = tk.Button(com_selection_frame, text="🔌 Connect via COM Port",
+                                  font=("Arial", 10, "bold"),
+                                  bg=self.colors['success_green'], fg='white',
+                                  command=main_app.connect_via_com_port)
+        connect_com_btn.pack(side='left', padx=(0, 10))
+
+        # Diagnose COM port button
+        diagnose_com_btn = tk.Button(com_selection_frame, text="🔍 Diagnose COM Port",
+                                   font=("Arial", 9, "bold"),
+                                   bg=self.colors['warning_orange'], fg='white',
+                                   command=main_app.diagnose_com_port)
+        diagnose_com_btn.pack(side='left')
+
+        # COM port status
+        main_app.com_port_status_label = tk.Label(com_content,
+                                                text="Click 'Refresh COM Ports' to detect available ports",
+                                                font=("Arial", 9),
+                                                bg=self.colors['main_bg'], fg=self.colors['secondary_fg'],
+                                                justify='left')
+        main_app.com_port_status_label.pack(anchor='w', pady=(10, 0))
+        
+        # Network Discovery Section
+        discovery_frame = tk.LabelFrame(network_frame, text="🔍 Network Discovery", 
+                                     font=("Arial", 12, "bold"),
+                                     bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                     relief='solid', bd=1)
+        discovery_frame.pack(fill='x', pady=(0, 20), padx=10)
+        
+        # Discovery content
+        discovery_content = tk.Frame(discovery_frame, bg=self.colors['main_bg'])
+        discovery_content.pack(fill='x', padx=15, pady=15)
+        
+        # Discovery description
+        discovery_desc = tk.Label(discovery_content, 
+                               text="Find all Galil controllers (network and COM ports) automatically",
+                               font=("Arial", 10), bg=self.colors['main_bg'], 
+                               fg=self.colors['main_fg'])
+        discovery_desc.pack(anchor='w', pady=(0, 10))
+        
+        # Discovery buttons
+        discovery_buttons_frame = tk.Frame(discovery_content, bg=self.colors['main_bg'])
+        discovery_buttons_frame.pack(fill='x', pady=(0, 10))
+        
+        # Discover all button
+        discover_btn = tk.Button(discovery_buttons_frame, text="🔍 Discover All Controllers", 
+                               font=("Arial", 10, "bold"),
+                               bg=self.colors['warning_orange'], fg='white',
+                               command=main_app.discover_controllers)
+        discover_btn.pack(side='left', padx=(0, 10))
+        
+        # Network only discovery button
+        network_discover_btn = tk.Button(discovery_buttons_frame, text="🌐 Network Only",
+                                       font=("Arial", 10, "bold"),
+                                       bg=self.colors['accent_blue'], fg='white',
+                                       command=main_app.discover_network_controllers)
+        network_discover_btn.pack(side='left', padx=(0, 10))
+        
+        # COM port only discovery button
+        com_discover_btn = tk.Button(discovery_buttons_frame, text="🔌 COM Ports Only",
+                                   font=("Arial", 10, "bold"),
+                                   bg=self.colors['success_green'], fg='white',
+                                   command=main_app.discover_com_controllers)
+        com_discover_btn.pack(side='left', padx=(0, 10))
+        
+        # Comprehensive search button
+        comprehensive_search_btn = tk.Button(discovery_buttons_frame, text="🔍 Comprehensive Search", 
+                                           font=("Arial", 10, "bold"),
+                                           bg=self.colors['warning_orange'], fg='white',
+                                           command=main_app.comprehensive_controller_search)
+        comprehensive_search_btn.pack(side='left')
+        
+        # Discovery results display
+        main_app.discovery_results_label = tk.Label(discovery_content, 
+                                                   text="Click 'Discover All Controllers' to find controllers",
+                                                   font=("Arial", 9),
+                                                   bg=self.colors['main_bg'], fg=self.colors['secondary_fg'],
+                                                   justify='left', wraplength=600)
+        main_app.discovery_results_label.pack(anchor='w', pady=(10, 0))
+        
+        # Progress indicator (initially hidden)
+        main_app.discovery_progress_label = tk.Label(discovery_content, 
+                                                    text="⏳ Operation in progress...",
+                                                    font=("Arial", 9, "bold"),
+                                                    bg=self.colors['main_bg'], fg=self.colors['warning_orange'])
+        main_app.discovery_progress_label.pack(anchor='w', pady=(5, 0))
+        main_app.discovery_progress_label.pack_forget()  # Hide initially
+        
+        # IP Address Configuration section (IP only)
         config_frame = tk.LabelFrame(network_frame, text="IP Address Configuration", 
                                    font=("Arial", 12, "bold"),
                                    bg=self.colors['main_bg'], fg=self.colors['main_fg'],
@@ -1600,7 +2028,7 @@ class GUIFramework:
         config_content = tk.Frame(config_frame, bg=self.colors['main_bg'])
         config_content.pack(fill='x', padx=15, pady=15)
         
-        # IP Address
+        # IP Address (only)
         ip_config_frame = tk.Frame(config_content, bg=self.colors['main_bg'])
         ip_config_frame.pack(fill='x', pady=(0, 10))
         
@@ -1609,23 +2037,7 @@ class GUIFramework:
         
         main_app.config_ip_entry = tk.Entry(ip_config_frame, font=("Arial", 10), width=15)
         main_app.config_ip_entry.pack(side='left', padx=(10, 20))
-        main_app.config_ip_entry.insert(0, "10.1.0.21")
-        
-        # Subnet Mask
-        tk.Label(ip_config_frame, text="Subnet Mask:", font=("Arial", 10, "bold"),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
-        
-        main_app.subnet_entry = tk.Entry(ip_config_frame, font=("Arial", 10), width=15)
-        main_app.subnet_entry.pack(side='left', padx=(10, 20))
-        main_app.subnet_entry.insert(0, "255.255.255.0")
-        
-        # Gateway
-        tk.Label(ip_config_frame, text="Gateway:", font=("Arial", 10, "bold"),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
-        
-        main_app.gateway_entry = tk.Entry(ip_config_frame, font=("Arial", 10), width=15)
-        main_app.gateway_entry.pack(side='left', padx=(10, 0))
-        main_app.gateway_entry.insert(0, "10.1.0.1")
+        # Config IP entry starts blank - no default value
         
         # Configuration buttons
         config_buttons_frame = tk.Frame(config_content, bg=self.colors['main_bg'])
@@ -1641,7 +2053,126 @@ class GUIFramework:
                                    font=("Arial", 10, "bold"),
                                    bg=self.colors['warning_orange'], fg='white',
                                    command=main_app.reset_network_config)
-        reset_config_btn.pack(side='left')
+        reset_config_btn.pack(side='left', padx=(0, 10))
+        
+        change_ip_btn = tk.Button(config_buttons_frame, text="🔧 Change Controller IP", 
+                                font=("Arial", 10, "bold"),
+                                bg=self.colors['accent_blue'], fg='white',
+                                command=main_app.show_ip_change_walkthrough)
+        change_ip_btn.pack(side='left')
+        
+        # Controller IP Change Section - More Prominent
+        ip_change_frame = tk.LabelFrame(network_frame, text="🎯 Controller IP Address Change", 
+                                      font=("Arial", 14, "bold"),
+                                      bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                      relief='solid', bd=2)
+        ip_change_frame.pack(fill='x', pady=(20, 20), padx=10)
+        
+        # IP Change content
+        ip_change_content = tk.Frame(ip_change_frame, bg=self.colors['main_bg'])
+        ip_change_content.pack(fill='x', padx=20, pady=20)
+        
+        # Warning notice
+        warning_label = tk.Label(ip_change_content, 
+                               text="⚠️ CHANGING CONTROLLER IP WILL CAUSE DISCONNECTION - RECONNECT REQUIRED",
+                               font=("Arial", 12, "bold"), 
+                               bg=self.colors['warning_orange'], fg='white',
+                               relief='raised', bd=2)
+        warning_label.pack(fill='x', pady=(0, 15))
+        
+        # Current network info
+        current_info_frame = tk.Frame(ip_change_content, bg=self.colors['main_bg'])
+        current_info_frame.pack(fill='x', pady=(0, 15))
+        
+        try:
+            import socket
+            hostname = socket.gethostname()
+            local_ip = socket.gethostbyname(hostname)
+            network_base = '.'.join(local_ip.split('.')[:-1])
+        except:
+            local_ip = "Unknown"
+            network_base = "192.168.1"
+        
+        tk.Label(current_info_frame, text=f"Your Computer IP: {local_ip}", 
+                font=("Arial", 10, "bold"), bg=self.colors['main_bg'], 
+                fg=self.colors['main_fg']).pack(anchor='w')
+        # Removed suggested controller IP per requirements
+        
+        # Quick IP change buttons
+        quick_buttons_frame = tk.Frame(ip_change_content, bg=self.colors['main_bg'])
+        quick_buttons_frame.pack(fill='x', pady=(0, 15))
+        
+        # Connect first button
+        connect_first_btn = tk.Button(quick_buttons_frame, text="1️⃣ Connect to Controller First", 
+                                    font=("Arial", 11, "bold"),
+                                    bg=self.colors['warning_orange'], fg='white',
+                                    command=main_app.connect_to_controller)
+        connect_first_btn.pack(side='left', padx=(0, 10))
+        
+        # Change IP button (disabled until connected)
+        main_app.main_ip_change_btn = tk.Button(quick_buttons_frame, text="2️⃣ Change Controller IP", 
+                                              font=("Arial", 11, "bold"),
+                                              bg=self.colors['success_green'], fg='white',
+                                              command=main_app.show_ip_change_walkthrough,
+                                              state='disabled')
+        main_app.main_ip_change_btn.pack(side='left', padx=(0, 10))
+        
+        # Instructions
+        instructions_frame = tk.Frame(ip_change_content, bg=self.colors['card_bg'], relief='solid', bd=1)
+        instructions_frame.pack(fill='x', pady=(0, 10))
+        
+        instructions_text = tk.Text(instructions_frame, height=6, wrap='word', 
+                                  font=("Arial", 9), bg=self.colors['card_bg'], 
+                                  fg=self.colors['main_fg'], relief='flat')
+        instructions_text.pack(fill='x', padx=10, pady=10)
+        instructions_text.insert('1.0', 
+            "STEP-BY-STEP INSTRUCTIONS:\n\n"
+            "1. First, connect to your controller using its current IP address\n"
+            "2. Click 'Change Controller IP' to open the IP change dialog\n"
+            "3. Enter new IP address (suggested: same network as your computer)\n"
+            "4. Confirm the change - controller will reset and disconnect\n"
+            "5. Reconnect using the new IP address\n\n"
+            "This solves network connectivity issues by putting controller on same network as your computer.")
+        instructions_text.config(state='disabled')
+        
+        # Controller Recovery Checklist Section
+        recovery_frame = tk.LabelFrame(network_frame, text="🚨 Controller Recovery Checklist", 
+                                     font=("Arial", 14, "bold"),
+                                     bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                     relief='solid', bd=2)
+        recovery_frame.pack(fill='x', pady=(20, 20), padx=10)
+        
+        # Recovery content
+        recovery_content = tk.Frame(recovery_frame, bg=self.colors['main_bg'])
+        recovery_content.pack(fill='x', padx=20, pady=20)
+        
+        # Recovery description
+        recovery_desc = tk.Label(recovery_content, 
+                               text="Step-by-step troubleshooting guide for DMC-41x3 controllers when communication fails",
+                               font=("Arial", 10), bg=self.colors['main_bg'], 
+                               fg=self.colors['main_fg'])
+        recovery_desc.pack(anchor='w', pady=(0, 15))
+        
+        # Recovery checklist button
+        recovery_btn = tk.Button(recovery_content, text="🔧 Start Recovery Checklist", 
+                               font=("Arial", 12, "bold"),
+                               bg=self.colors['error_red'], fg='white',
+                               command=main_app.show_recovery_checklist)
+        recovery_btn.pack(anchor='w', pady=(0, 10))
+        
+        # Recovery info
+        recovery_info = tk.Label(recovery_content, 
+                               text="This checklist guides you through safe recovery procedures:\n"
+                                    "• Hardware basics verification\n"
+                                    "• Normal communication attempts\n"
+                                    "• MRST (factory reset)\n"
+                                    "• 19.2 baud jumper\n"
+                                    "• UPGD bootloader recovery\n"
+                                    "• MO (motors off) for safe comms\n"
+                                    "• Advanced troubleshooting steps",
+                               font=("Arial", 9), bg=self.colors['main_bg'], 
+                               fg=self.colors['secondary_fg'], justify='left')
+        recovery_info.pack(anchor='w', pady=(0, 10))
         
         # Network config page complete
         # Update scroll region

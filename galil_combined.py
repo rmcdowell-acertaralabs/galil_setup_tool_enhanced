@@ -23,18 +23,117 @@ class GalilController:
 
     def connect(self, address):
         try:
+            print(f"DEBUG: Creating gclib.py instance...")
             self.g = gclib.py()
-            self.g.GOpen(f"{address}")
+            print(f"DEBUG: Attempting GOpen to {address}...")
+            
+            # For COM ports, add some troubleshooting info
+            if address.upper().startswith('COM'):
+                print(f"DEBUG: COM port connection attempt - ensure device is connected and not in use by another application")
+                print(f"DEBUG: Check Device Manager to verify COM port exists and has correct drivers")
+                
+                # Add a small delay to prevent rapid connection attempts
+                time.sleep(0.2)
+            
+            # Build open string and attempt with baud when using serial
+            open_attempts = []
+            if address.upper().startswith('COM'):
+                # Try preferred baud first, then common fallbacks
+                preferred_baud = 115200
+                baud_candidates = [preferred_baud, 57600, 38400, 19200, 9600]
+                # Try different open string formats for COM ports
+                open_attempts = []
+                for baud in baud_candidates:
+                    open_attempts.extend([
+                        f"{address} --direct --baud {baud}",
+                        f"{address} --baud {baud}",
+                        f"{address} --direct",
+                        f"{address}",
+                        # Additional formats that work with some Galil controllers
+                        f"{address} --baud {baud} --direct",
+                        f"{address} --timeout 5000 --baud {baud}",
+                        f"{address} --timeout 10000 --baud {baud}",
+                        f"{address} --timeout 5000 --direct --baud {baud}",
+                        f"{address} --timeout 10000 --direct --baud {baud}"
+                    ])
+            else:
+                open_attempts = [f"{address} --direct", f"{address}"]
+
+            last_error = None
+            for i, open_str in enumerate(open_attempts):
+                try:
+                    print(f"DEBUG: Trying GOpen with: {open_str}")
+                    self.g.GOpen(open_str)
+                    print(f"DEBUG: GOpen successful with: {open_str}")
+                    break
+                except Exception as e:
+                    last_error = e
+                    error_msg = str(e).lower()
+                    print(f"DEBUG: GOpen attempt failed ({open_str}): {e}")
+                    
+                    # If port is already open, rethrow immediately
+                    if "already open" in error_msg or "access denied" in error_msg:
+                        raise
+                    
+                    # For timeouts, try a longer wait before next attempt
+                    if "timeout" in error_msg:
+                        print(f"DEBUG: Timeout detected, waiting longer before next attempt...")
+                        time.sleep(1.0)  # Longer wait for timeouts
+                    else:
+                        time.sleep(0.2)  # Short wait for other errors
+                    
+                    # If this is the last attempt, provide more detailed error info
+                    if i == len(open_attempts) - 1:
+                        print(f"DEBUG: All {len(open_attempts)} connection attempts failed")
+                        print(f"DEBUG: Last error: {last_error}")
+                        if "timeout" in error_msg:
+                            print(f"DEBUG: Timeout errors suggest:")
+                            print(f"DEBUG: 1. Controller may not be responding on any baud rate")
+                            print(f"DEBUG: 2. Controller may need power cycle")
+                            print(f"DEBUG: 3. Wrong controller type or firmware")
+                            print(f"DEBUG: 4. USB cable or driver issues")
+                            print(f"DEBUG: 5. FIRMWARE CORRUPTION - Controller may need firmware reset")
+                            print(f"DEBUG: 6. HARDWARE FAILURE - USB-to-serial chip or controller board")
+                            print(f"DEBUG: ")
+                            print(f"DEBUG: RECOMMENDED ACTIONS:")
+                            print(f"DEBUG: 1. Try Galil firmware recovery tools")
+                            print(f"DEBUG: 2. Contact Galil support for firmware update")
+                            print(f"DEBUG: 3. Check if controller has recovery mode")
+                            print(f"DEBUG: 4. Verify controller model and firmware version")
+            else:
+                # If we exhausted attempts without break, raise last error
+                raise last_error if last_error else RuntimeError("Unable to open controller")
+            print(f"DEBUG: GOpen successful, waiting for connection to stabilize...")
+            
+            # Give the connection time to establish properly
+            time.sleep(0.5)
+            
+            print(f"DEBUG: Testing connection with TP A command...")
             # Test the connection with a simple command that works on DMC-4103
             test_response = self.g.GCommand("TP A")
             print(f"DEBUG: Connection test successful, response: {test_response}")
         except Exception as e:
             print(f"DEBUG: Connection failed: {e}")
+            print(f"DEBUG: Exception type: {type(e)}")
+            
+            # Provide specific troubleshooting advice based on error type
+            if "device failed to open" in str(e).lower():
+                if address.upper().startswith('COM'):
+                    print(f"DEBUG: COM port connection failed - troubleshooting suggestions:")
+                    print(f"DEBUG: 1. Check if device is properly connected via USB")
+                    print(f"DEBUG: 2. Verify COM port exists in Device Manager")
+                    print(f"DEBUG: 3. Ensure no other application is using the COM port")
+                    print(f"DEBUG: 4. Try unplugging and reconnecting the USB cable")
+                    print(f"DEBUG: 5. Check if Galil drivers are properly installed")
+                else:
+                    print(f"DEBUG: Network connection failed - check IP address and network connectivity")
+            
             if self.g:
                 try:
+                    print(f"DEBUG: Attempting to close connection...")
                     self.g.GClose()
-                except:
-                    pass
+                except Exception as close_error:
+                    print(f"DEBUG: Error closing connection: {close_error}")
                 self.g = None
             raise
 
@@ -486,6 +585,133 @@ def apply_axis_settings_from_config(
                 raise RuntimeError(f"Controller rejected DC for axis {axis} with value {decel_val}")
     except Exception as e:
         raise RuntimeError(f"Failed applying settings from config for axis {axis}: {e}")
+
+def diagnose_firmware_issue(com_port: str) -> Dict[str, any]:
+    """
+    Diagnose potential firmware issues with a Galil controller.
+    
+    Args:
+        com_port: COM port to test (e.g., "COM4")
+        
+    Returns:
+        Dictionary with diagnostic results and recommendations
+    """
+    results = {
+        'port': com_port,
+        'basic_connectivity': False,
+        'firmware_responsive': False,
+        'recovery_possible': False,
+        'recommendations': [],
+        'error_details': []
+    }
+    
+    try:
+        print(f"=== FIRMWARE DIAGNOSTIC FOR {com_port} ===")
+        
+        # Test 1: Basic port connectivity
+        print(f"Testing basic port connectivity...")
+        try:
+            g = gclib.py()
+            # Use a longer timeout for diagnostic to prevent overwhelming the controller
+            g.GOpen(f"{com_port} --direct --timeout 10000")
+            results['basic_connectivity'] = True
+            print(f"✓ Port can be opened")
+            
+            # Add a delay to let the connection stabilize
+            time.sleep(1.0)
+            
+        except Exception as e:
+            error_msg = str(e).lower()
+            results['error_details'].append(f"Port open failed: {e}")
+            print(f"✗ Port cannot be opened: {e}")
+            
+            # If we get timeouts, the port can be opened but controller isn't responding
+            if "timeout" in error_msg:
+                results['basic_connectivity'] = True  # Port can be opened
+                print(f"✓ Port can be opened (timeout indicates controller not responding)")
+            else:
+                return results  # Real port failure
+        
+        # Test 2: Try to get any response from controller
+        print(f"Testing controller responsiveness...")
+        test_commands = [
+            "TP A",      # Tell Position
+            "MG _FW",    # Firmware version
+            "MG _ID",    # Controller ID
+            "MG _BN",    # Serial number
+        ]
+        
+        responsive_commands = []
+        for cmd in test_commands:
+            try:
+                # Add delay between commands to prevent overwhelming the controller
+                time.sleep(0.5)  # 500ms delay between commands
+                
+                response = g.GCommand(cmd)
+                if response and response.strip() != "?":
+                    responsive_commands.append(f"{cmd}: {response.strip()}")
+                    print(f"✓ Command '{cmd}' responded: {response.strip()}")
+                else:
+                    print(f"✗ Command '{cmd}' returned: {response}")
+            except Exception as e:
+                print(f"✗ Command '{cmd}' failed: {e}")
+                results['error_details'].append(f"Command '{cmd}' failed: {e}")
+                # If we get a write error, stop testing to prevent further damage
+                if "write error" in str(e).lower():
+                    print(f"⚠️  Write error detected - stopping diagnostic to prevent controller damage")
+                    break
+        
+        if responsive_commands:
+            results['firmware_responsive'] = True
+            print(f"✓ Controller is responsive to {len(responsive_commands)} commands")
+        else:
+            print(f"✗ Controller is not responsive to any commands")
+        
+        # Test 3: Check for recovery mode indicators (only if controller is responsive)
+        if results['firmware_responsive']:
+            print(f"Testing for recovery mode...")
+            recovery_commands = [
+                "BOOT",      # Boot command
+                "RESET",     # Reset command
+                "RECOVERY",  # Recovery command
+                "UPDATE",    # Update command
+            ]
+            
+            for cmd in recovery_commands:
+                try:
+                    time.sleep(0.5)  # Delay between recovery commands
+                    response = g.GCommand(cmd)
+                    if response and not response.startswith('?'):
+                        print(f"✓ Recovery command '{cmd}' available: {response}")
+                        results['recovery_possible'] = True
+                        break
+                except Exception as e:
+                    print(f"✗ Recovery command '{cmd}' failed: {e}")
+                    # Stop if we get write errors
+                    if "write error" in str(e).lower():
+                        break
+        
+        g.GClose()
+        
+        # Generate recommendations
+        if not results['basic_connectivity']:
+            results['recommendations'].append("Port cannot be opened - check hardware connection")
+        elif not results['firmware_responsive']:
+            results['recommendations'].append("FIRMWARE CORRUPTION DETECTED")
+            results['recommendations'].append("1. Try Galil firmware recovery tools")
+            results['recommendations'].append("2. Contact Galil support for firmware update")
+            results['recommendations'].append("3. Check if controller has recovery mode")
+            results['recommendations'].append("4. Verify controller model and firmware version")
+        else:
+            results['recommendations'].append("Controller appears to be working normally")
+        
+        print(f"=== DIAGNOSTIC COMPLETE ===")
+        
+    except Exception as e:
+        results['error_details'].append(f"Diagnostic failed: {e}")
+        print(f"Diagnostic error: {e}")
+    
+    return results
 
 def get_axis_kinematics_from_config(
     axis: str, config_path: str = r"C:\\AMS\\config.txt"

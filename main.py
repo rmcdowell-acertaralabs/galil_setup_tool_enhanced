@@ -72,13 +72,16 @@ class GalilSetupApp:
             'header_fg': '#2c3e50',       # Dark text in header
             'main_bg': '#f5f5f5',         # Light gray main area
             'main_fg': '#2c3e50',         # Dark text in main area
+            'secondary_fg': '#7f8c8d',    # Secondary text color (gray)
+            'secondary_bg': '#ecf0f1',    # Light gray secondary background
             'accent_blue': '#3498db',     # Blue accent color
             'success_green': '#27ae60',   # Green for success
             'warning_orange': '#f39c12',  # Orange for warnings
             'error_red': '#e74c3c',       # Red for errors
             'card_bg': '#ffffff',         # White cards
             'card_border': '#e0e0e0',     # Light border for cards
-            'online_green': '#2ecc71'     # Green for online status
+            'online_green': '#2ecc71',    # Green for online status
+            'warning_bg': '#fff3cd'       # Warning background color
         }
         
         # Initialize managers
@@ -206,7 +209,7 @@ class GalilSetupApp:
     
     def send_manual_command(self, event=None):
         """Send manual command to the controller"""
-        if not self.controller:
+        if not self.ensure_controller_connection():
             self.command_response_text.insert(tk.END, "ERROR: No controller connected\n")
             self.command_response_text.see(tk.END)
             return
@@ -724,7 +727,7 @@ class GalilSetupApp:
         
         self.ip_entry = tk.Entry(ip_frame, font=("Arial", 10), width=15)
         self.ip_entry.pack(side='left', padx=(10, 0))
-        self.ip_entry.insert(0, "10.1.0.21")
+        # IP entry starts blank - no default value
         
         # Connect button
         connect_btn = tk.Button(ip_frame, "Connect", 
@@ -764,7 +767,7 @@ class GalilSetupApp:
         
         self.new_ip_entry = tk.Entry(settings_frame, font=("Arial", 10), width=20)
         self.new_ip_entry.pack(anchor='w', pady=(5, 15))
-        self.new_ip_entry.insert(0, "10.1.0.20")  # Default IP address
+        # New IP entry starts blank - no default value
         
         # Configuration buttons
         buttons_frame = tk.Frame(config_frame, bg=self.colors['main_bg'])
@@ -873,10 +876,47 @@ class GalilSetupApp:
         
     def connect_to_controller(self):
         """Connect to the Galil controller"""
-        if self.connection_manager:
-            ip = self.ip_entry.get().strip()
-            success = self.connection_manager.connect_to_controller(ip, self.update_connection_status)
-            if success:
+        if not self.connection_manager:
+            messagebox.showerror("Error", "Connection manager not initialized")
+            return
+        
+        ip = self.ip_entry.get().strip()
+        
+        # Update UI to show connection attempt
+        self.update_discovery_status(f"Connecting to {ip}...")
+        self.append_test_log(f"Attempting to connect to {ip}")
+        
+        # Run connection in separate thread to prevent UI freezing
+        def connection_thread():
+            try:
+                success = self.connection_manager.connect_to_controller(ip, self.update_connection_status)
+                
+                # Update UI in main thread
+                if success:
+                    self.root.after(0, lambda: self.update_discovery_status(f"Connected to {ip}"))
+                    self.root.after(0, lambda: self.append_test_log(f"Successfully connected to {ip}"))
+                    
+                    # Update local references in main thread
+                    self.root.after(0, lambda: self.update_controller_references())
+                else:
+                    self.root.after(0, lambda: self.update_discovery_status(f"Failed to connect to {ip}"))
+                    self.root.after(0, lambda: self.append_test_log(f"Failed to connect to {ip}"))
+                    self.root.after(0, lambda: messagebox.showerror("Error", "Failed to connect to controller"))
+                    
+            except Exception as e:
+                self.root.after(0, lambda: self.update_discovery_status(f"Connection error: {e}"))
+                self.root.after(0, lambda: self.append_test_log(f"Connection error: {e}"))
+                self.root.after(0, lambda: messagebox.showerror("Error", f"Connection error: {e}"))
+        
+        # Start connection in background thread
+        import threading
+        thread = threading.Thread(target=connection_thread, daemon=True)
+        thread.start()
+    
+    def update_controller_references(self):
+        """Update controller references in main thread"""
+        try:
+            if self.connection_manager and self.connection_manager.controller:
                 # Update local references
                 self.controller = self.connection_manager.controller
                 self.controller_commands = self.connection_manager.controller_commands
@@ -889,10 +929,8 @@ class GalilSetupApp:
                     self.append_test_log(f"DEBUG: Controller type: {type(self.controller)}")
                 else:
                     self.append_test_log("DEBUG: Controller reference is None after connection!")
-            else:
-                messagebox.showerror("Error", "Failed to connect to controller")
-        else:
-            messagebox.showerror("Error", "Connection manager not initialized")
+        except Exception as e:
+            self.append_test_log(f"Error updating controller references: {e}")
             
     def disconnect_controller(self):
         """Disconnect from the Galil controller"""
@@ -905,7 +943,7 @@ class GalilSetupApp:
             
             success = self.connection_manager.disconnect_controller(self.update_connection_status)
             if success:
-                # Update local references
+                # Only clear local references when explicitly disconnecting
                 self.controller = None
                 self.controller_commands = None
                 self.diagnostics = None
@@ -916,11 +954,458 @@ class GalilSetupApp:
             messagebox.showerror("Error", "Connection manager not initialized")
             
     def discover_controllers(self):
-        """Discover Galil controllers on the network"""
-        if self.connection_manager:
-            self.connection_manager.discover_controllers()
+        """Discover all Galil controllers (network and COM ports)"""
+        self.append_test_log("Discovering all Galil controllers...")
+        self.update_discovery_status("Searching for all Galil controllers...")
+        
+        # Run discovery in separate thread to prevent UI freezing
+        def discovery_thread():
+            try:
+                if self.connection_manager:
+                    controllers = self.connection_manager.discover_controllers(self.append_test_log, include_com_ports=True)
+                    
+                    # Update UI in main thread
+                    self.root.after(0, lambda: self.handle_discovery_results(controllers))
+                else:
+                    self.root.after(0, lambda: self.update_discovery_status("Connection manager not initialized"))
+                    self.root.after(0, lambda: self.append_test_log("Connection manager not initialized"))
+            except Exception as e:
+                self.root.after(0, lambda: self.update_discovery_status(f"Discovery failed: {e}"))
+                self.root.after(0, lambda: self.append_test_log(f"Discovery failed: {e}"))
+        
+        # Start discovery in background thread
+        import threading
+        thread = threading.Thread(target=discovery_thread, daemon=True)
+        thread.start()
+
+    def discover_network_controllers(self):
+        """Discover only network-based Galil controllers"""
+        self.append_test_log("Discovering network Galil controllers...")
+        self.update_discovery_status("Searching for network controllers...")
+        
+        # Run discovery in separate thread to prevent UI freezing
+        def discovery_thread():
+            try:
+                if self.connection_manager:
+                    controllers = self.connection_manager.discover_controllers(self.append_test_log, include_com_ports=False)
+                    
+                    # Update UI in main thread
+                    self.root.after(0, lambda: self.handle_discovery_results(controllers))
+                else:
+                    self.root.after(0, lambda: self.update_discovery_status("Connection manager not initialized"))
+                    self.root.after(0, lambda: self.append_test_log("Connection manager not initialized"))
+            except Exception as e:
+                self.root.after(0, lambda: self.update_discovery_status(f"Discovery failed: {e}"))
+                self.root.after(0, lambda: self.append_test_log(f"Discovery failed: {e}"))
+        
+        # Start discovery in background thread
+        import threading
+        thread = threading.Thread(target=discovery_thread, daemon=True)
+        thread.start()
+
+    def discover_com_controllers(self):
+        """Discover only COM port-based Galil controllers"""
+        self.append_test_log("Discovering COM port Galil controllers...")
+        self.update_discovery_status("Searching for COM port controllers...")
+        
+        # Run discovery in separate thread to prevent UI freezing
+        def discovery_thread():
+            try:
+                from network_combined import discover_com_port_controllers
+                controllers = discover_com_port_controllers()
+                
+                # Update UI in main thread
+                self.root.after(0, lambda: self.handle_discovery_results(controllers))
+            except Exception as e:
+                self.root.after(0, lambda: self.update_discovery_status(f"COM port discovery failed: {e}"))
+                self.root.after(0, lambda: self.append_test_log(f"COM port discovery failed: {e}"))
+        
+        # Start discovery in background thread
+        import threading
+        thread = threading.Thread(target=discovery_thread, daemon=True)
+        thread.start()
+
+    def refresh_com_ports(self):
+        """Refresh the list of available COM ports"""
+        self.append_test_log("Refreshing COM port list...")
+        self.update_com_port_status("Scanning for available COM ports...")
+        
+        # Run refresh in separate thread to prevent UI freezing
+        def refresh_thread():
+            try:
+                from network_combined import discover_com_port_controllers
+                com_controllers = discover_com_port_controllers()
+                
+                if com_controllers:
+                    com_ports = list(com_controllers.keys())
+                    self.root.after(0, lambda: self.com_port_dropdown.config(values=com_ports))
+                    if com_ports:
+                        self.root.after(0, lambda: self.com_port_var.set(com_ports[0]))  # Select first port by default
+                    self.root.after(0, lambda: self.append_test_log(f"Found {len(com_ports)} COM port(s): {', '.join(com_ports)}"))
+                    self.root.after(0, lambda: self.update_com_port_status(f"Found {len(com_ports)} COM port(s): {', '.join(com_ports)}"))
+                else:
+                    self.root.after(0, lambda: self.com_port_dropdown.config(values=[]))
+                    self.root.after(0, lambda: self.com_port_var.set(""))
+                    self.root.after(0, lambda: self.append_test_log("No COM ports found"))
+                    self.root.after(0, lambda: self.update_com_port_status("No COM ports found - Check USB cable connection"))
+            except Exception as e:
+                self.root.after(0, lambda: self.append_test_log(f"Error refreshing COM ports: {e}"))
+                self.root.after(0, lambda: self.update_com_port_status("Error refreshing COM ports"))
+        
+        # Start refresh in background thread
+        import threading
+        thread = threading.Thread(target=refresh_thread, daemon=True)
+        thread.start()
+
+    def update_com_port_status(self, message):
+        """Update the COM port status in the UI"""
+        try:
+            if hasattr(self, 'com_port_status_label') and self.com_port_status_label.winfo_exists():
+                self.com_port_status_label.config(text=message, fg=self.colors['main_fg'])
+        except Exception as e:
+            self.append_test_log(f"Error updating COM port status: {e}")
+
+    def connect_via_com_port(self):
+        """Connect to controller via COM port"""
+        com_port = self.com_port_var.get().strip()
+        if not com_port:
+            self.append_test_log("Please select a COM port first")
+            self.update_com_port_status("Please select a COM port first")
+            return
+        
+        self.append_test_log(f"Connecting to controller via {com_port}...")
+        self.update_com_port_status(f"Connecting to {com_port}...")
+        
+        # Run connection in separate thread to prevent UI freezing
+        def connect_thread():
+            try:
+                # First, check COM port availability
+                from network_combined import check_com_port_availability
+                self.root.after(0, lambda: self.append_test_log(f"Checking COM port availability..."))
+                
+                availability = check_com_port_availability(com_port)
+                if not availability['available']:
+                    self.root.after(0, lambda: self.append_test_log(f"COM port {com_port} is not available"))
+                    self.root.after(0, lambda: self.append_test_log("Troubleshooting suggestions:"))
+                    for suggestion in availability['troubleshooting']:
+                        self.root.after(0, lambda s=suggestion: self.append_test_log(s))
+                    self.root.after(0, lambda: self.update_com_port_status(f"COM port {com_port} not available - see log for details"))
+                    return
+                
+                # COM port is available, proceed with connection
+                self.root.after(0, lambda: self.append_test_log(f"COM port {com_port} is available, proceeding with connection..."))
+                
+                if self.connection_manager:
+                    success = self.connection_manager.connect_to_controller(com_port, self.update_connection_status)
+                    if success:
+                        self.root.after(0, lambda: self.append_test_log(f"Successfully connected to controller via {com_port}"))
+                        self.root.after(0, lambda: self.update_com_port_status(f"Connected to {com_port}"))
+                        # Update local references
+                        self.root.after(0, lambda: self.update_controller_references())
+                        # Update IP entry field with COM port for reference
+                        self.root.after(0, lambda: self.ip_entry.delete(0, tk.END))
+                        # IP entry remains blank - no auto-fill
+                    else:
+                        self.root.after(0, lambda: self.append_test_log(f"Failed to connect to controller via {com_port}"))
+                        self.root.after(0, lambda: self.update_com_port_status(f"Failed to connect to {com_port}"))
+                else:
+                    self.root.after(0, lambda: self.append_test_log("Connection manager not initialized"))
+            except Exception as e:
+                self.root.after(0, lambda: self.append_test_log(f"Connection error: {e}"))
+                self.root.after(0, lambda: self.update_com_port_status(f"Connection error: {e}"))
+        
+        # Start connection in background thread
+        import threading
+        thread = threading.Thread(target=connect_thread, daemon=True)
+        thread.start()
+
+    def diagnose_com_port(self):
+        """Diagnose COM port issues - DISABLED TO PREVENT CONTROLLER CORRUPTION"""
+        # COM PORT DIAGNOSTIC DISABLED - It was corrupting the controller
+        messagebox.showwarning("COM Port Diagnostic Disabled", 
+                              "COM port diagnostics have been temporarily disabled to prevent controller corruption.\n\n"
+                              "The diagnostic was overwhelming the controller and causing:\n"
+                              "• Controller to become unresponsive\n"
+                              "• IP address loss\n"
+                              "• Need for master reset\n\n"
+                              "Use basic connection testing instead.")
+        return
+        
+        # Original diagnostic code commented out for safety
+        com_port = self.com_port_var.get().strip()
+        if not com_port:
+            self.append_test_log("Please select a COM port first")
+            return
+        
+        # Safety check - prevent diagnostic if controller is currently connected
+        if (self.connection_manager and 
+            self.connection_manager.controller and 
+            self.connection_manager.connected_ip):
+            self.append_test_log("⚠️  Controller is currently connected. Disconnecting first...")
+            try:
+                self.connection_manager.controller.disconnect()
+                self.connection_manager.controller = None
+                self.connection_manager.controller_commands = None
+                self.connection_manager.connected_ip = None
+                self.append_test_log("✓ Controller disconnected")
+            except Exception as e:
+                self.append_test_log(f"Error disconnecting: {e}")
+                return
+        
+        def diagnose_thread():
+            try:
+                from network_combined import check_com_port_availability
+                from galil_combined import diagnose_firmware_issue
+                import time
+                
+                self.append_test_log(f"=== COM PORT DIAGNOSTIC: {com_port} ===")
+                
+                # Force close any existing connections
+                self.append_test_log("Force closing any existing connections...")
+                try:
+                    if self.connection_manager and self.connection_manager.controller:
+                        self.connection_manager.controller.disconnect()
+                        self.connection_manager.controller = None
+                        self.connection_manager.controller_commands = None
+                        self.connection_manager.connected_ip = None
+                    self.append_test_log("✓ Existing connections closed")
+                except Exception as e:
+                    self.append_test_log(f"Note: {e}")
+                
+                # Additional safety - ensure connection manager is fully reset
+                if self.connection_manager:
+                    self.connection_manager.controller = None
+                    self.connection_manager.controller_commands = None
+                    self.connection_manager.connected_ip = None
+                
+                # Wait longer to ensure any previous connection attempts are fully closed
+                self.append_test_log("Waiting for any previous connections to close...")
+                time.sleep(5)  # Increased from 3 to 5 seconds
+                
+                # Additional safety check - try to open the port to ensure it's free
+                self.append_test_log("Verifying port is free...")
+                try:
+                    import gclib
+                    test_g = gclib.py()
+                    test_g.GOpen(f"{com_port} --direct --timeout 5000")
+                    test_g.GClose()
+                    self.append_test_log("✓ Port is confirmed free")
+                except Exception as e:
+                    self.append_test_log(f"⚠️  Port may still be in use: {e}")
+                    self.append_test_log("Waiting additional 3 seconds...")
+                    time.sleep(3)
+                
+                # Final safety check - ensure no other processes are using the port
+                self.append_test_log("Performing final port availability check...")
+                try:
+                    import gclib
+                    test_g2 = gclib.py()
+                    test_g2.GOpen(f"{com_port} --direct --timeout 3000")
+                    test_g2.GClose()
+                    self.append_test_log("✓ Port is definitely free")
+                except Exception as e:
+                    self.append_test_log(f"⚠️  Port still appears to be in use: {e}")
+                    self.append_test_log("Aborting diagnostic to prevent controller damage")
+                    return
+                
+                # Skip availability check and go straight to firmware diagnostic
+                # since we know the port exists (gclib discovery found it)
+                self.append_test_log(f"COM port {com_port} detected by gclib discovery")
+                self.append_test_log("Proceeding directly to firmware diagnostic...")
+                
+                # Step 1: Firmware diagnostic (always run for COM ports to get definitive answer)
+                self.append_test_log("")
+                self.append_test_log("=== FIRMWARE DIAGNOSTIC ===")
+                self.append_test_log("Testing controller responsiveness...")
+                
+                # Run the diagnostic with additional safety measures
+                self.append_test_log("Starting firmware diagnostic with safety measures...")
+                firmware_results = diagnose_firmware_issue(com_port)
+                
+                if firmware_results['basic_connectivity']:
+                    self.append_test_log("✓ Port connectivity confirmed")
+                    
+                    if firmware_results['firmware_responsive']:
+                        self.append_test_log("✓ Controller firmware is responsive")
+                        self.append_test_log("Controller appears to be working normally")
+                    else:
+                        self.append_test_log("✗ FIRMWARE CORRUPTION DETECTED")
+                        self.append_test_log("Controller is not responding to commands")
+                        
+                        self.append_test_log("")
+                        self.append_test_log("RECOMMENDED ACTIONS:")
+                        for rec in firmware_results['recommendations']:
+                            self.append_test_log(f"  {rec}")
+                        
+                        if firmware_results['error_details']:
+                            self.append_test_log("")
+                            self.append_test_log("Error details:")
+                            for error in firmware_results['error_details']:
+                                self.append_test_log(f"  {error}")
+                else:
+                    self.append_test_log("✗ Port connectivity failed")
+                    self.append_test_log("Check hardware connection and drivers")
+                
+                # Add a final delay to ensure the diagnostic connection is fully closed
+                self.append_test_log("Ensuring diagnostic connection is closed...")
+                time.sleep(2)
+                
+                # Final safety check - verify the port is free after diagnostic
+                self.append_test_log("Verifying port is free after diagnostic...")
+                try:
+                    import gclib
+                    test_g3 = gclib.py()
+                    test_g3.GOpen(f"{com_port} --direct --timeout 3000")
+                    test_g3.GClose()
+                    self.append_test_log("✓ Port is free and ready for use")
+                except Exception as e:
+                    self.append_test_log(f"⚠️  Port may still be in use after diagnostic: {e}")
+                
+                self.append_test_log("=== END DIAGNOSTIC ===")
+            except Exception as e:
+                self.append_test_log(f"Diagnostic failed: {e}")
+        
+        # Run diagnostic in background thread
+        import threading
+        thread = threading.Thread(target=diagnose_thread, daemon=True)
+        thread.start()
+        
+        # Add a note about the safety measures
+        self.append_test_log("")
+        self.append_test_log("⚠️  SAFETY NOTICE: This diagnostic includes multiple safety checks")
+        self.append_test_log("   to prevent controller damage. If you experience issues,")
+        self.append_test_log("   please power cycle the controller and try again.")
+
+    def update_controller_references(self):
+        """Update local controller references after connection"""
+        try:
+            self.controller = self.connection_manager.controller
+            self.controller_commands = self.connection_manager.controller_commands
+            # Initialize diagnostics
+            self.diagnostics = GalilDiagnostics(self.controller, safe_mode=True)
+        except Exception as e:
+            self.append_test_log(f"Error updating controller references: {e}")
+    
+    def handle_discovery_results(self, controllers):
+        """Handle discovery results in main thread"""
+        if controllers:
+            self.append_test_log(f"Found {len(controllers)} controller(s)")
+            # Store for clickable label handler
+            try:
+                self._last_discovered_controllers = controllers
+            except Exception:
+                pass
+            self.update_discovery_status(f"Found {len(controllers)} controller(s) - Click to see details")
+            self.display_discovered_controllers(controllers)
         else:
-            messagebox.showerror("Error", "Connection manager not initialized")
+            self.append_test_log("No controllers found")
+            self.update_discovery_status("No Galil controllers found on the network")
+    
+    def update_discovery_status(self, message):
+        """Update the discovery status in the UI"""
+        try:
+            if hasattr(self, 'discovery_results_label') and self.discovery_results_label.winfo_exists():
+                self.discovery_results_label.config(text=message, fg=self.colors['main_fg'])
+                # Make label clickable when it invites clicking for details
+                if 'click' in message.lower():
+                    try:
+                        # Remove any previous bindings to avoid duplicates
+                        self.discovery_results_label.unbind('<Button-1>')
+                    except Exception:
+                        pass
+                    self.discovery_results_label.config(cursor='hand2')
+                    self.discovery_results_label.bind('<Button-1>', lambda e: self.display_discovered_controllers(getattr(self, '_last_discovered_controllers', {})))
+                else:
+                    try:
+                        self.discovery_results_label.unbind('<Button-1>')
+                    except Exception:
+                        pass
+                    self.discovery_results_label.config(cursor='')
+            
+            # Show/hide progress indicator based on message
+            if hasattr(self, 'discovery_progress_label') and self.discovery_progress_label.winfo_exists():
+                if any(keyword in message.lower() for keyword in ['searching', 'scanning', 'connecting', 'progress', 'in progress']):
+                    self.discovery_progress_label.pack()
+                else:
+                    self.discovery_progress_label.pack_forget()
+        except Exception as e:
+            self.append_test_log(f"Error updating discovery status: {e}")
+    
+    def display_discovered_controllers(self, controllers):
+        """Display discovered controllers in the UI"""
+        try:
+            if not controllers:
+                return
+            
+            # Create a simple dialog to show discovered controllers
+            dialog = tk.Toplevel(self.root)
+            dialog.title("Discovered Controllers")
+            dialog.geometry("400x300")
+            dialog.configure(bg=self.colors['main_bg'])
+            
+            # Title
+            title_label = tk.Label(dialog, text="🎯 Discovered Controllers", 
+                                font=("Arial", 14, "bold"), 
+                                bg=self.colors['main_bg'], fg=self.colors['main_fg'])
+            title_label.pack(pady=10)
+            
+            # Controller list
+            list_frame = tk.Frame(dialog, bg=self.colors['main_bg'])
+            list_frame.pack(fill='both', expand=True, padx=20, pady=10)
+            
+            for i, (ip, name) in enumerate(controllers.items(), 1):
+                controller_frame = tk.Frame(list_frame, bg=self.colors['card_bg'], relief='solid', bd=1)
+                controller_frame.pack(fill='x', pady=2)
+                
+                # Controller info
+                info_label = tk.Label(controller_frame, 
+                                    text=f"{i}. IP: {ip} | Name: {name}",
+                                    font=("Arial", 10), 
+                                    bg=self.colors['card_bg'], fg=self.colors['main_fg'])
+                info_label.pack(side='left', padx=10, pady=5)
+                
+                # Connect button
+                connect_btn = tk.Button(controller_frame, text="Connect", 
+                                      font=("Arial", 9, "bold"),
+                                      bg=self.colors['success_green'], fg='white',
+                                      command=lambda ip=ip: self.connect_to_discovered_controller(ip, dialog))
+                connect_btn.pack(side='right', padx=10, pady=5)
+            
+            # Close button
+            close_btn = tk.Button(dialog, text="Close", 
+                                font=("Arial", 10, "bold"),
+                                bg=self.colors['accent_blue'], fg='white',
+                                command=dialog.destroy)
+            close_btn.pack(pady=10)
+            
+        except Exception as e:
+            self.append_test_log(f"Error displaying discovered controllers: {e}")
+    
+    def connect_to_discovered_controller(self, ip_address, dialog):
+        """Connect to a discovered controller"""
+        try:
+            self.append_test_log(f"Connecting to discovered controller at {ip_address}")
+            
+            # Update the IP entry field
+            if hasattr(self, 'ip_entry') and self.ip_entry.winfo_exists():
+                self.ip_entry.delete(0, tk.END)
+                # IP entry remains blank - no auto-fill
+            
+            # Close the discovery dialog
+            dialog.destroy()
+            
+            # Attempt connection
+            if self.connection_manager:
+                success = self.connection_manager.connect_to_controller(ip_address, self.update_connection_status)
+                if success:
+                    self.append_test_log(f"Successfully connected to {ip_address}")
+                else:
+                    self.append_test_log(f"Failed to connect to {ip_address}")
+            else:
+                self.append_test_log("Connection manager not initialized")
+                
+        except Exception as e:
+            self.append_test_log(f"Error connecting to discovered controller: {e}")
             
     def configure_network(self):
         """Configure the controller's network settings"""
@@ -929,21 +1414,19 @@ class GalilSetupApp:
             return
             
         ip = self.new_ip_entry.get().strip()
-        subnet = self.subnet_entry.get().strip()
-        gateway = self.gateway_entry.get().strip()
         
-        if not all([ip, subnet, gateway]):
-            messagebox.showerror("Error", "Please fill in all network settings")
+        if not ip:
+            messagebox.showerror("Error", "Please enter an IP address")
             return
             
-        if not all(validate_ip_address(addr) for addr in [ip, subnet, gateway]):
+        if not validate_ip_address(ip):
             messagebox.showerror("Error", "Invalid IP address format")
             return
             
-        self.log_info(f"Configuring network: IP={ip}, Subnet={subnet}, Gateway={gateway}")
+        self.log_info(f"Configuring IP address: IP={ip}")
         
         try:
-            result = configure_controller_network_dmc4143(self.controller, ip, subnet, gateway)
+            result = configure_controller_network_dmc4143(self.controller, ip)
             
             if result['success']:
                 self.log_success("Network configuration completed successfully")
@@ -1019,19 +1502,17 @@ class GalilSetupApp:
             messagebox.showerror("Error", "Please connect to a controller first")
             return
             
-        # Get current settings from entry fields
+        # Get current IP from entry field
         ip = self.new_ip_entry.get().strip()
-        subnet = self.subnet_entry.get().strip()
-        gateway = self.gateway_entry.get().strip()
         
-        if not all([ip, subnet, gateway]):
-            messagebox.showerror("Error", "Please fill in all network settings first")
+        if not ip:
+            messagebox.showerror("Error", "Please enter an IP address first")
             return
             
         self.log_info("=== FORCE SAVE NETWORK SETTINGS ===")
         
         try:
-            results = force_save_network_settings_dmc4143(self.controller, ip, subnet, gateway)
+            results = force_save_network_settings_dmc4143(self.controller, ip)
             
             if results.get('success'):
                 self.log_success("Force save completed successfully")
@@ -2153,7 +2634,7 @@ class GalilSetupApp:
             
     def jog_axis(self, direction):
         """Jog the selected axis by the specified distance"""
-        if not self.controller:
+        if not self.ensure_controller_connection():
             messagebox.showerror("Error", "Please connect to a controller first")
             return
             
@@ -2202,7 +2683,7 @@ class GalilSetupApp:
             
     def move_to_position(self):
         """Move the selected axis to the specified position"""
-        if not self.controller:
+        if not self.ensure_controller_connection():
             messagebox.showerror("Error", "Please connect to a controller first")
             return
             
@@ -3551,9 +4032,397 @@ class GalilSetupApp:
     def auto_connect_to_controller(self):
         """Automatically detect and connect to the Galil controller on startup"""
         if self.connection_manager:
-            self.connection_manager.auto_connect_to_controller("10.1.0.21", self.update_connection_status)
+            # Auto-connect disabled - no default IP address
+            # self.connection_manager.auto_connect_to_controller("", self.update_connection_status)
+            pass
         else:
             self.append_test_log("ERROR: Connection manager not initialized")
+
+    def ensure_controller_connection(self):
+        """Ensure we have a healthy controller connection before operations"""
+        if not self.connection_manager:
+            return False
+        
+        # Ensure connection health
+        if not self.connection_manager.ensure_connection():
+            self.append_test_log("ERROR: Controller connection lost and could not be restored")
+            return False
+        
+        # Update local references to ensure they're current
+        if self.connection_manager.controller:
+            self.controller = self.connection_manager.controller
+            self.controller_commands = self.connection_manager.controller_commands
+            # Reinitialize diagnostics if needed
+            if not self.diagnostics:
+                self.diagnostics = GalilDiagnostics(self.controller, safe_mode=True)
+        
+        return True
+    
+    def reset_connection_state(self):
+        """Reset connection state for troubleshooting"""
+        if self.connection_manager:
+            self.connection_manager.reset_connection_state()
+            # Clear local references
+            self.controller = None
+            self.controller_commands = None
+            self.diagnostics = None
+            # Update UI
+            self.update_connection_status(False)
+            self.append_test_log("Connection state has been reset. Please reconnect manually.")
+        else:
+            self.append_test_log("ERROR: Connection manager not initialized")
+    
+    def diagnose_connection_issue(self, ip_address="10.1.0.21"):
+        """Diagnose connection issues step by step"""
+        self.append_test_log("=== NETWORK CONNECTIVITY DIAGNOSIS ===")
+        
+        if self.connection_manager:
+            # Test 1: Check local network configuration
+            self.append_test_log("Test 1: Checking local network configuration...")
+            try:
+                import socket
+                hostname = socket.gethostname()
+                local_ip = socket.gethostbyname(hostname)
+                self.append_test_log(f"✓ Local computer IP: {local_ip}")
+                self.append_test_log(f"✓ Target controller IP: {ip_address}")
+                
+                # Check if we're on the same network
+                local_network = '.'.join(local_ip.split('.')[:-1])
+                target_network = '.'.join(ip_address.split('.')[:-1])
+                if local_network == target_network:
+                    self.append_test_log("✓ Same network range detected")
+                else:
+                    self.append_test_log(f"⚠ Different network ranges: {local_network} vs {target_network}")
+            except Exception as e:
+                self.append_test_log(f"✗ Network config check failed: {e}")
+            
+            # Test 2: Basic ping
+            self.append_test_log("Test 2: Basic ping test...")
+            if self.connection_manager.test_basic_connectivity(ip_address):
+                self.append_test_log("✓ Ping successful")
+            else:
+                self.append_test_log("✗ Ping failed - controller not reachable")
+                self.append_test_log("  Possible causes:")
+                self.append_test_log("  - Controller is powered off")
+                self.append_test_log("  - Network cable disconnected")
+                self.append_test_log("  - Controller IP address changed")
+                self.append_test_log("  - Network configuration issue")
+                return False
+            
+            # Test 3: Reset connection state
+            self.append_test_log("Test 3: Resetting connection state...")
+            self.connection_manager.reset_connection_state()
+            
+            # Test 4: Try direct connection without monitoring
+            self.append_test_log("Test 4: Attempting direct connection...")
+            try:
+                from galil_combined import GalilController
+                test_controller = GalilController()
+                test_controller.connect(ip_address)
+                test_controller.disconnect()
+                self.append_test_log("✓ Direct connection successful")
+                return True
+            except Exception as e:
+                self.append_test_log(f"✗ Direct connection failed: {e}")
+                return False
+        else:
+            self.append_test_log("ERROR: Connection manager not initialized")
+            return False
+    
+    def find_controller_on_network(self):
+        """Try to find the controller on different common IP addresses"""
+        self.append_test_log("=== CONTROLLER DISCOVERY ===")
+        
+        # Get local network range
+        try:
+            import socket
+            hostname = socket.gethostname()
+            local_ip = socket.gethostbyname(hostname)
+            network_base = '.'.join(local_ip.split('.')[:-1])
+            self.append_test_log(f"Local network: {network_base}.x")
+        except:
+            network_base = "192.168.6"  # Default based on your scan results
+        
+        # Common IP addresses to try (prioritize your current network)
+        common_ips = [
+            # Your current network range
+            f"{network_base}.100",
+            f"{network_base}.101", 
+            f"{network_base}.102",
+            f"{network_base}.50",
+            f"{network_base}.51",
+            f"{network_base}.52",
+            # Original target network
+            "10.1.0.21",
+            "10.1.0.20",
+            "10.1.0.22",
+            "10.1.0.23",
+            # Other common ranges
+            "192.168.1.100",
+            "192.168.0.100", 
+            "192.168.1.50",
+            "192.168.0.50",
+            "10.0.0.100",
+            "172.16.0.100"
+        ]
+        
+        self.append_test_log("Scanning IP addresses...")
+        found_ips = []
+        
+        for ip in common_ips:
+            self.append_test_log(f"Testing {ip}...")
+            try:
+                if self.connection_manager.test_basic_connectivity(ip):
+                    self.append_test_log(f"✓ Controller found at {ip}")
+                    found_ips.append(ip)
+                else:
+                    self.append_test_log(f"✗ No response from {ip}")
+            except Exception as e:
+                self.append_test_log(f"✗ Error testing {ip}: {e}")
+        
+        if found_ips:
+            self.append_test_log(f"✓ Found {len(found_ips)} potential controller(s): {', '.join(found_ips)}")
+            self.append_test_log("Try connecting to one of these IP addresses")
+            return found_ips
+        else:
+            self.append_test_log("✗ No controllers found on scanned IP addresses")
+            self.append_test_log("")
+            self.append_test_log("NETWORK CONFIGURATION ISSUE DETECTED:")
+            self.append_test_log(f"Your computer is on: {local_ip} (192.168.6.0/24)")
+            self.append_test_log("Controller target is: 10.1.0.21 (10.1.0.0/24)")
+            self.append_test_log("")
+            self.append_test_log("SOLUTIONS:")
+            self.append_test_log("1. Change your computer's IP to 10.1.0.100")
+            self.append_test_log("2. Connect controller to your current network")
+            self.append_test_log("3. Use a network bridge/router between networks")
+            return []
+    
+    def scan_local_network_range(self):
+        """Scan the local network range for any responding devices"""
+        self.append_test_log("=== LOCAL NETWORK SCAN ===")
+        self.update_discovery_status("Scanning local network range...")
+        
+        # Run network scan in separate thread to prevent UI freezing
+        def scan_thread():
+            try:
+                import socket
+                hostname = socket.gethostname()
+                local_ip = socket.gethostbyname(hostname)
+                network_base = '.'.join(local_ip.split('.')[:-1])
+                
+                self.root.after(0, lambda: self.append_test_log(f"Scanning {network_base}.1-20..."))
+                self.root.after(0, lambda: self.append_test_log("This may take a few minutes..."))
+                
+                found_devices = []
+                
+                # Scan first 20 IPs in the range
+                for i in range(1, 21):
+                    ip = f"{network_base}.{i}"
+                    if ip == local_ip:
+                        continue  # Skip our own IP
+                        
+                    self.root.after(0, lambda ip=ip: self.append_test_log(f"Scanning {ip}..."))
+                    try:
+                        if self.connection_manager.test_basic_connectivity(ip):
+                            found_devices.append(ip)
+                            self.root.after(0, lambda ip=ip: self.append_test_log(f"✓ Device found at {ip}"))
+                        else:
+                            self.root.after(0, lambda ip=ip: self.append_test_log(f"✗ No response from {ip}"))
+                    except Exception as e:
+                        self.root.after(0, lambda ip=ip, e=e: self.append_test_log(f"✗ Error testing {ip}: {e}"))
+                
+                # Update UI in main thread
+                self.root.after(0, lambda: self.handle_scan_results(found_devices))
+                
+            except Exception as e:
+                self.root.after(0, lambda: self.append_test_log(f"✗ Network scan failed: {e}"))
+                self.root.after(0, lambda: self.update_discovery_status(f"Network scan failed: {e}"))
+        
+        # Start scan in background thread
+        import threading
+        thread = threading.Thread(target=scan_thread, daemon=True)
+        thread.start()
+    
+    def handle_scan_results(self, found_devices):
+        """Handle scan results in main thread"""
+        if found_devices:
+            self.append_test_log(f"✓ Found {len(found_devices)} devices: {', '.join(found_devices)}")
+            self.append_test_log("Try connecting to these IP addresses")
+            self.update_discovery_status(f"Found {len(found_devices)} devices: {', '.join(found_devices)}")
+        else:
+            self.append_test_log("✗ No devices found in local network range")
+            self.update_discovery_status("No devices found in local network range")
+    
+    def comprehensive_controller_search(self):
+        """Comprehensive search for Galil controllers across multiple networks"""
+        self.append_test_log("=== COMPREHENSIVE CONTROLLER SEARCH ===")
+        self.update_discovery_status("Comprehensive controller search in progress...")
+        
+        # Run comprehensive search in separate thread to prevent UI freezing
+        def search_thread():
+            try:
+                import socket
+                hostname = socket.gethostname()
+                local_ip = socket.gethostbyname(hostname)
+                local_network = '.'.join(local_ip.split('.')[:-1])
+                
+                # Networks to search (reduced to prevent long scan times)
+                networks_to_search = [
+                    f"{local_network}.",      # Your local network (192.168.6.)
+                    "10.1.0.",               # Original controller network
+                    "192.168.1.",            # Common home network
+                ]
+                
+                found_controllers = []
+                
+                for network_base in networks_to_search:
+                    self.root.after(0, lambda nb=network_base: self.append_test_log(f"Searching network: {nb}x"))
+                    
+                    # Search IPs 1-50 in each network (reduced range)
+                    for i in range(1, 51):
+                        ip = f"{network_base}{i}"
+                        
+                        # Test if it's a Galil controller
+                        if self.test_galil_controller_at_ip(ip):
+                            found_controllers.append(ip)
+                            self.root.after(0, lambda ip=ip: self.append_test_log(f"✓ Galil controller found at {ip}"))
+                            
+                            # Update IP entry field with found controller
+                            if hasattr(self, 'ip_entry') and self.ip_entry.winfo_exists():
+                                # IP entry remains blank - no auto-fill
+                                pass
+                
+                # Update UI in main thread
+                self.root.after(0, lambda: self.handle_comprehensive_search_results(found_controllers))
+                
+            except Exception as e:
+                self.root.after(0, lambda: self.append_test_log(f"✗ Comprehensive search failed: {e}"))
+                self.root.after(0, lambda: self.update_discovery_status(f"Search failed: {e}"))
+        
+        # Start search in background thread
+        import threading
+        thread = threading.Thread(target=search_thread, daemon=True)
+        thread.start()
+    
+    def handle_comprehensive_search_results(self, found_controllers):
+        """Handle comprehensive search results in main thread"""
+        if found_controllers:
+            self.append_test_log(f"✓ Found {len(found_controllers)} Galil controller(s): {', '.join(found_controllers)}")
+            # Convert list to dict with empty names for reuse in dialog presenter
+            try:
+                self._last_discovered_controllers = {ip: '' for ip in found_controllers}
+            except Exception:
+                pass
+            self.update_discovery_status(f"Found {len(found_controllers)} Galil controller(s) - Click to see details")
+            
+            # Show dialog with found controllers
+            self.show_found_controllers_dialog({ip: '' for ip in found_controllers})
+        else:
+            self.append_test_log("✗ No Galil controllers found")
+            self.update_discovery_status("No Galil controllers found")
+            self.append_test_log("")
+            self.append_test_log("TROUBLESHOOTING SUGGESTIONS:")
+            self.append_test_log("1. Check controller power")
+            self.append_test_log("2. Verify network cable connection")
+            self.append_test_log("3. Check if controller is on different network")
+            self.append_test_log("4. Try connecting directly with known IP")
+    
+    def test_galil_controller_at_ip(self, ip_address):
+        """Test if a specific IP address has a Galil controller"""
+        try:
+            # Quick connectivity test first
+            if not self.connection_manager.test_basic_connectivity(ip_address):
+                return False
+            
+            # Try to connect with gclib
+            from galil_combined import GalilController
+            test_controller = GalilController()
+            test_controller.connect(ip_address)
+            
+            # Try a simple command
+            response = test_controller.send_command("TP A")
+            test_controller.disconnect()
+            
+            return response is not None
+            
+        except:
+            return False
+    
+    def show_found_controllers_dialog(self, controllers):
+        """Show dialog with found controllers"""
+        try:
+            dialog = tk.Toplevel(self.root)
+            dialog.title("Found Galil Controllers")
+            dialog.geometry("500x400")
+            dialog.configure(bg=self.colors['main_bg'])
+            
+            # Title
+            title_label = tk.Label(dialog, text="🎯 Found Galil Controllers", 
+                                font=("Arial", 16, "bold"), 
+                                bg=self.colors['main_bg'], fg=self.colors['main_fg'])
+            title_label.pack(pady=20)
+            
+            # Instructions
+            instructions = tk.Label(dialog, 
+                                 text="Click 'Connect' next to any controller to connect to it",
+                                 font=("Arial", 10), 
+                                 bg=self.colors['main_bg'], fg=self.colors['main_fg'])
+            instructions.pack(pady=(0, 20))
+            
+            # Controller list
+            for i, ip in enumerate(controllers, 1):
+                controller_frame = tk.Frame(dialog, bg=self.colors['card_bg'], relief='solid', bd=1)
+                controller_frame.pack(fill='x', padx=20, pady=5)
+                
+                # Controller info
+                info_label = tk.Label(controller_frame, 
+                                    text=f"{i}. Galil Controller at {ip}",
+                                    font=("Arial", 11, "bold"), 
+                                    bg=self.colors['card_bg'], fg=self.colors['main_fg'])
+                info_label.pack(side='left', padx=15, pady=10)
+                
+                # Connect button
+                connect_btn = tk.Button(controller_frame, text="Connect", 
+                                      font=("Arial", 10, "bold"),
+                                      bg=self.colors['success_green'], fg='white',
+                                      command=lambda ip=ip: self.connect_to_found_controller(ip, dialog))
+                connect_btn.pack(side='right', padx=15, pady=10)
+            
+            # Close button
+            close_btn = tk.Button(dialog, text="Close", 
+                                font=("Arial", 12, "bold"),
+                                bg=self.colors['accent_blue'], fg='white',
+                                command=dialog.destroy)
+            close_btn.pack(pady=20)
+            
+        except Exception as e:
+            self.append_test_log(f"Error showing found controllers dialog: {e}")
+    
+    def connect_to_found_controller(self, ip_address, dialog):
+        """Connect to a found controller"""
+        try:
+            self.append_test_log(f"Connecting to found controller at {ip_address}")
+            
+            # Update IP entry field
+            if hasattr(self, 'ip_entry') and self.ip_entry.winfo_exists():
+                self.ip_entry.delete(0, tk.END)
+                # IP entry remains blank - no auto-fill
+            
+            # Close dialog
+            dialog.destroy()
+            
+            # Attempt connection
+            if self.connection_manager:
+                success = self.connection_manager.connect_to_controller(ip_address, self.update_connection_status)
+                if success:
+                    self.append_test_log(f"Successfully connected to {ip_address}")
+                else:
+                    self.append_test_log(f"Failed to connect to {ip_address}")
+            else:
+                self.append_test_log("Connection manager not initialized")
+                
+        except Exception as e:
+            self.append_test_log(f"Error connecting to found controller: {e}")
 
     def refresh_connection_status_display(self):
         """Refresh the connection status display based on current connection state"""
@@ -3589,27 +4458,60 @@ class GalilSetupApp:
             if hasattr(self, 'connection_status_label') and self.connection_status_label.winfo_exists():
                 self.connection_status_label.config(text="Connected", fg=self.colors['success_green'])
             
-            # Start encoder update loop with a small delay to ensure controller is fully initialized
-            self.root.after(100, self.start_encoder_update)
+            # Enable quick IP change button when connected
+            if hasattr(self, 'quick_ip_change_btn') and self.quick_ip_change_btn.winfo_exists():
+                self.quick_ip_change_btn.config(state='normal')
+            
+            # Enable main IP change button when connected
+            if hasattr(self, 'main_ip_change_btn') and self.main_ip_change_btn.winfo_exists():
+                self.main_ip_change_btn.config(state='normal')
+            
+            # Ensure we have the controller reference from connection manager
+            if self.connection_manager and self.connection_manager.controller:
+                self.controller = self.connection_manager.controller
+                self.controller_commands = self.connection_manager.controller_commands
+                # Reinitialize diagnostics with current controller
+                if self.controller:
+                    self.diagnostics = GalilDiagnostics(self.controller, safe_mode=True)
+            
+            # Update controller information display (after controller reference is set)
+            # Add a small delay to let the connection stabilize before querying info
+            self.root.after(1000, self.update_controller_info_display)
+            
+            # Do not auto-start encoder polling to avoid spamming the controller.
+            # The encoder update loop can be started manually from the testing tools.
+            self.test_encoder_update_running = False
+            # Ensure no encoder thread is running
+            if hasattr(self, 'test_encoder_update_thread') and self.test_encoder_update_thread.is_alive():
+                self.test_encoder_update_thread.join(timeout=0.1)
                 
         else:
-            # Clear controller reference when disconnected
-            self.controller = None
-            self.controller_commands = None
-            self.diagnostics = None
+            # Don't clear controller references - let connection manager handle this
+            # This prevents losing connection during tab switches
+            # Only clear if we're explicitly disconnecting
+            pass
+
+            # Disable quick IP change button when disconnected
+            if hasattr(self, 'quick_ip_change_btn') and self.quick_ip_change_btn.winfo_exists():
+                self.quick_ip_change_btn.config(state='disabled')
             
-            # Stop encoder update loop
+            # Disable main IP change button when disconnected
+            if hasattr(self, 'main_ip_change_btn') and self.main_ip_change_btn.winfo_exists():
+                self.main_ip_change_btn.config(state='disabled')
+            
+            # Clear controller information display
+            self.clear_controller_info_display()
+            
+            # Stop encoder update loop (quietly)
             self.test_encoder_update_running = False
-            if hasattr(self, 'test_encoder_update_thread') and self.test_encoder_update_thread.is_alive():
-                self.test_encoder_update_thread.join(timeout=1.0)
             
-            # Update global header connection status
-            if hasattr(self, 'gui_framework') and hasattr(self.gui_framework, 'connection_status') and self.gui_framework.connection_status.winfo_exists():
+        # Update global header connection status for disconnected state
+        if not connected and hasattr(self, 'gui_framework') and hasattr(self.gui_framework, 'connection_status') and self.gui_framework.connection_status.winfo_exists():
                 self.gui_framework.connection_status.config(text="Disconnected", fg=self.colors['error_red'])
             
-            # Update local connection status label (if it exists in network config tab)
-            if hasattr(self, 'connection_status_label') and self.connection_status_label.winfo_exists():
-                self.connection_status_label.config(text="Disconnected", fg=self.colors['error_red'])
+        # Update local connection status label for disconnected state
+        if not connected and hasattr(self, 'connection_status_label') and self.connection_status_label.winfo_exists():
+            self.connection_status_label.config(text="Disconnected", fg=self.colors['error_red'])
             
             # Update all position labels to show disconnected
             if hasattr(self, 'encoder_labels'):
@@ -3746,22 +4648,24 @@ class GalilSetupApp:
 
     def start_encoder_update(self):
         """Start the encoder position update loop if controller is connected"""
+        # Ensure we have a healthy controller connection
+        if not self.ensure_controller_connection():
+            self.append_test_log("Cannot start encoder update: No healthy controller connection")
+            return False
+        
         # Debug: Log controller reference status
         self.append_test_log(f"DEBUG: start_encoder_update called, controller is None: {self.controller is None}")
         if self.controller:
             self.append_test_log(f"DEBUG: Controller type: {type(self.controller)}")
         
-        if not self.controller:
-            self.append_test_log("Cannot start encoder update: No controller connected")
-            return False
-        
-        # Check if controller is actually connected by testing a simple command
+        # Lightweight connection check without spamming commands
         try:
-            self.append_test_log("DEBUG: Testing controller with TP A command...")
-            response = self.controller.send_command("TP A")
-            self.append_test_log(f"DEBUG: TP A response: {response}")
+            handle_state = True if self.controller else False
+            if not handle_state:
+                self.append_test_log("Cannot start encoder update: No controller handle")
+                return False
         except Exception as e:
-            self.append_test_log(f"Cannot start encoder update: Controller not responding ({e})")
+            self.append_test_log(f"Cannot start encoder update: Controller not ready ({e})")
             return False
             
         try:
@@ -3770,12 +4674,12 @@ class GalilSetupApp:
             if hasattr(self, 'test_encoder_update_thread') and self.test_encoder_update_thread.is_alive():
                 self.test_encoder_update_thread.join(timeout=1.0)
             
-            # Start new encoder update loop
+            # Start new encoder update loop with longer intervals to avoid overwhelming controller
             self.test_encoder_update_running = True
             self.test_encoder_update_thread = threading.Thread(target=self.test_encoder_update_loop, daemon=True)
             self.test_encoder_update_thread.start()
             
-            self.append_test_log("Encoder position update started")
+            self.append_test_log("Encoder position update started (slow mode to protect controller)")
             return True
             
         except Exception as e:
@@ -3803,6 +4707,1306 @@ class GalilSetupApp:
             self.append_test_log("Encoder overlay stopped")
         except Exception as e:
             self.append_test_log(f"Failed to stop encoder overlay: {e}")
+    
+    def stop_encoder_updates(self):
+        """Stop the encoder update loop"""
+        try:
+            self.test_encoder_update_running = False
+            self.append_test_log("Encoder updates stopped")
+        except Exception as e:
+            self.append_test_log(f"Failed to stop encoder updates: {e}")
+    
+    def refresh_controller_info(self):
+        """Refresh the controller information display"""
+        try:
+            self.append_test_log("Refreshing controller information...")
+            # Add a small delay to ensure any ongoing operations complete
+            self.root.after(500, self.update_controller_info_display)
+            self.append_test_log("Controller information refresh initiated")
+        except Exception as e:
+            self.append_test_log(f"Failed to refresh controller info: {e}")
+    
+    def run_motor_setup(self):
+        """Run complete motor setup process"""
+        try:
+            # Check if controller is connected
+            if not self.controller:
+                self.append_test_log("ERROR: No controller connected. Please connect first.")
+                messagebox.showerror("Error", "No controller connected. Please connect to a controller first.")
+                return
+            
+            # Get motor specifications from GUI
+            try:
+                encoder_counts = int(self.encoder_counts_entry.get())
+                pole_pairs = int(self.pole_pairs_entry.get())
+            except ValueError:
+                self.append_test_log("ERROR: Invalid motor specifications. Please enter valid numbers.")
+                messagebox.showerror("Error", "Please enter valid encoder counts and pole pairs.")
+                return
+            
+            if encoder_counts <= 0 or pole_pairs <= 0:
+                self.append_test_log("ERROR: Encoder counts and pole pairs must be positive numbers.")
+                messagebox.showerror("Error", "Encoder counts and pole pairs must be positive numbers.")
+                return
+            
+            # Get axis selection
+            axis = self.motor_setup_axis_var.get()
+            
+            # Get commutation method
+            comm_method_str = self.commutation_method_var.get()
+            from motor_setup import CommutationMethod
+            if comm_method_str == "bx":
+                comm_method = CommutationMethod.BX
+            elif comm_method_str == "bz":
+                comm_method = CommutationMethod.BZ
+            elif comm_method_str == "bc_bi":
+                comm_method = CommutationMethod.BC_BI
+            else:
+                comm_method = CommutationMethod.BX
+            
+            # Create motor specifications
+            from motor_setup import MotorSpecs
+            motor_specs = MotorSpecs(
+                encoder_counts_per_rev=encoder_counts,
+                pole_pairs=pole_pairs,
+                has_index=self.has_index_var.get(),
+                has_halls=self.has_halls_var.get()
+            )
+            
+            # Disable setup button and enable stop button
+            self.run_motor_setup_btn.config(state='disabled')
+            self.stop_motor_setup_btn.config(state='normal')
+            
+            # Run setup in background thread
+            def setup_thread():
+                try:
+                    from motor_setup import MotorSetup, SetupResult
+                    motor_setup = MotorSetup(self.controller, self.append_test_log)
+                    
+                    self.append_test_log(f"Starting motor setup for axis {axis}...")
+                    self.append_test_log(f"Motor specs: {encoder_counts} counts/rev, {pole_pairs} pole pairs")
+                    self.append_test_log(f"Commutation method: {comm_method.value}")
+                    
+                    # Validate command sequence before execution
+                    self.append_test_log("Validating command sequence...")
+                    validations = motor_setup.validate_setup_sequence(axis, motor_specs, comm_method)
+                    
+                    # Check for validation errors
+                    validation_errors = [v for v in validations if not v.valid]
+                    if validation_errors:
+                        self.append_test_log("Command validation failed:")
+                        for error in validation_errors:
+                            self.append_test_log(f"  {error.command}: {error.error_message}")
+                        messagebox.showerror("Validation Error", 
+                                           f"Command validation failed. Check log for details.")
+                        return
+                    
+                    # Check for warnings
+                    validation_warnings = [v for v in validations if v.warning_message]
+                    if validation_warnings:
+                        self.append_test_log("Command validation warnings:")
+                        for warning in validation_warnings:
+                            self.append_test_log(f"  {warning.command}: {warning.warning_message}")
+                    
+                    self.append_test_log("✓ Command sequence validated successfully")
+                    
+                    # Run complete setup with manual input handling
+                    # We need to run this in the main thread to show dialogs
+                    self._motor_setup_data = {
+                        'motor_setup': motor_setup,
+                        'axis': axis,
+                        'motor_specs': motor_specs,
+                        'comm_method': comm_method
+                    }
+                    self.root.after(100, self._run_motor_setup_with_manual_input)
+                    
+                except Exception as e:
+                    self.append_test_log(f"Motor setup failed: {str(e)}")
+                    messagebox.showerror("Setup Error", f"Motor setup failed: {str(e)}")
+                
+                finally:
+                    pass  # Button state will be handled in main thread
+            
+            # Start setup thread
+            import threading
+            thread = threading.Thread(target=setup_thread, daemon=True)
+            thread.start()
+            
+        except Exception as e:
+            self.append_test_log(f"Failed to start motor setup: {e}")
+            messagebox.showerror("Error", f"Failed to start motor setup: {e}")
+    
+    def stop_motor_setup(self):
+        """Stop motor setup process"""
+        try:
+            self.append_test_log("Motor setup stop requested...")
+            # Note: The setup process will check for stop conditions
+            # This is a placeholder for future implementation
+        except Exception as e:
+            self.append_test_log(f"Failed to stop motor setup: {e}")
+    
+    def send_command(self):
+        """Send a command to the controller"""
+        if not self.connection_manager.controller or not self.connection_manager.controller.g:
+            self.log_message("❌ No controller connected. Please connect first.")
+            return
+        
+        command = self.command_entry.get().strip()
+        if not command:
+            self.log_message("❌ Please enter a command")
+            return
+        
+        try:
+            # Add command to history
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            self.command_history_text.insert(tk.END, f"[{timestamp}] > {command}\n")
+            
+            # Send command to controller
+            response = self.connection_manager.controller.send_command(command)
+            
+            # Add response to history
+            if response:
+                self.command_history_text.insert(tk.END, f"[{timestamp}] < {response}\n")
+            else:
+                self.command_history_text.insert(tk.END, f"[{timestamp}] < (no response)\n")
+            
+            # Clear the input field
+            self.command_entry.delete(0, tk.END)
+            
+            # Scroll to bottom
+            self.command_history_text.see(tk.END)
+            
+            # Log to main log as well
+            self.log_message(f"Command sent: {command} -> {response}")
+            
+        except Exception as e:
+            error_msg = f"Command failed: {str(e)}"
+            self.log_message(f"❌ {error_msg}")
+            self.command_history_text.insert(tk.END, f"[{timestamp}] ERROR: {error_msg}\n")
+            self.command_history_text.see(tk.END)
+    
+    def clear_command_history(self):
+        """Clear the command history"""
+        self.command_history_text.delete(1.0, tk.END)
+        self.log_message("Command history cleared")
+    
+    def insert_command(self, command):
+        """Insert a command into the command entry field"""
+        self.command_entry.delete(0, tk.END)
+        self.command_entry.insert(0, command)
+        self.command_entry.focus()
+    
+    def _send_dialog_command(self, cmd_entry, cmd_history, dialog):
+        """Send command from dialog interface"""
+        if not self.connection_manager.controller or not self.connection_manager.controller.g:
+            cmd_history.insert(tk.END, "❌ No controller connected\n")
+            cmd_history.see(tk.END)
+            return
+        
+        command = cmd_entry.get().strip()
+        if not command:
+            cmd_history.insert(tk.END, "❌ Please enter a command\n")
+            cmd_history.see(tk.END)
+            return
+        
+        try:
+            # Add command to history
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            cmd_history.insert(tk.END, f"[{timestamp}] > {command}\n")
+            
+            # Send command to controller
+            response = self.connection_manager.controller.send_command(command)
+            
+            # Add response to history
+            if response:
+                cmd_history.insert(tk.END, f"[{timestamp}] < {response}\n")
+            else:
+                cmd_history.insert(tk.END, f"[{timestamp}] < (no response)\n")
+            
+            # Clear the input field
+            cmd_entry.delete(0, tk.END)
+            
+            # Scroll to bottom
+            cmd_history.see(tk.END)
+            
+            # Log to main log as well
+            self.log_message(f"Dialog command: {command} -> {response}")
+            
+        except Exception as e:
+            error_msg = f"Command failed: {str(e)}"
+            cmd_history.insert(tk.END, f"[{timestamp}] ERROR: {error_msg}\n")
+            cmd_history.see(tk.END)
+            self.log_message(f"❌ Dialog command failed: {error_msg}")
+    
+    def _insert_dialog_command(self, cmd_entry, command):
+        """Insert a command into the dialog command entry field"""
+        cmd_entry.delete(0, tk.END)
+        cmd_entry.insert(0, command)
+        cmd_entry.focus()
+    
+    def _run_automatic_index_measurement(self, axis, p1_entry, p2_entry, exact_entry, pole_entry, cmd_history):
+        """Run PRECISE automatic index measurement with motion monitoring"""
+        if not self.connection_manager.controller or not self.connection_manager.controller.g:
+            cmd_history.insert(tk.END, "❌ No controller connected\n")
+            cmd_history.see(tk.END)
+            return
+        
+        try:
+            cmd_history.insert(tk.END, "🚀 Starting PRECISE automatic index measurement...\n")
+            cmd_history.see(tk.END)
+            
+            # Check connection before starting
+            try:
+                test_response = self.connection_manager.controller.send_command("TP A")
+                cmd_history.insert(tk.END, f"✓ Connection verified: TP A -> {test_response}\n")
+                cmd_history.see(tk.END)
+            except Exception as e:
+                cmd_history.insert(tk.END, f"❌ Connection test failed: {str(e)}\n")
+                cmd_history.see(tk.END)
+                return
+            
+            # Helper function to wait for motion to complete
+            def wait_for_motion_complete(axis, timeout=30):
+                """Wait for motion to complete by monitoring position changes"""
+                cmd_history.insert(tk.END, f"⏳ Monitoring motion completion...\n")
+                cmd_history.see(tk.END)
+                
+                start_time = time.time()
+                last_position = None
+                stable_count = 0
+                
+                while time.time() - start_time < timeout:
+                    try:
+                        current_pos = float(self.connection_manager.controller.send_command(f"TP {axis}"))
+                        if last_position is not None:
+                            if abs(current_pos - last_position) < 1:  # Position stable within 1 count
+                                stable_count += 1
+                                if stable_count >= 3:  # Stable for 3 consecutive readings
+                                    cmd_history.insert(tk.END, f"✓ Motion completed at position {current_pos}\n")
+                                    cmd_history.see(tk.END)
+                                    return True
+                            else:
+                                stable_count = 0
+                        last_position = current_pos
+                        time.sleep(0.5)
+                    except Exception as e:
+                        cmd_history.insert(tk.END, f"⚠️ Motion monitoring error: {str(e)}\n")
+                        cmd_history.see(tk.END)
+                        time.sleep(0.5)
+                
+                cmd_history.insert(tk.END, f"⚠️ Motion monitoring timeout after {timeout}s\n")
+                cmd_history.see(tk.END)
+                return False
+            
+            # First measurement - allow motor to run for multiple revolutions
+            cmd_history.insert(tk.END, "📏 First index measurement (multiple revolutions)...\n")
+            cmd_history.see(tk.END)
+            
+            # Latch on index
+            try:
+                response1 = self.connection_manager.controller.send_command(f"AL T{axis}")
+                cmd_history.insert(tk.END, f"AL T{axis} -> {response1}\n")
+                cmd_history.see(tk.END)
+            except Exception as e:
+                cmd_history.insert(tk.END, f"❌ AL T{axis} failed: {str(e)}\n")
+                cmd_history.see(tk.END)
+                return
+            
+            # Set moderate jog speed for controlled motion
+            try:
+                response2 = self.connection_manager.controller.send_command(f"JG{axis}=3000")
+                cmd_history.insert(tk.END, f"JG{axis}=3000 -> {response2}\n")
+                cmd_history.see(tk.END)
+            except Exception as e:
+                cmd_history.insert(tk.END, f"❌ JG{axis}=3000 failed: {str(e)}\n")
+                cmd_history.see(tk.END)
+                return
+            
+            # Begin motion
+            try:
+                response3 = self.connection_manager.controller.send_command(f"BG{axis}")
+                cmd_history.insert(tk.END, f"BG{axis} -> {response3}\n")
+                cmd_history.see(tk.END)
+            except Exception as e:
+                cmd_history.insert(tk.END, f"❌ BG{axis} failed: {str(e)}\n")
+                cmd_history.see(tk.END)
+                return
+            
+            # Wait for motion to complete with monitoring
+            if not wait_for_motion_complete(axis, timeout=20):
+                cmd_history.insert(tk.END, f"⚠️ First measurement timeout, stopping motion\n")
+                cmd_history.see(tk.END)
+            
+            # Stop motion
+            try:
+                self.connection_manager.controller.send_command(f"ST{axis}")
+                cmd_history.insert(tk.END, f"ST{axis} -> Motion stopped\n")
+                cmd_history.see(tk.END)
+            except Exception as e:
+                cmd_history.insert(tk.END, f"⚠️ ST{axis} failed: {str(e)}\n")
+                cmd_history.see(tk.END)
+            
+            # Wait a moment for position to stabilize
+            time.sleep(1)
+            
+            # Read latched position
+            try:
+                response4 = self.connection_manager.controller.send_command(f"RL{axis}")
+                cmd_history.insert(tk.END, f"RL{axis} -> {response4}\n")
+                cmd_history.see(tk.END)
+            except Exception as e:
+                cmd_history.insert(tk.END, f"❌ RL{axis} failed: {str(e)}\n")
+                cmd_history.see(tk.END)
+                return
+            
+            try:
+                p1 = float(response4)
+                p1_entry.delete(0, tk.END)
+                p1_entry.insert(0, str(p1))
+                cmd_history.insert(tk.END, f"✓ P1 captured: {p1}\n")
+                cmd_history.see(tk.END)
+            except ValueError:
+                cmd_history.insert(tk.END, f"❌ Invalid P1 response: {response4}\n")
+                cmd_history.see(tk.END)
+                return
+            
+            # Second measurement - run for even more revolutions
+            cmd_history.insert(tk.END, "📏 Second index measurement (additional revolutions)...\n")
+            cmd_history.see(tk.END)
+            
+            # Latch on index again
+            try:
+                response5 = self.connection_manager.controller.send_command(f"AL T{axis}")
+                cmd_history.insert(tk.END, f"AL T{axis} -> {response5}\n")
+                cmd_history.see(tk.END)
+            except Exception as e:
+                cmd_history.insert(tk.END, f"❌ AL T{axis} (2nd) failed: {str(e)}\n")
+                cmd_history.see(tk.END)
+                return
+            
+            # Set jog speed for second measurement
+            try:
+                response6 = self.connection_manager.controller.send_command(f"JG{axis}=3000")
+                cmd_history.insert(tk.END, f"JG{axis}=3000 -> {response6}\n")
+                cmd_history.see(tk.END)
+            except Exception as e:
+                cmd_history.insert(tk.END, f"❌ JG{axis}=3000 (2nd) failed: {str(e)}\n")
+                cmd_history.see(tk.END)
+                return
+            
+            # Begin motion
+            try:
+                response7 = self.connection_manager.controller.send_command(f"BG{axis}")
+                cmd_history.insert(tk.END, f"BG{axis} -> {response7}\n")
+                cmd_history.see(tk.END)
+            except Exception as e:
+                cmd_history.insert(tk.END, f"❌ BG{axis} (2nd) failed: {str(e)}\n")
+                cmd_history.see(tk.END)
+                return
+            
+            # Wait for motion to complete with monitoring
+            if not wait_for_motion_complete(axis, timeout=20):
+                cmd_history.insert(tk.END, f"⚠️ Second measurement timeout, stopping motion\n")
+                cmd_history.see(tk.END)
+            
+            # Stop motion
+            try:
+                self.connection_manager.controller.send_command(f"ST{axis}")
+                cmd_history.insert(tk.END, f"ST{axis} -> Motion stopped\n")
+                cmd_history.see(tk.END)
+            except Exception as e:
+                cmd_history.insert(tk.END, f"⚠️ ST{axis} (2nd) failed: {str(e)}\n")
+                cmd_history.see(tk.END)
+            
+            # Wait a moment for position to stabilize
+            time.sleep(1)
+            
+            # Read latched position
+            try:
+                response8 = self.connection_manager.controller.send_command(f"RL{axis}")
+                cmd_history.insert(tk.END, f"RL{axis} -> {response8}\n")
+                cmd_history.see(tk.END)
+            except Exception as e:
+                cmd_history.insert(tk.END, f"❌ RL{axis} (2nd) failed: {str(e)}\n")
+                cmd_history.see(tk.END)
+                return
+            
+            try:
+                p2 = float(response8)
+                p2_entry.delete(0, tk.END)
+                p2_entry.insert(0, str(p2))
+                cmd_history.insert(tk.END, f"✓ P2 captured: {p2}\n")
+                cmd_history.see(tk.END)
+            except ValueError:
+                cmd_history.insert(tk.END, f"❌ Invalid P2 response: {response8}\n")
+                cmd_history.see(tk.END)
+                return
+            
+            # Calculate exact counts per revolution
+            exact_counts = abs(p2 - p1)
+            
+            # Analyze the results
+            cmd_history.insert(tk.END, f"📊 Analysis:\n")
+            cmd_history.insert(tk.END, f"P1: {p1}\n")
+            cmd_history.insert(tk.END, f"P2: {p2}\n")
+            cmd_history.insert(tk.END, f"Difference: {exact_counts}\n")
+            cmd_history.see(tk.END)
+            
+            if exact_counts == 0:
+                cmd_history.insert(tk.END, f"⚠️ Warning: P1 and P2 are identical ({p1})\n")
+                cmd_history.insert(tk.END, f"This suggests the motor didn't complete enough revolutions.\n")
+                cmd_history.insert(tk.END, f"Try running the measurement again or use manual measurement.\n")
+                cmd_history.insert(tk.END, f"Exact counts/rev: {int(exact_counts)} (needs manual adjustment)\n")
+            elif exact_counts < 1000:
+                cmd_history.insert(tk.END, f"⚠️ Warning: Very small difference ({exact_counts})\n")
+                cmd_history.insert(tk.END, f"This suggests the motor didn't complete enough revolutions.\n")
+                cmd_history.insert(tk.END, f"Expected value should be close to 20,000 for your encoder.\n")
+                cmd_history.insert(tk.END, f"Exact counts/rev: {int(exact_counts)} (suspicious - verify manually)\n")
+            elif 15000 <= exact_counts <= 25000:
+                cmd_history.insert(tk.END, f"✅ Excellent measurement!\n")
+                cmd_history.insert(tk.END, f"Value {exact_counts} is within expected range for 20K encoder.\n")
+                cmd_history.insert(tk.END, f"Exact counts/rev: {int(exact_counts)}\n")
+            else:
+                cmd_history.insert(tk.END, f"⚠️ Unusual measurement: {exact_counts}\n")
+                cmd_history.insert(tk.END, f"This value seems outside the expected range.\n")
+                cmd_history.insert(tk.END, f"Please verify manually or check encoder setup.\n")
+                cmd_history.insert(tk.END, f"Exact counts/rev: {int(exact_counts)}\n")
+            
+            exact_entry.delete(0, tk.END)
+            exact_entry.insert(0, str(int(exact_counts)))
+            
+            # Set pole pairs (from motor specs)
+            pole_entry.delete(0, tk.END)
+            pole_entry.insert(0, "4")  # Default from preset
+            
+            cmd_history.see(tk.END)
+            
+            self.log_message(f"Precise automatic measurement complete: P1={p1}, P2={p2}, Exact counts/rev={int(exact_counts)}")
+            
+        except Exception as e:
+            error_msg = f"Precise automatic measurement failed: {str(e)}"
+            cmd_history.insert(tk.END, f"❌ {error_msg}\n")
+            cmd_history.see(tk.END)
+            self.log_message(error_msg)
+    
+    def show_step_by_step_setup(self):
+        """Show step-by-step motor setup dialog"""
+        try:
+            # Check if controller is connected
+            if not self.controller:
+                messagebox.showerror("Error", "No controller connected. Please connect to a controller first.")
+                return
+            
+            # Create step-by-step setup dialog
+            self.create_step_by_step_setup_dialog()
+            
+        except Exception as e:
+            self.append_test_log(f"Failed to show step-by-step setup: {e}")
+            messagebox.showerror("Error", f"Failed to show step-by-step setup: {e}")
+    
+    def create_step_by_step_setup_dialog(self):
+        """Create step-by-step motor setup dialog"""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Step-by-Step Motor Setup")
+        dialog.geometry("800x600")
+        dialog.configure(bg=self.colors['main_bg'])
+        
+        # Make dialog modal
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        # Title
+        title = tk.Label(dialog, text="Step-by-Step Motor Setup", 
+                        font=("Arial", 16, "bold"), 
+                        bg=self.colors['main_bg'], fg=self.colors['main_fg'])
+        title.pack(pady=20)
+        
+        # Instructions
+        instructions = tk.Text(dialog, height=20, width=80, font=("Arial", 10),
+                             bg=self.colors['card_bg'], fg=self.colors['main_fg'])
+        instructions.pack(pady=20, padx=20, fill='both', expand=True)
+        
+        # Step-by-step instructions
+        setup_instructions = """
+MOTOR SETUP STEP-BY-STEP GUIDE
+==============================
+
+STEP 0: PREPARATION
+-------------------
+1. Ensure proper wiring:
+   - Motor phases connected to AMP-43540
+   - Incremental encoder connected
+   - Hall sensors connected (if available)
+   - Index pulse connected (if available)
+
+2. Put axis in safe state and enable sine mode:
+   MOA          (Motor off)
+   BA A         (Enable sine-drive mode)
+
+STEP 1: DEFINE MOTOR DIRECTION
+------------------------------
+1. Zero the position:
+   DPA=0
+
+2. Manually rotate the motor shaft in your desired + direction
+
+3. Read position:
+   TPA
+
+4. If position increases, keep normal polarity:
+   CEA=0
+
+5. If position decreases, set reversed polarity:
+   CEA=2
+
+STEP 2: SET BRUSHLESS MODULO
+----------------------------
+1. Calculate BM = Encoder Counts per Rev / Pole Pairs
+   Example: 10000 counts/rev ÷ 4 pole pairs = 2500
+
+2. Set brushless modulo:
+   BMA=2500
+
+3. Verify setting:
+   MG _BMA
+
+STEP 3: INITIALIZE COMMUTATION
+------------------------------
+Choose one method:
+
+Method A - BX (Minimal Motion):
+1. Set safety parameters:
+   OEA=1
+   ERA=_BMA
+
+2. Set hold time:
+   BX<1000>
+
+3. Initialize:
+   BXA=-3
+
+Method B - BZ (Drive to Electrical Zero):
+1. Set safety parameters:
+   OEA=1
+   ERA=_BMA
+
+2. Set hold times:
+   BZ<200>100
+
+3. Initialize:
+   BZA=-3
+
+Method C - BC/BI (Hall-based):
+1. Set Hall inputs:
+   BIA=-1
+
+2. Enable Hall calibration:
+   BCA
+
+3. Enable servo and jog:
+   SHA
+   JGA=500
+   BGA
+
+4. Wait for Hall transition, then stop:
+   STA
+
+STEP 4: IMPROVE MODULO (if index available)
+-------------------------------------------
+1. Latch on index:
+   AL TA
+
+2. Jog and wait for index:
+   JGA=2000
+   BGA
+   (Wait for index pulse)
+
+3. Read latched position:
+   RLA
+
+4. Repeat for second index pulse
+
+5. Calculate exact counts per rev and update BM:
+   BMA=exact_counts/pole_pairs
+
+STEP 5: VERIFY COMMUTATION
+--------------------------
+1. Check Hall status:
+   QH A
+
+2. Read electrical angle:
+   MG _BDA
+
+3. Test basic motion:
+   SHA
+   JGA=5000
+   BGA
+   WT 1000
+   STA
+
+STEP 6: SAVE SETTINGS
+---------------------
+1. Burn settings to non-volatile memory:
+   BN
+
+TROUBLESHOOTING
+---------------
+- BX fails with error 160: Try BXA=-4 or flip encoder polarity (CEA=2)
+- Hall errors (QH=0 or 7): Check Hall wiring and BIA setting
+- Runaway/trips: Ensure OEA=1 and ERA>=_BMA during setup
+
+Repeat these steps for axes B, C, and D as needed.
+        """
+        
+        instructions.insert(1.0, setup_instructions)
+        instructions.config(state='disabled')
+        
+        # Close button
+        close_btn = tk.Button(dialog, text="Close", font=("Arial", 12, "bold"),
+                            bg=self.colors['accent_blue'], fg='white',
+                            command=dialog.destroy)
+        close_btn.pack(pady=20)
+    
+    def load_motor_preset(self):
+        """Load motor preset configuration"""
+        try:
+            from motor_presets import preset_manager
+            
+            preset_name = self.motor_preset_var.get()
+            preset = preset_manager.get_preset(preset_name)
+            
+            if not preset:
+                self.append_test_log(f"ERROR: Preset '{preset_name}' not found")
+                messagebox.showerror("Error", f"Preset '{preset_name}' not found")
+                return
+            
+            # Load preset values into GUI
+            self.encoder_counts_entry.delete(0, tk.END)
+            self.encoder_counts_entry.insert(0, str(preset.motor_specs.encoder_counts_per_rev))
+            
+            self.pole_pairs_entry.delete(0, tk.END)
+            self.pole_pairs_entry.insert(0, str(preset.motor_specs.pole_pairs))
+            
+            self.has_index_var.set(preset.motor_specs.has_index)
+            self.has_halls_var.set(preset.motor_specs.has_halls)
+            
+            # Set commutation method
+            if preset.commutation_method.value == "bx":
+                self.commutation_method_var.set("bx")
+            elif preset.commutation_method.value == "bz":
+                self.commutation_method_var.set("bz")
+            elif preset.commutation_method.value == "bc_bi":
+                self.commutation_method_var.set("bc_bi")
+            
+            self.append_test_log(f"Loaded preset: {preset.name}")
+            self.append_test_log(f"Description: {preset.description}")
+            self.append_test_log(f"Encoder counts/rev: {preset.motor_specs.encoder_counts_per_rev}")
+            self.append_test_log(f"Pole pairs: {preset.motor_specs.pole_pairs}")
+            self.append_test_log(f"Commutation method: {preset.commutation_method.value}")
+            self.append_test_log(f"Notes: {preset.notes}")
+            
+            # Show preset details dialog
+            self.show_preset_details_dialog(preset)
+            
+        except Exception as e:
+            self.append_test_log(f"Failed to load preset: {e}")
+            messagebox.showerror("Error", f"Failed to load preset: {e}")
+    
+    def show_preset_details_dialog(self, preset):
+        """Show detailed information about the loaded preset"""
+        dialog = tk.Toplevel(self.root)
+        dialog.title(f"Preset Details: {preset.name}")
+        dialog.geometry("600x500")
+        dialog.configure(bg=self.colors['main_bg'])
+        
+        # Make dialog modal
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        # Title
+        title = tk.Label(dialog, text=f"Preset: {preset.name}", 
+                        font=("Arial", 14, "bold"), 
+                        bg=self.colors['main_bg'], fg=self.colors['main_fg'])
+        title.pack(pady=10)
+        
+        # Description
+        desc = tk.Label(dialog, text=preset.description, 
+                       font=("Arial", 10), wraplength=550,
+                       bg=self.colors['main_bg'], fg=self.colors['main_fg'])
+        desc.pack(pady=5)
+        
+        # Specifications
+        specs_frame = tk.LabelFrame(dialog, text="Motor Specifications", 
+                                   font=("Arial", 10, "bold"),
+                                   bg=self.colors['main_bg'], fg=self.colors['main_fg'])
+        specs_frame.pack(fill='x', pady=10, padx=20)
+        
+        specs_text = f"""Encoder Counts/Rev: {preset.motor_specs.encoder_counts_per_rev}
+Pole Pairs: {preset.motor_specs.pole_pairs}
+Has Index Pulse: {preset.motor_specs.has_index}
+Has Hall Sensors: {preset.motor_specs.has_halls}
+Commutation Method: {preset.commutation_method.value}
+Brushless Modulo (BM): {preset.motor_specs.encoder_counts_per_rev / preset.motor_specs.pole_pairs}"""
+        
+        specs_label = tk.Label(specs_frame, text=specs_text, font=("Arial", 9),
+                              bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                              justify='left')
+        specs_label.pack(pady=10, padx=10)
+        
+        # Initialization Commands
+        init_frame = tk.LabelFrame(dialog, text="Initialization Commands", 
+                                  font=("Arial", 10, "bold"),
+                                  bg=self.colors['main_bg'], fg=self.colors['main_fg'])
+        init_frame.pack(fill='both', expand=True, pady=10, padx=20)
+        
+        init_text = tk.Text(init_frame, height=8, font=("Courier", 9),
+                           bg=self.colors['card_bg'], fg=self.colors['main_fg'])
+        init_text.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        for i, cmd in enumerate(preset.initialization_commands, 1):
+            init_text.insert(tk.END, f"{i:2d}. {cmd}\n")
+        
+        init_text.config(state='disabled')
+        
+        # Notes
+        if preset.notes:
+            notes_frame = tk.LabelFrame(dialog, text="Notes", 
+                                       font=("Arial", 10, "bold"),
+                                       bg=self.colors['main_bg'], fg=self.colors['main_fg'])
+            notes_frame.pack(fill='x', pady=10, padx=20)
+            
+            notes_label = tk.Label(notes_frame, text=preset.notes, 
+                                  font=("Arial", 9), wraplength=550,
+                                  bg=self.colors['main_bg'], fg=self.colors['main_fg'])
+            notes_label.pack(pady=10, padx=10)
+        
+        # Close button
+        close_btn = tk.Button(dialog, text="Close", font=("Arial", 12, "bold"),
+                            bg=self.colors['accent_blue'], fg='white',
+                            command=dialog.destroy)
+        close_btn.pack(pady=10)
+    
+    def run_motor_setup_with_manual_input(self, motor_setup, axis, motor_specs, comm_method):
+        """Run motor setup with manual input handling for Steps 1 and 4"""
+        from motor_setup import SetupResult
+        results = {}
+        
+        # Temporarily disable connection monitoring to prevent reconnection conflicts
+        if self.connection_manager and self.connection_manager.connection_monitoring:
+            self.connection_manager.stop_connection_monitoring()
+            self.append_test_log("⚠️ Temporarily disabled connection monitoring during motor setup")
+        
+        # Step 0: Preparation
+        results['step_0'] = motor_setup.step_0_prep(axis)
+        if not results['step_0'].success:
+            return results
+        
+        # Step 1: Define direction (with manual input)
+        results['step_1'] = motor_setup.step_1_define_direction(axis)
+        if not results['step_1'].success and results['step_1'].data and results['step_1'].data.get('requires_manual_input'):
+            # Show manual input dialog for Step 1
+            manual_direction = self.show_step_1_manual_input_dialog(axis)
+            if manual_direction:
+                results['step_1'] = motor_setup.continue_step_1_with_direction(axis, manual_direction)
+            else:
+                results['step_1'] = SetupResult(False, "Step 1 cancelled by user")
+                return results
+        
+        # Step 2: Set brushless modulo
+        if motor_specs.encoder_counts_per_rev and motor_specs.pole_pairs:
+            results['step_2'] = motor_setup.step_2_set_brushless_modulo(
+                axis, motor_specs.encoder_counts_per_rev, motor_specs.pole_pairs)
+        else:
+            results['step_2'] = SetupResult(False, "Motor specs missing - encoder_counts_per_rev and pole_pairs required")
+        
+        # Step 3: Initialize commutation
+        if results['step_2'].success:
+            results['step_3'] = motor_setup.step_3_initialize_commutation(axis, comm_method)
+        else:
+            results['step_3'] = SetupResult(False, "Step 3 skipped - Step 2 failed")
+        
+        # Step 4: Improve modulo (with manual input if index available)
+        if motor_specs.has_index and motor_specs.pole_pairs:
+            results['step_4'] = motor_setup.step_4_improve_modulo(axis)
+            if not results['step_4'].success and results['step_4'].data and results['step_4'].data.get('requires_manual_input'):
+                # Show manual input dialog for Step 4
+                index_data = self.show_step_4_manual_input_dialog(axis)
+                if index_data and not index_data.get('skip'):
+                    results['step_4'] = motor_setup.continue_step_4_with_index_data(
+                        axis, index_data['exact_counts'], index_data['pole_pairs'])
+                elif index_data and index_data.get('skip'):
+                    results['step_4'] = SetupResult(True, "Step 4 skipped by user")
+                else:
+                    results['step_4'] = SetupResult(False, "Step 4 cancelled by user")
+        else:
+            results['step_4'] = SetupResult(True, "Step 4 skipped - no index available")
+        
+        # Step 5: Verify commutation
+        if results['step_3'].success:
+            results['step_5'] = motor_setup.step_5_verify_commutation(axis)
+        else:
+            results['step_5'] = SetupResult(False, "Step 5 skipped - Step 3 failed")
+        
+        # Step 6: Save settings
+        if results['step_5'].success:
+            results['step_6'] = motor_setup.step_6_save_settings()
+        else:
+            results['step_6'] = SetupResult(False, "Step 6 skipped - Step 5 failed")
+        
+        # Re-enable connection monitoring after motor setup is complete
+        if self.connection_manager and self.connection_manager.connected_ip:
+            self.connection_manager.start_connection_monitoring()
+            self.append_test_log("✓ Re-enabled connection monitoring after motor setup")
+        
+        motor_setup.setup_results = results
+        return results
+    
+    def show_step_1_manual_input_dialog(self, axis):
+        """Show dialog for Step 1 manual direction testing"""
+        dialog = tk.Toplevel(self.root)
+        dialog.title(f"Step 1: Manual Direction Testing - Axis {axis}")
+        dialog.geometry("700x800")
+        dialog.configure(bg=self.colors['main_bg'])
+        
+        # Make dialog modal
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        # Title
+        title = tk.Label(dialog, text=f"Step 1: Manual Direction Testing - Axis {axis}", 
+                        font=("Arial", 16, "bold"), 
+                        bg=self.colors['main_bg'], fg=self.colors['main_fg'])
+        title.pack(pady=20)
+        
+        # Instructions with scrollbar
+        instructions_frame = tk.Frame(dialog, bg=self.colors['main_bg'])
+        instructions_frame.pack(pady=10, padx=20, fill='both', expand=True)
+        
+        instructions = tk.Text(instructions_frame, height=12, width=70, font=("Arial", 10),
+                             bg=self.colors['card_bg'], fg=self.colors['main_fg'])
+        scrollbar = tk.Scrollbar(instructions_frame, orient="vertical", command=instructions.yview)
+        instructions.configure(yscrollcommand=scrollbar.set)
+        
+        instructions.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        
+        step1_instructions = f"""
+MANUAL DIRECTION TESTING - AXIS {axis}
+=====================================
+
+INSTRUCTIONS:
+1. The position has been zeroed for axis {axis}
+2. MANUALLY ROTATE the motor shaft in your desired + direction
+3. Read the position using: TP{axis}
+4. Observe the position change:
+   - If position INCREASES: Use "Normal" polarity
+   - If position DECREASES: Use "Reversed" polarity
+
+COMMANDS TO TEST:
+DP{axis}=0          (Position zeroed - DONE)
+TP{axis}            (Read current position - should be 0)
+(Manually rotate shaft to desired position)
+TP{axis}            (Read new position - note if it increased or decreased)
+
+IMPORTANT:
+- You must PHYSICALLY ROTATE the motor shaft by hand
+- The motor is OFF during this test (MO{axis} was sent)
+- Choose polarity based on whether position increased or decreased
+- This determines the encoder direction for your application
+
+SELECT POLARITY:
+Choose the polarity based on your manual testing results.
+        """
+        
+        instructions.insert(1.0, step1_instructions)
+        instructions.config(state='disabled')
+        
+        # Polarity selection
+        polarity_frame = tk.Frame(dialog, bg=self.colors['main_bg'])
+        polarity_frame.pack(pady=10)
+        
+        tk.Label(polarity_frame, text="Select Encoder Polarity:", font=("Arial", 12, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(pady=10)
+        
+        polarity_var = tk.StringVar(value="normal")
+        
+        normal_radio = tk.Radiobutton(polarity_frame, text="Normal (position increases)", 
+                                    variable=polarity_var, value="normal",
+                                    font=("Arial", 10), bg=self.colors['main_bg'], 
+                                    fg=self.colors['main_fg'])
+        normal_radio.pack(pady=5)
+        
+        reversed_radio = tk.Radiobutton(polarity_frame, text="Reversed (position decreases)", 
+                                      variable=polarity_var, value="reversed",
+                                      font=("Arial", 10), bg=self.colors['main_bg'], 
+                                      fg=self.colors['main_fg'])
+        reversed_radio.pack(pady=5)
+        
+        # Command Interface
+        cmd_frame = tk.LabelFrame(dialog, text="💻 Command Interface", 
+                                font=("Arial", 10, "bold"),
+                                bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                relief='solid', bd=1)
+        cmd_frame.pack(fill='x', pady=10, padx=20)
+        
+        cmd_content = tk.Frame(cmd_frame, bg=self.colors['main_bg'])
+        cmd_content.pack(fill='x', padx=10, pady=10)
+        
+        # Command input
+        cmd_input_frame = tk.Frame(cmd_content, bg=self.colors['main_bg'])
+        cmd_input_frame.pack(fill='x', pady=(0, 5))
+        
+        tk.Label(cmd_input_frame, text="Send Command:", font=("Arial", 9, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
+        
+        # Command history (define first)
+        cmd_history = tk.Text(cmd_content, height=3, width=50,
+                            font=("Courier", 8), bg=self.colors['card_bg'],
+                            fg=self.colors['main_fg'], relief='solid', bd=1)
+        cmd_history.pack(fill='x', pady=(5, 0))
+        
+        cmd_entry = tk.Entry(cmd_input_frame, font=("Courier", 9), width=20)
+        cmd_entry.pack(side='left', padx=(10, 5))
+        cmd_entry.bind('<Return>', lambda e: self._send_dialog_command(cmd_entry, cmd_history, dialog))
+        
+        send_btn = tk.Button(cmd_input_frame, text="Send", 
+                           font=("Arial", 9, "bold"),
+                           bg=self.colors['accent_blue'], fg='white',
+                           command=lambda: self._send_dialog_command(cmd_entry, cmd_history, dialog))
+        send_btn.pack(side='left', padx=(0, 5))
+        
+        # Quick commands for Step 1
+        quick_frame = tk.Frame(cmd_content, bg=self.colors['main_bg'])
+        quick_frame.pack(fill='x', pady=(5, 0))
+        
+        tk.Label(quick_frame, text="Quick:", font=("Arial", 8, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
+        
+        tpa_btn = tk.Button(quick_frame, text="TPA", 
+                          font=("Arial", 8), width=6,
+                          bg=self.colors['secondary_bg'], fg=self.colors['main_fg'],
+                          command=lambda: self._insert_dialog_command(cmd_entry, "TPA"))
+        tpa_btn.pack(side='left', padx=(5, 2))
+        
+        dpa_btn = tk.Button(quick_frame, text="DPA=0", 
+                          font=("Arial", 8), width=8,
+                          bg=self.colors['secondary_bg'], fg=self.colors['main_fg'],
+                          command=lambda: self._insert_dialog_command(cmd_entry, "DPA=0"))
+        dpa_btn.pack(side='left', padx=(2, 0))
+        
+        # Buttons
+        button_frame = tk.Frame(dialog, bg=self.colors['main_bg'])
+        button_frame.pack(pady=10)
+        
+        result = {'direction': None}
+        
+        def continue_setup():
+            result['direction'] = polarity_var.get()
+            dialog.destroy()
+        
+        def cancel_setup():
+            result['direction'] = None
+            dialog.destroy()
+        
+        continue_btn = tk.Button(button_frame, text="Continue Setup", font=("Arial", 12, "bold"),
+                               bg=self.colors['success_green'], fg='white',
+                               command=continue_setup)
+        continue_btn.pack(side='left', padx=10)
+        
+        cancel_btn = tk.Button(button_frame, text="Cancel", font=("Arial", 12, "bold"),
+                             bg=self.colors['error_red'], fg='white',
+                             command=cancel_setup)
+        cancel_btn.pack(side='left', padx=10)
+        
+        # Wait for dialog to close
+        dialog.wait_window()
+        
+        return result['direction']
+    
+    def show_step_4_manual_input_dialog(self, axis):
+        """Show dialog for Step 4 manual index measurement"""
+        dialog = tk.Toplevel(self.root)
+        dialog.title(f"Step 4: Manual Index Measurement - Axis {axis}")
+        dialog.geometry("800x900")
+        dialog.configure(bg=self.colors['main_bg'])
+        
+        # Make dialog modal
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        # Title
+        title = tk.Label(dialog, text=f"Step 4: Manual Index Measurement - Axis {axis}", 
+                        font=("Arial", 16, "bold"), 
+                        bg=self.colors['main_bg'], fg=self.colors['main_fg'])
+        title.pack(pady=20)
+        
+        # Instructions with scrollbar
+        instructions_frame = tk.Frame(dialog, bg=self.colors['main_bg'])
+        instructions_frame.pack(pady=10, padx=20, fill='both', expand=True)
+        
+        instructions = tk.Text(instructions_frame, height=15, width=80, font=("Arial", 10),
+                             bg=self.colors['card_bg'], fg=self.colors['main_fg'])
+        scrollbar = tk.Scrollbar(instructions_frame, orient="vertical", command=instructions.yview)
+        instructions.configure(yscrollcommand=scrollbar.set)
+        
+        instructions.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        
+        step4_instructions = f"""
+MANUAL INDEX MEASUREMENT - AXIS {axis}
+=====================================
+
+INSTRUCTIONS:
+1. Latch on index pulse: AL T{axis}
+2. Jog to trigger index: JG{axis}=2000
+3. Begin motion: BG{axis}
+4. Wait for index pulse to occur (motor will move)
+5. Read latched position: RL{axis}
+6. Record this position as P1
+7. Repeat steps 1-5 for second index pulse
+8. Record this position as P2
+9. Calculate: exact_counts_per_rev = |P2 - P1|
+10. Enter the exact counts per revolution below
+
+COMMANDS TO RUN:
+AL T{axis}          (Latch on index)
+JG{axis}=2000       (Jog to trigger index)
+BG{axis}            (Begin motion - motor will move)
+RL{axis}            (Read latched position - P1)
+(Repeat for P2)
+exact_rev = |P2 - P1|
+
+IMPORTANT:
+- The motor will MOVE during this test
+- Make sure the motor can move freely
+- The index pulse occurs once per revolution
+- This measurement eliminates small modulo errors
+- Provides the most accurate brushless modulo setting
+
+SAFETY:
+- Ensure no obstructions in motor path
+- Motor will move automatically when BG{axis} is sent
+- Use STA{axis} to stop motion if needed
+        """
+        
+        instructions.insert(1.0, step4_instructions)
+        instructions.config(state='disabled')
+        
+        # Input fields
+        input_frame = tk.Frame(dialog, bg=self.colors['main_bg'])
+        input_frame.pack(pady=10)
+        
+        tk.Label(input_frame, text="Enter Index Measurement Results:", font=("Arial", 12, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(pady=10)
+        
+        # P1 position
+        p1_frame = tk.Frame(input_frame, bg=self.colors['main_bg'])
+        p1_frame.pack(pady=5)
+        
+        tk.Label(p1_frame, text="P1 (First Index Position):", font=("Arial", 10),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
+        
+        p1_entry = tk.Entry(p1_frame, font=("Arial", 10), width=15)
+        p1_entry.pack(side='left', padx=(10, 0))
+        
+        # P2 position
+        p2_frame = tk.Frame(input_frame, bg=self.colors['main_bg'])
+        p2_frame.pack(pady=5)
+        
+        tk.Label(p2_frame, text="P2 (Second Index Position):", font=("Arial", 10),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
+        
+        p2_entry = tk.Entry(p2_frame, font=("Arial", 10), width=15)
+        p2_entry.pack(side='left', padx=(10, 0))
+        
+        # Exact counts
+        exact_frame = tk.Frame(input_frame, bg=self.colors['main_bg'])
+        exact_frame.pack(pady=5)
+        
+        tk.Label(exact_frame, text="Exact Counts per Rev:", font=("Arial", 10, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
+        
+        exact_entry = tk.Entry(exact_frame, font=("Arial", 10, "bold"), width=15)
+        exact_entry.pack(side='left', padx=(10, 0))
+        
+        # Pole pairs
+        pole_frame = tk.Frame(input_frame, bg=self.colors['main_bg'])
+        pole_frame.pack(pady=5)
+        
+        tk.Label(pole_frame, text="Pole Pairs:", font=("Arial", 10),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
+        
+        pole_entry = tk.Entry(pole_frame, font=("Arial", 10), width=15)
+        pole_entry.pack(side='left', padx=(10, 0))
+        
+        # Command Interface
+        cmd_frame = tk.LabelFrame(dialog, text="💻 Command Interface", 
+                                font=("Arial", 10, "bold"),
+                                bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                relief='solid', bd=1)
+        cmd_frame.pack(fill='x', pady=10, padx=20)
+        
+        cmd_content = tk.Frame(cmd_frame, bg=self.colors['main_bg'])
+        cmd_content.pack(fill='x', padx=10, pady=10)
+        
+        # Command input
+        cmd_input_frame = tk.Frame(cmd_content, bg=self.colors['main_bg'])
+        cmd_input_frame.pack(fill='x', pady=(0, 5))
+        
+        tk.Label(cmd_input_frame, text="Send Command:", font=("Arial", 9, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
+        
+        # Command history (define first)
+        cmd_history = tk.Text(cmd_content, height=3, width=50,
+                            font=("Courier", 8), bg=self.colors['card_bg'],
+                            fg=self.colors['main_fg'], relief='solid', bd=1)
+        cmd_history.pack(fill='x', pady=(5, 0))
+        
+        cmd_entry = tk.Entry(cmd_input_frame, font=("Courier", 9), width=20)
+        cmd_entry.pack(side='left', padx=(10, 5))
+        cmd_entry.bind('<Return>', lambda e: self._send_dialog_command(cmd_entry, cmd_history, dialog))
+        
+        send_btn = tk.Button(cmd_input_frame, text="Send", 
+                           font=("Arial", 9, "bold"),
+                           bg=self.colors['accent_blue'], fg='white',
+                           command=lambda: self._send_dialog_command(cmd_entry, cmd_history, dialog))
+        send_btn.pack(side='left', padx=(0, 5))
+        
+        # Quick commands for Step 4
+        quick_frame = tk.Frame(cmd_content, bg=self.colors['main_bg'])
+        quick_frame.pack(fill='x', pady=(5, 0))
+        
+        tk.Label(quick_frame, text="Quick:", font=("Arial", 8, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
+        
+        al_btn = tk.Button(quick_frame, text="AL TA", 
+                         font=("Arial", 8), width=8,
+                         bg=self.colors['secondary_bg'], fg=self.colors['main_fg'],
+                         command=lambda: self._insert_dialog_command(cmd_entry, "AL TA"))
+        al_btn.pack(side='left', padx=(5, 2))
+        
+        jg_btn = tk.Button(quick_frame, text="JGA=2000", 
+                         font=("Arial", 8), width=10,
+                         bg=self.colors['secondary_bg'], fg=self.colors['main_fg'],
+                         command=lambda: self._insert_dialog_command(cmd_entry, "JGA=2000"))
+        jg_btn.pack(side='left', padx=(2, 2))
+        
+        bg_btn = tk.Button(quick_frame, text="BGA", 
+                         font=("Arial", 8), width=6,
+                         bg=self.colors['secondary_bg'], fg=self.colors['main_fg'],
+                         command=lambda: self._insert_dialog_command(cmd_entry, "BGA"))
+        bg_btn.pack(side='left', padx=(2, 2))
+        
+        rl_btn = tk.Button(quick_frame, text="RLA", 
+                         font=("Arial", 8), width=6,
+                         bg=self.colors['secondary_bg'], fg=self.colors['main_fg'],
+                         command=lambda: self._insert_dialog_command(cmd_entry, "RLA"))
+        rl_btn.pack(side='left', padx=(2, 0))
+        
+        # Automatic measurement button
+        auto_frame = tk.Frame(cmd_content, bg=self.colors['main_bg'])
+        auto_frame.pack(fill='x', pady=(10, 0))
+        
+        auto_measure_btn = tk.Button(auto_frame, text="🚀 Run Automatic Measurement", 
+                                   font=("Arial", 10, "bold"),
+                                   bg=self.colors['success_green'], fg='white',
+                                   command=lambda: self._run_automatic_index_measurement(axis, p1_entry, p2_entry, exact_entry, pole_entry, cmd_history))
+        auto_measure_btn.pack(side='left', padx=(0, 10))
+        
+        # Buttons
+        button_frame = tk.Frame(dialog, bg=self.colors['main_bg'])
+        button_frame.pack(pady=10)
+        
+        result = {'index_data': None}
+        
+        def continue_setup():
+            try:
+                p1 = float(p1_entry.get())
+                p2 = float(p2_entry.get())
+                exact_counts = float(exact_entry.get())
+                pole_pairs = float(pole_entry.get())
+                
+                if exact_counts <= 0 or pole_pairs <= 0:
+                    messagebox.showerror("Error", "Exact counts and pole pairs must be positive numbers")
+                    return
+                
+                result['index_data'] = {
+                    'p1': p1,
+                    'p2': p2,
+                    'exact_counts': exact_counts,
+                    'pole_pairs': pole_pairs
+                }
+                dialog.destroy()
+                
+            except ValueError:
+                messagebox.showerror("Error", "Please enter valid numeric values")
+        
+        def cancel_setup():
+            result['index_data'] = None
+            dialog.destroy()
+        
+        def skip_step():
+            result['index_data'] = {'skip': True}
+            dialog.destroy()
+        
+        continue_btn = tk.Button(button_frame, text="Continue Setup", font=("Arial", 12, "bold"),
+                               bg=self.colors['success_green'], fg='white',
+                               command=continue_setup)
+        continue_btn.pack(side='left', padx=10)
+        
+        skip_btn = tk.Button(button_frame, text="Skip Step", font=("Arial", 12, "bold"),
+                           bg=self.colors['warning_orange'], fg='white',
+                           command=skip_step)
+        skip_btn.pack(side='left', padx=10)
+        
+        cancel_btn = tk.Button(button_frame, text="Cancel", font=("Arial", 12, "bold"),
+                             bg=self.colors['error_red'], fg='white',
+                             command=cancel_setup)
+        cancel_btn.pack(side='left', padx=10)
+        
+        # Wait for dialog to close
+        dialog.wait_window()
+        
+        return result['index_data']
+    
+    def _run_motor_setup_with_manual_input(self):
+        """Run motor setup with manual input handling in main thread"""
+        try:
+            data = self._motor_setup_data
+            motor_setup = data['motor_setup']
+            axis = data['axis']
+            motor_specs = data['motor_specs']
+            comm_method = data['comm_method']
+            
+            # Run the setup with manual input handling
+            results = self.run_motor_setup_with_manual_input(motor_setup, axis, motor_specs, comm_method)
+            
+            # Display results
+            self.append_test_log("=" * 50)
+            self.append_test_log("MOTOR SETUP RESULTS:")
+            self.append_test_log("=" * 50)
+            
+            for step_name, result in results.items():
+                status = "✓ PASS" if result.success else "✗ FAIL"
+                self.append_test_log(f"{step_name.upper()}: {status} - {result.message}")
+            
+            # Show summary dialog
+            summary = motor_setup.get_setup_summary()
+            messagebox.showinfo("Motor Setup Complete", summary)
+            
+        except Exception as e:
+            self.append_test_log(f"Motor setup failed: {str(e)}")
+            messagebox.showerror("Setup Error", f"Motor setup failed: {str(e)}")
+            
+            # Ensure connection monitoring is re-enabled even if setup fails
+            if self.connection_manager and self.connection_manager.connected_ip:
+                self.connection_manager.start_connection_monitoring()
+                self.append_test_log("✓ Re-enabled connection monitoring after setup failure")
+        
+        finally:
+            # Re-enable setup button and disable stop button
+            self.run_motor_setup_btn.config(state='normal')
+            self.stop_motor_setup_btn.config(state='disabled')
 
     def test_controller_commands(self):
         """Test basic controller commands"""
@@ -3820,27 +6024,765 @@ class GalilSetupApp:
     def apply_network_config(self):
         """Apply network configuration settings"""
         try:
-            # Get values from GUI
-            ip = self.config_ip_entry.get() if hasattr(self, 'config_ip_entry') else "10.1.0.21"
-            subnet = self.subnet_entry.get() if hasattr(self, 'subnet_entry') else "255.255.255.0"
-            gateway = self.gateway_entry.get() if hasattr(self, 'gateway_entry') else "10.1.0.1"
+            # Get IP address from GUI
+            ip = self.config_ip_entry.get() if hasattr(self, 'config_ip_entry') else ""
             
-            self.append_test_log(f"Applying network config: IP={ip}, Subnet={subnet}, Gateway={gateway}")
-            # TODO: Implement actual network configuration
+            self.append_test_log(f"Applying IP configuration: IP={ip}")
+            
+            if not self.controller:
+                self.append_test_log("ERROR: No controller connected. Please connect first.")
+                return
+            
+            # Validate IP address format
+            if not self._validate_ip_address(ip):
+                self.append_test_log("ERROR: Invalid IP address format")
+                return
+            
+            # Show step-by-step dialog and allow user to run the steps
+            self._show_ip_change_steps_dialog(ip)
+            
         except Exception as e:
             self.append_test_log(f"Failed to apply network config: {e}")
+    
+    def _validate_ip_address(self, ip):
+        """Validate IP address format"""
+        try:
+            parts = ip.split('.')
+            if len(parts) != 4:
+                return False
+            for part in parts:
+                if not part.isdigit() or int(part) < 0 or int(part) > 255:
+                    return False
+            return True
+        except:
+            return False
+    
+    def _apply_controller_ip_config(self, ip):
+        """Apply IP address configuration to the controller using DMC-4103 commands"""
+        try:
+            self.append_test_log("=== APPLYING CONTROLLER IP CONFIGURATION ===")
+            
+            # Convert IP address to comma-separated format for DMC-4103
+            ip_parts = ip.split('.')
+            ip_cmd_format = f"IA {','.join(ip_parts)}"
+            
+            # Step 1: Disable DHCP first (recommended by DMC-4103 manual)
+            self.append_test_log("Step 1: Disabling DHCP")
+            dhcp_cmd = "DH 0"
+            response = self.controller.send_command(dhcp_cmd)
+            self.append_test_log(f"DHCP disable response: {response}")
+            
+            # Step 2: Set IP address using DMC-4103 format
+            self.append_test_log(f"Step 2: Setting controller IP address to {ip}")
+            self.append_test_log(f"Command: {ip_cmd_format}")
+            response = self.controller.send_command(ip_cmd_format)
+            self.append_test_log(f"IP command response: {response}")
+            
+            # Step 3: Save configuration to flash memory
+            self.append_test_log("Step 3: Saving IP configuration to flash memory")
+            self.append_test_log("Command: BN")
+            response = self.controller.send_command("BN")
+            self.append_test_log(f"Burn command response: {response}")
+            
+            self.append_test_log("=== IP CONFIGURATION COMPLETE ===")
+            self.append_test_log("⚠️  Controller will reset and disconnect")
+            self.append_test_log("⚠️  Reconnect using the new IP address")
+            self.append_test_log("ℹ️  Subnet mask and gateway are handled by your system's network configuration")
+            self.append_test_log(f"Controller will now be available at: {ip}")
+            self.append_test_log("Please reconnect using the new IP address")
+            
+        except Exception as e:
+            self.append_test_log(f"ERROR: Failed to apply controller network configuration: {e}")
+
+    def _show_ip_change_steps_dialog(self, new_ip: str):
+        """Show a modal dialog with step-by-step instructions and an option to run commands."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Change Controller IP - Step by Step")
+        dialog.geometry("720x520")
+        dialog.configure(bg=self.colors['main_bg'])
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        # Title
+        title = tk.Label(dialog, text="Controller IP Change", font=("Arial", 16, "bold"),
+                        bg=self.colors['main_bg'], fg=self.colors['main_fg'])
+        title.pack(pady=(12, 4))
+        
+        subtitle = tk.Label(dialog, text=f"Target IP: {new_ip}", font=("Arial", 10),
+                           bg=self.colors['main_bg'], fg=self.colors['secondary_fg'])
+        subtitle.pack(pady=(0, 10))
+        
+        # Steps content
+        frame = tk.Frame(dialog, bg=self.colors['main_bg'])
+        frame.pack(fill='both', expand=True, padx=16, pady=10)
+        
+        steps = tk.Text(frame, height=16, wrap='word', font=("Arial", 10),
+                        bg=self.colors['card_bg'], fg=self.colors['main_fg'], relief='solid', bd=1)
+        steps.pack(fill='both', expand=True)
+        
+        ia_commas = ','.join(new_ip.split('.'))
+        steps_text = (
+            "SAFE, RECOMMENDED (Serial/COM connection):\n"
+            "1) Ensure you are connected via COM/USB.\n"
+            "2) Disable DHCP:    DH 0\n"
+            f"3) Set IP address:  IA {ia_commas}\n"
+            "4) Burn to flash:   BN\n"
+            "5) Restart (optional but recommended): RS or power-cycle.\n"
+            "6) Reconnect using the new IP and verify: MG _IP (returns a,b,c,d), MG _DH (0).\n\n"
+            "ETHERNET CHANGE (will disconnect immediately):\n"
+            f"1) Send in one line: DH 0;IA {ia_commas}\n"
+            "2) You will be disconnected. Reconnect to the new IP.\n"
+            "3) Burn to flash:   BN\n"
+            "4) Restart (optional): RS or power-cycle; verify with MG _IP / MG _DH.\n\n"
+            "Notes:\n- IA uses commas (e.g., IA 192,168,6,100).\n- IA over Ethernet causes timeout/disconnect by design.\n- Commands used: DH, IA, BN, RS, MG _IP/_DH.\n"
+        )
+        steps.insert('1.0', steps_text)
+        steps.config(state='disabled')
+        
+        # Buttons
+        btns = tk.Frame(dialog, bg=self.colors['main_bg'])
+        btns.pack(fill='x', pady=(10, 12))
+        
+        def run_now():
+            if not self.controller:
+                messagebox.showerror("Error", "Please connect to a controller first")
+                return
+            try:
+                self._apply_controller_ip_config(new_ip)
+                messagebox.showinfo("Success", "Commands sent. Reconnect using the new IP if disconnected.")
+                dialog.destroy()
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to run IP change: {e}")
+        
+        run_btn = tk.Button(btns, text="Run Now (DH 0 → IA → BN)", font=("Arial", 10, "bold"),
+                           bg=self.colors['success_green'], fg='white', command=run_now)
+        run_btn.pack(side='left', padx=(16, 8))
+        
+        close_btn = tk.Button(btns, text="Close", font=("Arial", 10, "bold"),
+                            bg=self.colors['accent_blue'], fg='white', command=dialog.destroy)
+        close_btn.pack(side='right', padx=(8, 16))
+    
+    def show_recovery_checklist(self):
+        """Show the controller recovery checklist dialog"""
+        self.create_recovery_checklist_dialog()
+    
+    def show_ip_change_walkthrough(self):
+        """Show step-by-step IP change walkthrough dialog"""
+        if not self.controller:
+            messagebox.showerror("Error", "Please connect to a controller first")
+            return
+        
+        # Create walkthrough dialog
+        self._create_ip_change_dialog()
+    
+    def _create_ip_change_dialog(self):
+        """Create the IP change walkthrough dialog"""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Controller IP Address Change - Step by Step Guide")
+        dialog.geometry("800x700")
+        dialog.configure(bg=self.colors['main_bg'])
+        dialog.resizable(True, True)
+        
+        # Make dialog modal
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        # Center the dialog
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() // 2) - (dialog.winfo_width() // 2)
+        y = (dialog.winfo_screenheight() // 2) - (dialog.winfo_height() // 2)
+        dialog.geometry(f"+{x}+{y}")
+        
+        # Title
+        title_frame = tk.Frame(dialog, bg=self.colors['main_bg'])
+        title_frame.pack(fill='x', padx=20, pady=(20, 10))
+        
+        title_label = tk.Label(title_frame, text="🔧 Controller IP Address Change", 
+                             font=("Arial", 16, "bold"), 
+                             bg=self.colors['main_bg'], fg=self.colors['main_fg'])
+        title_label.pack()
+        
+        subtitle_label = tk.Label(title_frame, text="Step-by-step walkthrough to change controller IP address", 
+                                font=("Arial", 10), 
+                                bg=self.colors['main_bg'], fg=self.colors['secondary_fg'])
+        subtitle_label.pack()
+        
+        # Scrollable content frame
+        canvas = tk.Canvas(dialog, bg=self.colors['main_bg'], highlightthickness=0)
+        scrollbar = tk.Scrollbar(dialog, orient="vertical", command=canvas.yview)
+        scrollable_frame = tk.Frame(canvas, bg=self.colors['main_bg'])
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        # Content
+        self._create_walkthrough_content(scrollable_frame, dialog)
+        
+        # Pack canvas and scrollbar
+        canvas.pack(side="left", fill="both", expand=True, padx=(20, 0), pady=(0, 20))
+        scrollbar.pack(side="right", fill="y", padx=(0, 20), pady=(0, 20))
+        
+        # Bind mousewheel to canvas
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        
+        # Clean up binding when dialog closes
+        def _on_closing():
+            canvas.unbind_all("<MouseWheel>")
+            dialog.destroy()
+        dialog.protocol("WM_DELETE_WINDOW", _on_closing)
+    
+    def _create_walkthrough_content(self, parent, dialog):
+        """Create the walkthrough content"""
+        # Warning section
+        warning_frame = tk.LabelFrame(parent, text="⚠️ IMPORTANT WARNING", 
+                                    font=("Arial", 12, "bold"),
+                                    bg=self.colors['main_bg'], fg=self.colors['error_red'],
+                                    relief='solid', bd=2)
+        warning_frame.pack(fill='x', padx=20, pady=(0, 20))
+        
+        warning_text = tk.Text(warning_frame, height=4, wrap='word', 
+                             font=("Arial", 10), bg=self.colors['warning_bg'], 
+                             fg=self.colors['main_fg'], relief='flat')
+        warning_text.pack(fill='x', padx=10, pady=10)
+        warning_text.insert('1.0', 
+            "CHANGING THE CONTROLLER'S IP ADDRESS WILL CAUSE IT TO DISCONNECT!\n\n"
+            "You will need to reconnect using the new IP address after the change.\n"
+            "Make sure you have physical access to the controller in case of issues.")
+        warning_text.config(state='disabled')
+        
+        # Current settings section
+        current_frame = tk.LabelFrame(parent, text="📋 Current Network Settings", 
+                                    font=("Arial", 12, "bold"),
+                                    bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                    relief='solid', bd=1)
+        current_frame.pack(fill='x', padx=20, pady=(0, 20))
+        
+        current_content = tk.Frame(current_frame, bg=self.colors['main_bg'])
+        current_content.pack(fill='x', padx=15, pady=15)
+        
+        # Get current settings using DMC-4103 query commands
+        try:
+            if self.controller:
+                # Query current IP address (returns comma-separated format)
+                ip_response = self.controller.send_command("MG _IP")
+                current_ip = ip_response.replace(',', '.') if ip_response and ip_response != '?' else "Unknown"
+                
+            else:
+                current_ip = "Unknown"
+        except:
+            current_ip = "Unknown"
+        
+        tk.Label(current_content, text=f"Current IP: {current_ip}", 
+                font=("Arial", 10, "bold"), bg=self.colors['main_bg'], 
+                fg=self.colors['main_fg']).pack(anchor='w')
+        
+        # New settings section
+        new_frame = tk.LabelFrame(parent, text="🔧 New Network Settings", 
+                                font=("Arial", 12, "bold"),
+                                bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                relief='solid', bd=1)
+        new_frame.pack(fill='x', padx=20, pady=(0, 20))
+        
+        new_content = tk.Frame(new_frame, bg=self.colors['main_bg'])
+        new_content.pack(fill='x', padx=15, pady=15)
+        
+        # Get local network info
+        try:
+            import socket
+            hostname = socket.gethostname()
+            local_ip = socket.gethostbyname(hostname)
+            network_base = '.'.join(local_ip.split('.')[:-1])
+        except:
+            network_base = "192.168.1"
+        
+        # IP Address input
+        ip_frame = tk.Frame(new_content, bg=self.colors['main_bg'])
+        ip_frame.pack(fill='x', pady=(0, 10))
+        
+        tk.Label(ip_frame, text="New IP Address:", font=("Arial", 10, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
+        
+        new_ip_entry = tk.Entry(ip_frame, font=("Arial", 10), width=15)
+        new_ip_entry.pack(side='left', padx=(10, 20))
+        # New IP entry starts blank - no suggested value
+        
+        # No suggested IP address - user must enter their own
+        
+        # Note: Only IP address is configured on the controller
+        # Subnet mask and gateway are handled by the system/network
+        note_frame = tk.Frame(new_content, bg=self.colors['main_bg'])
+        note_frame.pack(fill='x', pady=(10, 10))
+        
+        note_label = tk.Label(note_frame, 
+                            text="ℹ️  Only the controller's IP address will be changed.\nSubnet mask and gateway are handled by your system's network configuration.",
+                            font=("Arial", 9), bg=self.colors['main_bg'], 
+                            fg=self.colors['secondary_fg'], justify='left')
+        note_label.pack(anchor='w')
+        
+        # Steps section
+        steps_frame = tk.LabelFrame(parent, text="📝 Step-by-Step Process", 
+                                  font=("Arial", 12, "bold"),
+                                  bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                  relief='solid', bd=1)
+        steps_frame.pack(fill='x', padx=20, pady=(0, 20))
+        
+        steps_content = tk.Frame(steps_frame, bg=self.colors['main_bg'])
+        steps_content.pack(fill='x', padx=15, pady=15)
+        
+        steps_text = """
+1. ✅ Verify controller is connected (current step)
+2. ⏳ Enter new network settings above
+3. ⏳ Click 'Apply IP Change' to execute
+4. ⏳ Controller will reset and disconnect
+5. ⏳ Reconnect using the new IP address
+6. ⏳ Verify connection with new IP
+        """
+        
+        steps_label = tk.Label(steps_content, text=steps_text, 
+                             font=("Arial", 10), bg=self.colors['main_bg'], 
+                             fg=self.colors['main_fg'], justify='left')
+        steps_label.pack(anchor='w')
+        
+        # Action buttons
+        button_frame = tk.Frame(parent, bg=self.colors['main_bg'])
+        button_frame.pack(fill='x', padx=20, pady=(0, 20))
+        
+        def apply_ip_change():
+            """Apply the IP change"""
+            new_ip = new_ip_entry.get().strip()
+            
+            # Validate inputs
+            if not self._validate_ip_address(new_ip):
+                messagebox.showerror("Error", "Invalid IP address format")
+                return
+            
+            # Confirm the change
+            confirm_msg = f"""
+Are you sure you want to change the controller IP address?
+
+Current IP: {current_ip}
+New IP: {new_ip}
+
+WARNING: This will disconnect the controller!
+You will need to reconnect using the new IP address.
+
+Only the controller's IP address will be changed.
+Subnet mask and gateway are handled by your system's network configuration.
+"""
+            if not messagebox.askyesno("Confirm IP Change", confirm_msg):
+                return
+            
+            # Show the step-by-step dialog; user can run from there
+            self._show_ip_change_steps_dialog(new_ip)
+            dialog.destroy()
+        
+        apply_btn = tk.Button(button_frame, text="🚀 Apply IP Change", 
+                            font=("Arial", 12, "bold"),
+                            bg=self.colors['success_green'], fg='white',
+                            command=apply_ip_change)
+        apply_btn.pack(side='left', padx=(0, 10))
+        
+        cancel_btn = tk.Button(button_frame, text="❌ Cancel", 
+                             font=("Arial", 12, "bold"),
+                             bg=self.colors['error_red'], fg='white',
+                             command=dialog.destroy)
+        cancel_btn.pack(side='left')
+    
+    def refresh_controller_info(self):
+        """Refresh controller information display"""
+        if self.controller:
+            self.update_controller_info_display()
+        else:
+            self.clear_controller_info_display()
+    
+    def update_controller_info_display(self):
+        """Update the controller information display with current data"""
+        try:
+            if not self.controller:
+                self.clear_controller_info_display()
+                return
+            
+            # Use a simple test command first to check if controller is responsive
+            try:
+                test_response = self.controller.send_command("TP A")
+                if not test_response or test_response == '?':
+                    # Controller not responsive, show basic info
+                    self.show_basic_controller_info()
+                    return
+            except:
+                # Controller not responsive, show basic info
+                self.show_basic_controller_info()
+                return
+            
+            # Get controller IP address (with timeout protection)
+            try:
+                ip_response = self.controller.send_command("MG _IP")
+                if ip_response and ip_response != '?' and 'timeout' not in str(ip_response).lower():
+                    current_ip = ip_response.replace(',', '.')
+                else:
+                    current_ip = "Unknown"
+            except:
+                current_ip = "Unknown"
+            
+            # Get controller model/version info (with timeout protection)
+            try:
+                model_response = self.controller.send_command("^R^V")
+                if model_response and model_response != '?' and 'timeout' not in str(model_response).lower():
+                    model_info = model_response.strip()
+                else:
+                    model_info = "Unknown"
+            except:
+                model_info = "Unknown"
+            
+            # Get firmware version (with timeout protection)
+            try:
+                fw_response = self.controller.send_command("^R^V")
+                if fw_response and fw_response != '?' and 'timeout' not in str(fw_response).lower():
+                    firmware = fw_response.strip()
+                else:
+                    firmware = "Unknown"
+            except:
+                firmware = "Unknown"
+            
+            # Get network settings (with timeout protection)
+            try:
+                subnet_response = self.controller.send_command("MG _SM")
+                subnet = subnet_response.replace(',', '.') if subnet_response and subnet_response != '?' and 'timeout' not in str(subnet_response).lower() else "Unknown"
+                
+                gateway_response = self.controller.send_command("MG _GW")
+                gateway = gateway_response.replace(',', '.') if gateway_response and gateway_response != '?' and 'timeout' not in str(gateway_response).lower() else "Unknown"
+                
+                dhcp_response = self.controller.send_command("MG _DH")
+                dhcp_status = "Enabled" if dhcp_response == "1" else "Disabled" if dhcp_response == "0" else "Unknown"
+            except:
+                subnet = "Unknown"
+                gateway = "Unknown"
+                dhcp_status = "Unknown"
+            
+            # Update IP display
+            if hasattr(self, 'current_controller_ip_label') and self.current_controller_ip_label.winfo_exists():
+                self.current_controller_ip_label.config(text=current_ip, fg=self.colors['success_green'])
+            
+            # Update details display
+            details_text = f"""Model: {model_info}
+Firmware: {firmware}
+IP Address: {current_ip}
+Subnet Mask: {subnet}
+Gateway: {gateway}
+DHCP: {dhcp_status}"""
+            
+            if hasattr(self, 'controller_details_label') and self.controller_details_label.winfo_exists():
+                self.controller_details_label.config(text=details_text, fg=self.colors['main_fg'])
+            
+            # Also update the main IP entry field with current controller IP
+            if hasattr(self, 'ip_entry') and self.ip_entry.winfo_exists():
+                self.ip_entry.delete(0, tk.END)
+                # IP entry remains blank - no auto-fill
+                
+        except Exception as e:
+            self.append_test_log(f"Error updating controller info: {e}")
+    
+    def show_basic_controller_info(self):
+        """Show basic controller info when controller is not responsive"""
+        try:
+            # Update IP display with connection info
+            if hasattr(self, 'current_controller_ip_label') and self.current_controller_ip_label.winfo_exists():
+                self.current_controller_ip_label.config(text="Connected (Unresponsive)", fg=self.colors['warning_orange'])
+            
+            # Update details display with basic info
+            details_text = """Model: Connected but unresponsive
+Firmware: Cannot read
+IP Address: Cannot read
+Subnet Mask: Cannot read
+Gateway: Cannot read
+DHCP: Cannot read"""
+            
+            if hasattr(self, 'controller_details_label') and self.controller_details_label.winfo_exists():
+                self.controller_details_label.config(text=details_text, fg=self.colors['warning_orange'])
+                
+        except Exception as e:
+            self.append_test_log(f"Error showing basic controller info: {e}")
+    
+    def clear_controller_info_display(self):
+        """Clear the controller information display"""
+        try:
+            if hasattr(self, 'current_controller_ip_label') and self.current_controller_ip_label.winfo_exists():
+                self.current_controller_ip_label.config(text="Not Connected", fg=self.colors['error_red'])
+            
+            if hasattr(self, 'controller_details_label') and self.controller_details_label.winfo_exists():
+                self.controller_details_label.config(text="No controller connected", fg=self.colors['secondary_fg'])
+        except Exception as e:
+            self.append_test_log(f"Error clearing controller info: {e}")
 
     def save_settings(self):
         """Save application settings"""
         try:
             # Get values from GUI
             auto_connect = self.auto_connect_var.get() if hasattr(self, 'auto_connect_var') else True
-            default_ip = self.default_ip_entry.get() if hasattr(self, 'default_ip_entry') else "10.1.0.21"
+            default_ip = self.default_ip_entry.get() if hasattr(self, 'default_ip_entry') else ""
             
             self.append_test_log(f"Saving settings: Auto-connect={auto_connect}, Default IP={default_ip}")
             # TODO: Implement actual settings save
         except Exception as e:
             self.append_test_log(f"Failed to save settings: {e}")
+
+    def create_recovery_checklist_dialog(self):
+        """Create the controller recovery checklist dialog"""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Galil DMC-41x3 Recovery Checklist")
+        dialog.geometry("900x800")
+        dialog.configure(bg=self.colors['main_bg'])
+        dialog.resizable(True, True)
+        
+        # Make dialog modal
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        # Center the dialog
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() // 2) - (dialog.winfo_width() // 2)
+        y = (dialog.winfo_screenheight() // 2) - (dialog.winfo_height() // 2)
+        dialog.geometry(f"+{x}+{y}")
+        
+        # Title
+        title_frame = tk.Frame(dialog, bg=self.colors['main_bg'])
+        title_frame.pack(fill='x', padx=20, pady=(20, 10))
+        
+        title_label = tk.Label(title_frame, text="🚨 Galil DMC-41x3 Recovery Checklist", 
+                             font=("Arial", 16, "bold"), 
+                             bg=self.colors['main_bg'], fg=self.colors['main_fg'])
+        title_label.pack()
+        
+        subtitle_label = tk.Label(title_frame, text="Step-by-step troubleshooting guide for communication failures", 
+                                font=("Arial", 10), 
+                                bg=self.colors['main_bg'], fg=self.colors['secondary_fg'])
+        subtitle_label.pack()
+        
+        # Scrollable content frame
+        canvas = tk.Canvas(dialog, bg=self.colors['main_bg'], highlightthickness=0)
+        scrollbar = tk.Scrollbar(dialog, orient="vertical", command=canvas.yview)
+        scrollable_frame = tk.Frame(canvas, bg=self.colors['main_bg'])
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        # Content
+        self._create_recovery_checklist_content(scrollable_frame, dialog)
+        
+        # Pack canvas and scrollbar
+        canvas.pack(side="left", fill="both", expand=True, padx=(20, 0), pady=(0, 20))
+        scrollbar.pack(side="right", fill="y", padx=(0, 20), pady=(0, 20))
+    
+    def _create_recovery_checklist_content(self, parent, dialog):
+        """Create the recovery checklist content"""
+        # Introduction
+        intro_frame = tk.LabelFrame(parent, text="📋 Recovery Checklist Overview", 
+                                  font=("Arial", 12, "bold"),
+                                  bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                  relief='solid', bd=1)
+        intro_frame.pack(fill='x', padx=20, pady=(0, 20))
+        
+        intro_content = tk.Frame(intro_frame, bg=self.colors['main_bg'])
+        intro_content.pack(fill='x', padx=15, pady=15)
+        
+        intro_text = tk.Text(intro_content, height=6, wrap='word', 
+                           font=("Arial", 9), bg=self.colors['card_bg'], 
+                           fg=self.colors['main_fg'], relief='flat')
+        intro_text.pack(fill='x')
+        intro_text.insert('1.0', 
+            "This checklist guides you through a safe order of operations for DMC-41x3 recovery:\n\n"
+            "1) Hardware basics verification\n"
+            "2) Normal communication attempts\n"
+            "3) MRST (factory reset)\n"
+            "4) 19.2 baud jumper\n"
+            "5) UPGD bootloader recovery\n"
+            "6) MO (motors off) for safe comms\n"
+            "7) Advanced troubleshooting steps\n\n"
+            "Always remove jumpers after each step unless explicitly told to keep them.")
+        intro_text.config(state='disabled')
+        
+        # Step 1: Hardware Basics
+        step1_frame = tk.LabelFrame(parent, text="1️⃣ Hardware Basics", 
+                                  font=("Arial", 12, "bold"),
+                                  bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                  relief='solid', bd=1)
+        step1_frame.pack(fill='x', padx=20, pady=(0, 20))
+        
+        step1_content = tk.Frame(step1_frame, bg=self.colors['main_bg'])
+        step1_content.pack(fill='x', padx=15, pady=15)
+        
+        step1_text = tk.Text(step1_content, height=8, wrap='word', 
+                           font=("Arial", 9), bg=self.colors['card_bg'], 
+                           fg=self.colors['main_fg'], relief='flat')
+        step1_text.pack(fill='x')
+        step1_text.insert('1.0', 
+            "Verify the fundamentals:\n\n"
+            "• Power LED on the controller is lit\n"
+            "• USB cable known-good; try a second cable and port if unsure\n"
+            "• In Windows Device Manager, the controller enumerates (Galil USB device) when powered\n"
+            "• No visible board damage, no shorts, correct main supply\n\n"
+            "If any of these fail, fix hardware issues first before proceeding.")
+        step1_text.config(state='disabled')
+        
+        # Step 2: Normal Communication
+        step2_frame = tk.LabelFrame(parent, text="2️⃣ Normal Communication Attempt", 
+                                  font=("Arial", 12, "bold"),
+                                  bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                  relief='solid', bd=1)
+        step2_frame.pack(fill='x', padx=20, pady=(0, 20))
+        
+        step2_content = tk.Frame(step2_frame, bg=self.colors['main_bg'])
+        step2_content.pack(fill='x', padx=15, pady=15)
+        
+        step2_text = tk.Text(step2_content, height=6, wrap='word', 
+                           font=("Arial", 9), bg=self.colors['card_bg'], 
+                           fg=self.colors['main_fg'], relief='flat')
+        step2_text.pack(fill='x')
+        step2_text.insert('1.0', 
+            "Try normal connection attempts in this order:\n\n"
+            "• USB (preferred)\n"
+            "• Serial (with known baud, e.g., 115200 by default if known)\n"
+            "• Ethernet (if configured)\n\n"
+            "Attempt a simple 'BN' (report firmware version) using your usual tool/terminal.\n"
+            "If this works, no recovery is needed!")
+        step2_text.config(state='disabled')
+        
+        # Step 3: MRST
+        step3_frame = tk.LabelFrame(parent, text="3️⃣ MRST (Factory Defaults)", 
+                                  font=("Arial", 12, "bold"),
+                                  bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                  relief='solid', bd=1)
+        step3_frame.pack(fill='x', padx=20, pady=(0, 20))
+        
+        step3_content = tk.Frame(step3_frame, bg=self.colors['main_bg'])
+        step3_content.pack(fill='x', padx=15, pady=15)
+        
+        step3_text = tk.Text(step3_content, height=8, wrap='word', 
+                           font=("Arial", 9), bg=self.colors['card_bg'], 
+                           fg=self.colors['main_fg'], relief='flat')
+        step3_text.pack(fill='x')
+        step3_text.insert('1.0', 
+            "Action:\n"
+            "1) POWER OFF the controller\n"
+            "2) Install the MRST jumper\n"
+            "3) POWER ON the controller; wait ~10 seconds\n"
+            "4) POWER OFF, REMOVE the MRST jumper\n"
+            "5) POWER ON normally and attempt communication again\n\n"
+            "Expected effect: Clears NVRAM (IP, baud, variables). Does NOT change firmware.")
+        step3_text.config(state='disabled')
+        
+        # Step 4: 19.2 Baud
+        step4_frame = tk.LabelFrame(parent, text="4️⃣ 19.2 (Force Serial Baud)", 
+                                  font=("Arial", 12, "bold"),
+                                  bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                  relief='solid', bd=1)
+        step4_frame.pack(fill='x', padx=20, pady=(0, 20))
+        
+        step4_content = tk.Frame(step4_frame, bg=self.colors['main_bg'])
+        step4_content.pack(fill='x', padx=15, pady=15)
+        
+        step4_text = tk.Text(step4_content, height=6, wrap='word', 
+                           font=("Arial", 9), bg=self.colors['card_bg'], 
+                           fg=self.colors['main_fg'], relief='flat')
+        step4_text.pack(fill='x')
+        step4_text.insert('1.0', 
+            "Action:\n"
+            "1) Install the 19.2 jumper\n"
+            "2) POWER CYCLE the controller\n"
+            "3) Connect via SERIAL at 19,200 baud (ignore stored baud settings)\n"
+            "4) If successful, restore your desired settings, then REMOVE the 19.2 jumper and reboot")
+        step4_text.config(state='disabled')
+        
+        # Step 5: UPGD Bootloader
+        step5_frame = tk.LabelFrame(parent, text="5️⃣ UPGD (Bootloader / Firmware Recovery)", 
+                                  font=("Arial", 12, "bold"),
+                                  bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                  relief='solid', bd=1)
+        step5_frame.pack(fill='x', padx=20, pady=(0, 20))
+        
+        step5_content = tk.Frame(step5_frame, bg=self.colors['main_bg'])
+        step5_content.pack(fill='x', padx=15, pady=15)
+        
+        step5_text = tk.Text(step5_content, height=8, wrap='word', 
+                           font=("Arial", 9), bg=self.colors['card_bg'], 
+                           fg=self.colors['main_fg'], relief='flat')
+        step5_text.pack(fill='x')
+        step5_text.insert('1.0', 
+            "Action:\n"
+            "1) Install the UPGD jumper\n"
+            "2) POWER CYCLE the controller\n"
+            "3) Over USB, launch the Galil Firmware Loader / Recovery utility (request from Galil support)\n"
+            "4) Select the correct DMC-41x3 firmware image and re-flash\n"
+            "5) POWER OFF, REMOVE UPGD jumper, POWER ON, test normal comms ('BN')\n\n"
+            "Expected effect: Re-flashes firmware even when normal firmware is corrupt.")
+        step5_text.config(state='disabled')
+        
+        # Step 6: MO (Motors Off)
+        step6_frame = tk.LabelFrame(parent, text="6️⃣ MO (Motors Off for Safe Comms)", 
+                                  font=("Arial", 12, "bold"),
+                                  bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                  relief='solid', bd=1)
+        step6_frame.pack(fill='x', padx=20, pady=(0, 20))
+        
+        step6_content = tk.Frame(step6_frame, bg=self.colors['main_bg'])
+        step6_content.pack(fill='x', padx=15, pady=15)
+        
+        step6_text = tk.Text(step6_content, height=6, wrap='word', 
+                           font=("Arial", 9), bg=self.colors['card_bg'], 
+                           fg=self.colors['main_fg'], relief='flat')
+        step6_text.pack(fill='x')
+        step6_text.insert('1.0', 
+            "If firmware loads but axes behave unpredictably:\n"
+            "1) Install the MO jumper\n"
+            "2) POWER CYCLE (motors come up disabled)\n"
+            "3) Test communication (no motor motion risk)\n"
+            "4) Remove MO when done")
+        step6_text.config(state='disabled')
+        
+        # Step 7: Advanced Troubleshooting
+        step7_frame = tk.LabelFrame(parent, text="7️⃣ Advanced Troubleshooting", 
+                                  font=("Arial", 12, "bold"),
+                                  bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                  relief='solid', bd=1)
+        step7_frame.pack(fill='x', padx=20, pady=(0, 20))
+        
+        step7_content = tk.Frame(step7_frame, bg=self.colors['main_bg'])
+        step7_content.pack(fill='x', padx=15, pady=15)
+        
+        step7_text = tk.Text(step7_content, height=8, wrap='word', 
+                           font=("Arial", 9), bg=self.colors['card_bg'], 
+                           fg=self.colors['main_fg'], relief='flat')
+        step7_text.pack(fill='x')
+        step7_text.insert('1.0', 
+            "Rare cases:\n\n"
+            "• APWR: External logic power check if logic power stability is suspected\n"
+            "• ARXD/ACTS: Serial handshaking overrides for serial comms issues\n\n"
+            "These are diagnostic-only. Remove after testing.\n\n"
+            "If the controller does not enumerate over USB in UPGD mode (bootloader), "
+            "the bootloader may be corrupted. Contact Galil technical support for RMA.")
+        step7_text.config(state='disabled')
+        
+        # Close button
+        close_frame = tk.Frame(parent, bg=self.colors['main_bg'])
+        close_frame.pack(fill='x', padx=20, pady=(0, 20))
+        
+        close_btn = tk.Button(close_frame, text="Close", 
+                            font=("Arial", 10, "bold"),
+                            bg=self.colors['accent_blue'], fg='white',
+                            command=dialog.destroy)
+        close_btn.pack(side='right')
 
     def test_axis_diagnostics(self):
         """Test axis diagnostics for all axes"""
@@ -3863,31 +6805,23 @@ class GalilSetupApp:
             self.append_test_log(f"Diagnostics failed: {e}")
 
     def reset_network_config(self):
-        """Reset network configuration to defaults"""
+        """Reset IP configuration to defaults"""
         try:
             # Reset to default values
             if hasattr(self, 'config_ip_entry'):
                 self.config_ip_entry.delete(0, tk.END)
-                self.config_ip_entry.insert(0, "10.1.0.21")
-            
-            if hasattr(self, 'subnet_entry'):
-                self.subnet_entry.delete(0, tk.END)
-                self.subnet_entry.insert(0, "255.255.255.0")
+                # Config IP entry starts blank - no default value
                 
-            if hasattr(self, 'gateway_entry'):
-                self.gateway_entry.delete(0, tk.END)
-                self.gateway_entry.insert(0, "10.1.0.1")
-                
-            self.append_test_log("Network configuration reset to defaults")
+            self.append_test_log("IP configuration reset to defaults")
         except Exception as e:
-            self.append_test_log(f"Failed to reset network config: {e}")
+            self.append_test_log(f"Failed to reset IP config: {e}")
 
     def apply_controller_settings(self):
         """Apply controller settings"""
         try:
             # Get values from GUI
             auto_connect = self.auto_connect_var.get() if hasattr(self, 'auto_connect_var') else True
-            default_ip = self.default_ip_entry.get() if hasattr(self, 'default_ip_entry') else "10.1.0.21"
+            default_ip = self.default_ip_entry.get() if hasattr(self, 'default_ip_entry') else ""
             
             self.append_test_log(f"Applying controller settings: Auto-connect={auto_connect}, Default IP={default_ip}")
             # TODO: Implement actual controller settings application
@@ -4713,7 +7647,7 @@ class GalilSetupApp:
                 
             # Collect current configuration
             config = {
-                'default_ip': "10.1.0.21",  # Default IP from the application
+                'default_ip': "",  # No default IP - user must enter their own
                 'motion_parameters': {
                     'default_speed': 5000,
                     'default_acceleration': 1000,
@@ -4811,7 +7745,7 @@ class GalilSetupApp:
                 
             # Define default configuration
             default_config = {
-                'default_ip': "10.1.0.21",
+                'default_ip': "",  # No default IP - user must enter their own
                 'motion_parameters': {
                     'default_speed': 5000,
                     'default_acceleration': 1000,
@@ -4838,7 +7772,7 @@ class GalilSetupApp:
             try:
                 if hasattr(self, 'ip_entry') and self.ip_entry.winfo_exists():
                     self.ip_entry.delete(0, tk.END)
-                    self.ip_entry.insert(0, default_config['default_ip'])
+                    # IP entry starts blank - no default value loaded
                     
                 if hasattr(self, 'test_speed_entry') and self.test_speed_entry.winfo_exists():
                     self.test_speed_entry.delete(0, tk.END)
@@ -5116,15 +8050,17 @@ class GalilSetupApp:
                     time.sleep(1.0)  # Wait longer when no controller
                     continue
                 
-                # Check if controller is still connected by testing a simple command
-                try:
-                    self.controller.send_command("TP A")
-                except Exception as conn_error:
-                    # Controller is disconnected, stop the loop
-                    self.test_encoder_update_running = False
-                    error_msg = str(conn_error)
-                    self.root.after(0, lambda msg=error_msg: self.append_test_log(f"Stopping encoder updates: Controller disconnected ({msg})"))
-                    break
+                # Check if controller is still connected by testing a simple command (less frequently)
+                connection_check_count += 1
+                if connection_check_count % 10 == 0:  # Only check every 10th iteration (every 20 seconds)
+                    try:
+                        self.controller.send_command("TP A")
+                    except Exception as conn_error:
+                        # Controller is disconnected, stop the loop
+                        self.test_encoder_update_running = False
+                        error_msg = str(conn_error)
+                        self.root.after(0, lambda msg=error_msg: self.append_test_log(f"Stopping encoder updates: Controller disconnected ({msg})"))
+                        break
                 
                 # Read positions and velocities from all axes
                 axis_positions = {}
@@ -5176,8 +8112,8 @@ class GalilSetupApp:
                     self.maintain_servo_status()
                     servo_maintenance_counter = 0
                 
-                # Sleep for update interval - increased to reduce controller load
-                time.sleep(0.5)  # 500ms updates (2 updates per second instead of 10)
+                # Sleep for update interval - much longer to protect controller from overload
+                time.sleep(2.0)  # 2 second updates to prevent controller overwhelm
                 
             except Exception as e:
                 # Update UI with error in main thread - ensure we only pass string error messages
@@ -5713,8 +8649,8 @@ class GalilSetupApp:
     # DIAGNOSTICS METHODS
     # ============================================================================
     
-    def update_controller_info_display(self):
-        """Update the controller information display in diagnostics page"""
+    def update_diagnostics_controller_info_display(self):
+        """Update the controller information display in diagnostics page (diagnostics tab)"""
         if hasattr(self, 'controller_info_text') and self.controller_info_text:
             self.controller_info_text.delete(1.0, tk.END)
             
@@ -5765,10 +8701,29 @@ class GalilSetupApp:
                 self.controller_info_text.insert(1.0, "No controller connected")
     
     def run_full_diagnostics(self):
-        """Run the complete diagnostics suite"""
-        if not self.controller:
-            messagebox.showerror("Error", "Please connect to a controller first")
+        """Run the complete diagnostics suite - DISABLED TO PREVENT CONTROLLER CORRUPTION"""
+        # DIAGNOSTICS DISABLED - They were corrupting the controller and causing IP loss
+        messagebox.showwarning("Diagnostics Disabled", 
+                              "Full diagnostics have been temporarily disabled to prevent controller corruption.\n\n"
+                              "The diagnostics were overwhelming the controller and causing:\n"
+                              "• Controller to become unresponsive\n"
+                              "• IP address loss\n"
+                              "• Need for master reset\n\n"
+                              "Use individual testing tools instead for safer controller testing.")
+        return
+        
+        # Original diagnostics code commented out for safety
+        # Ensure we have a healthy connection before starting diagnostics
+        if not self.connection_manager or not self.connection_manager.ensure_connection():
+            messagebox.showerror("Error", "No healthy controller connection available")
             return
+        
+        # Update local references to ensure they're current
+        if self.connection_manager.controller:
+            self.controller = self.connection_manager.controller
+            self.controller_commands = self.connection_manager.controller_commands
+            # Reinitialize diagnostics with current controller
+            self.diagnostics = GalilDiagnostics(self.controller, safe_mode=True)
         
         if not self.diagnostics:
             messagebox.showerror("Error", "Diagnostics not initialized")
