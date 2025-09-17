@@ -151,9 +151,8 @@ class GUIFramework:
         # Navigation buttons
         nav_buttons = [
             ("Motor Setup", self.main_app.show_motor_setup if self.main_app else None),
-            ("Motion Controls", self.main_app.show_motion_controls if self.main_app else None),
             ("Encoder Overlay", self.main_app.show_encoder_overlay if self.main_app else None),
-            ("Diagnostics", self.main_app.show_diagnostics if self.main_app else None),
+            ("Motor Tuning", self.main_app.show_motor_tuning if self.main_app else None),
             ("Network Config", self.main_app.show_network_config if self.main_app else None),
             ("Controller Testing", self.main_app.show_controller_testing if self.main_app else None),
             ("Settings", self.main_app.show_settings if self.main_app else None)
@@ -1089,110 +1088,6 @@ class GUIFramework:
         # Update scroll region
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
     
-    def create_motion_controls_page(self, main_app):
-        """Create the Motion Controls page GUI"""
-        # Title
-        title = tk.Label(self.scrollable_frame, text="Motion Controls", 
-                        font=("Arial", 24, "bold"), 
-                        bg=self.colors['main_bg'], fg=self.colors['main_fg'])
-        title.pack(anchor='w', pady=(0, 20))
-        
-        # Motion controls content
-        controls_frame = tk.Frame(self.scrollable_frame, bg=self.colors['main_bg'])
-        controls_frame.pack(fill='both', expand=True)
-        
-        # Jog Controls Section
-        jog_frame = tk.LabelFrame(controls_frame, text="Jog Controls", 
-                                font=("Arial", 12, "bold"),
-                                bg=self.colors['main_bg'], fg=self.colors['main_fg'],
-                                relief='solid', bd=1)
-        jog_frame.pack(fill='x', pady=(0, 20), padx=10)
-        
-        # Axis selection for jog
-        jog_axis_frame = tk.Frame(jog_frame, bg=self.colors['main_bg'])
-        jog_axis_frame.pack(fill='x', padx=15, pady=10)
-        
-        tk.Label(jog_axis_frame, text="Axis:", font=("Arial", 10, "bold"),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
-        
-        main_app.jog_axis_var = tk.StringVar(value="A")
-        jog_axis_combo = ttk.Combobox(jog_axis_frame, textvariable=main_app.jog_axis_var, 
-                                     values=["A", "B", "C", "D"], width=10)
-        jog_axis_combo.pack(side='left', padx=(10, 20))
-        
-        # Jog distance
-        tk.Label(jog_axis_frame, text="Distance:", font=("Arial", 10, "bold"),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
-        
-        main_app.jog_distance_entry = tk.Entry(jog_axis_frame, font=("Arial", 10), width=10)
-        main_app.jog_distance_entry.pack(side='left', padx=(10, 20))
-        main_app.jog_distance_entry.insert(0, "1000")
-        
-        # Jog buttons
-        jog_buttons_frame = tk.Frame(jog_frame, bg=self.colors['main_bg'])
-        jog_buttons_frame.pack(fill='x', padx=15, pady=(0, 10))
-        
-        jog_neg_btn = tk.Button(jog_buttons_frame, text="← Jog -", 
-                               font=("Arial", 10, "bold"),
-                               bg=self.colors['warning_orange'], fg='white',
-                               command=main_app.jog_negative)
-        jog_neg_btn.pack(side='left', padx=(0, 10))
-        
-        jog_pos_btn = tk.Button(jog_buttons_frame, text="Jog + →", 
-                               font=("Arial", 10, "bold"),
-                               bg=self.colors['success_green'], fg='white',
-                               command=main_app.jog_positive)
-        jog_pos_btn.pack(side='left')
-        
-        # Stop button
-        stop_btn = tk.Button(jog_buttons_frame, text="⏹ Stop", 
-                            font=("Arial", 10, "bold"),
-                            bg=self.colors['error_red'], fg='white',
-                            command=main_app.stop_all_motion)
-        stop_btn.pack(side='right')
-        
-        # Motion Parameters Section
-        params_frame = tk.LabelFrame(controls_frame, text="Motion Parameters", 
-                                   font=("Arial", 12, "bold"),
-                                   bg=self.colors['main_bg'], fg=self.colors['main_fg'],
-                                   relief='solid', bd=1)
-        params_frame.pack(fill='x', pady=(0, 20), padx=10)
-        
-        # Speed and acceleration
-        motion_params_frame = tk.Frame(params_frame, bg=self.colors['main_bg'])
-        motion_params_frame.pack(fill='x', padx=15, pady=10)
-        
-        # Speed
-        tk.Label(motion_params_frame, text="Speed:", font=("Arial", 10),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).grid(row=0, column=0, sticky='w')
-        main_app.speed_entry = tk.Entry(motion_params_frame, font=("Arial", 10), width=15)
-        main_app.speed_entry.grid(row=0, column=1, padx=(10, 20))
-        main_app.speed_entry.insert(0, "5000")
-        
-        # Acceleration
-        tk.Label(motion_params_frame, text="Acceleration:", font=("Arial", 10),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).grid(row=0, column=2, sticky='w')
-        main_app.accel_entry = tk.Entry(motion_params_frame, font=("Arial", 10), width=15)
-        main_app.accel_entry.grid(row=0, column=3, padx=(10, 20))
-        main_app.accel_entry.insert(0, "1000")
-        
-        # Deceleration
-        tk.Label(motion_params_frame, text="Deceleration:", font=("Arial", 10),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).grid(row=0, column=4, sticky='w')
-        main_app.decel_entry = tk.Entry(motion_params_frame, font=("Arial", 10), width=15)
-        main_app.decel_entry.grid(row=0, column=5, padx=(10, 0))
-        main_app.decel_entry.insert(0, "2000")
-        
-        # Apply button
-        apply_btn = tk.Button(params_frame, text="Apply Parameters", 
-                            font=("Arial", 10, "bold"),
-                            bg=self.colors['accent_blue'], fg='white',
-                            command=main_app.apply_motion_params)
-        apply_btn.pack(pady=(0, 10))
-        
-        # Motion controls page complete
-        # Update scroll region
-        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
     
     def create_encoder_overlay_page(self, main_app):
         """Create the Encoder Overlay page GUI"""
@@ -1324,129 +1219,24 @@ class GUIFramework:
         # Update scroll region
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
     
-    def create_diagnostics_page(self, main_app):
-        """Create the comprehensive Diagnostics page GUI"""
+    def create_motor_tuning_page(self, main_app):
+        """Create the Motor Tuning page GUI with motor setup and command interface"""
         # Title
-        title = tk.Label(self.scrollable_frame, text="DMC-4103 Diagnostics", 
+        title = tk.Label(self.scrollable_frame, text="Motor Tuning & Setup", 
                         font=("Arial", 24, "bold"), 
                         bg=self.colors['main_bg'], fg=self.colors['main_fg'])
         title.pack(anchor='w', pady=(0, 20))
         
-        # Diagnostics content
-        diag_frame = tk.Frame(self.scrollable_frame, bg=self.colors['main_bg'])
-        diag_frame.pack(fill='both', expand=True)
-        
-        # Controller Information Section
-        info_frame = tk.LabelFrame(diag_frame, text="Controller Information", 
-                                 font=("Arial", 12, "bold"),
-                                 bg=self.colors['main_bg'], fg=self.colors['main_fg'],
-                                 relief='solid', bd=1)
-        info_frame.pack(fill='x', pady=(0, 20), padx=10)
-        
-        # Info content
-        info_content = tk.Frame(info_frame, bg=self.colors['main_bg'])
-        info_content.pack(fill='x', padx=15, pady=15)
-        
-        # Controller status
-        status_frame = tk.Frame(info_content, bg=self.colors['main_bg'])
-        status_frame.pack(fill='x', pady=(0, 10))
-        
-        tk.Label(status_frame, text="Status:", font=("Arial", 10, "bold"),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
-        
-        main_app.controller_status_label = tk.Label(status_frame, text="Not Connected", 
-                                                  font=("Arial", 10),
-                                                  bg=self.colors['main_bg'], fg=self.colors['error_red'])
-        main_app.controller_status_label.pack(side='left', padx=(10, 0))
-        
-        # Controller info display
-        info_display_frame = tk.Frame(info_content, bg=self.colors['main_bg'])
-        info_display_frame.pack(fill='x', pady=(10, 0))
-        
-        main_app.controller_info_text = tk.Text(info_display_frame, height=6, width=80,
-                                              font=("Courier", 9), bg=self.colors['card_bg'],
-                                              fg=self.colors['main_fg'], relief='solid', bd=1)
-        main_app.controller_info_text.pack(fill='x')
-        
-        # Diagnostics Control Section
-        control_frame = tk.LabelFrame(diag_frame, text="Diagnostics Control", 
-                                    font=("Arial", 12, "bold"),
-                                    bg=self.colors['main_bg'], fg=self.colors['main_fg'],
-                                    relief='solid', bd=1)
-        control_frame.pack(fill='x', pady=(0, 20), padx=10)
-        
-        # Control content
-        control_content = tk.Frame(control_frame, bg=self.colors['main_bg'])
-        control_content.pack(fill='x', padx=15, pady=15)
-        
-        # IP Address input for testing
-        ip_frame = tk.Frame(control_content, bg=self.colors['main_bg'])
-        ip_frame.pack(fill='x', pady=(0, 10))
-        
-        tk.Label(ip_frame, text="Test IP Address:", font=("Arial", 10, "bold"),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
-        
-        main_app.test_ip_entry = tk.Entry(ip_frame, font=("Arial", 10), width=15)
-        main_app.test_ip_entry.pack(side='left', padx=(10, 0))
-        main_app.test_ip_entry.insert(0, "10.1.0.21")  # Default IP
-        
-        # Safety mode checkbox
-        safety_frame = tk.Frame(control_content, bg=self.colors['main_bg'])
-        safety_frame.pack(fill='x', pady=(0, 10))
-        
-        main_app.safe_mode_var = tk.BooleanVar(value=True)
-        safety_checkbox = tk.Checkbutton(safety_frame, text="Safe Mode (Conservative test parameters)",
-                                       variable=main_app.safe_mode_var,
-                                       font=("Arial", 10), bg=self.colors['main_bg'],
-                                       fg=self.colors['main_fg'])
-        safety_checkbox.pack(anchor='w')
-        
-        # Control buttons
-        buttons_frame = tk.Frame(control_content, bg=self.colors['main_bg'])
-        buttons_frame.pack(fill='x', pady=(10, 0))
-        
-        main_app.run_diagnostics_btn = tk.Button(buttons_frame, text="🚀 Run Full Diagnostics", 
-                                               font=("Arial", 12, "bold"),
-                                               bg=self.colors['success_green'], fg='white',
-                                               command=main_app.run_full_diagnostics)
-        main_app.run_diagnostics_btn.pack(side='left', padx=(0, 10))
-        
-        main_app.stop_diagnostics_btn = tk.Button(buttons_frame, text="⏹️ Stop Diagnostics", 
-                                                font=("Arial", 12, "bold"),
-                                                bg=self.colors['error_red'], fg='white',
-                                                command=main_app.stop_diagnostics,
-                                                state='disabled')
-        main_app.stop_diagnostics_btn.pack(side='left', padx=(0, 10))
-        
-        main_app.save_report_btn = tk.Button(buttons_frame, text="💾 Save Report", 
-                                           font=("Arial", 12, "bold"),
-                                           bg=self.colors['accent_blue'], fg='white',
-                                           command=main_app.save_diagnostics_report,
-                                           state='disabled')
-        main_app.save_report_btn.pack(side='left', padx=(0, 10))
-        
-        # Encoder control buttons
-        encoder_frame = tk.Frame(control_content, bg=self.colors['main_bg'])
-        encoder_frame.pack(fill='x', pady=(10, 0))
-        
-        main_app.start_encoder_btn = tk.Button(encoder_frame, text="▶️ Start Encoder Updates", 
-                                             font=("Arial", 10, "bold"),
-                                             bg=self.colors['success_green'], fg='white',
-                                             command=main_app.start_encoder_update)
-        main_app.start_encoder_btn.pack(side='left', padx=(0, 10))
-        
-        main_app.stop_encoder_btn = tk.Button(encoder_frame, text="⏹️ Stop Encoder Updates", 
-                                            font=("Arial", 10, "bold"),
-                                            bg=self.colors['error_red'], fg='white',
-                                            command=main_app.stop_encoder_updates)
-        main_app.stop_encoder_btn.pack(side='left', padx=(0, 10))
-        
+        # Motor tuning content
+        tuning_frame = tk.Frame(self.scrollable_frame, bg=self.colors['main_bg'])
+        tuning_frame.pack(fill='both', expand=True)
+
         # Motor Setup Section
-        motor_setup_frame = tk.LabelFrame(diag_frame, text="🔧 Motor Setup & Tuning", 
+        motor_setup_frame = tk.LabelFrame(tuning_frame, text="🔧 Motor Setup & Tuning", 
                                         font=("Arial", 12, "bold"),
                                         bg=self.colors['main_bg'], fg=self.colors['main_fg'],
                                         relief='solid', bd=1)
-        motor_setup_frame.pack(fill='x', pady=(20, 20), padx=10)
+        motor_setup_frame.pack(fill='x', pady=(0, 20), padx=10)
         
         # Motor setup content
         motor_setup_content = tk.Frame(motor_setup_frame, bg=self.colors['main_bg'])
@@ -1459,8 +1249,8 @@ class GUIFramework:
         tk.Label(axis_frame, text="Select Axis:", font=("Arial", 10, "bold"),
                bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
         
-        main_app.motor_setup_axis_var = tk.StringVar(value="A")
-        axis_combo = ttk.Combobox(axis_frame, textvariable=main_app.motor_setup_axis_var, 
+        main_app.motor_tuning_axis_var = tk.StringVar(value="A")
+        axis_combo = ttk.Combobox(axis_frame, textvariable=main_app.motor_tuning_axis_var, 
                                 values=["A", "B", "C", "D"], width=5, state="readonly")
         axis_combo.pack(side='left', padx=(10, 0))
         
@@ -1471,8 +1261,8 @@ class GUIFramework:
         tk.Label(preset_frame, text="Motor Presets:", font=("Arial", 10, "bold"),
                bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(anchor='w')
         
-        main_app.motor_preset_var = tk.StringVar(value="axis_a_20k_4p")
-        preset_combo = ttk.Combobox(preset_frame, textvariable=main_app.motor_preset_var,
+        main_app.motor_tuning_preset_var = tk.StringVar(value="axis_a_20k_4p")
+        preset_combo = ttk.Combobox(preset_frame, textvariable=main_app.motor_tuning_preset_var,
                                   values=["axis_a_20k_4p", "axis_a_20k_4p_high_voltage", 
                                          "axis_a_20k_4p_bz", "generic_template"],
                                   width=40, state="readonly")
@@ -1499,8 +1289,8 @@ class GUIFramework:
         tk.Label(encoder_frame, text="Encoder Counts/Rev:", font=("Arial", 9),
                bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
         
-        main_app.encoder_counts_entry = tk.Entry(encoder_frame, font=("Arial", 9), width=10)
-        main_app.encoder_counts_entry.pack(side='left', padx=(10, 0))
+        main_app.motor_tuning_encoder_counts_entry = tk.Entry(encoder_frame, font=("Arial", 9), width=10)
+        main_app.motor_tuning_encoder_counts_entry.pack(side='left', padx=(10, 0))
         
         # Pole pairs
         pole_frame = tk.Frame(specs_frame, bg=self.colors['main_bg'])
@@ -1509,23 +1299,23 @@ class GUIFramework:
         tk.Label(pole_frame, text="Pole Pairs:", font=("Arial", 9),
                bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
         
-        main_app.pole_pairs_entry = tk.Entry(pole_frame, font=("Arial", 9), width=10)
-        main_app.pole_pairs_entry.pack(side='left', padx=(10, 0))
+        main_app.motor_tuning_pole_pairs_entry = tk.Entry(pole_frame, font=("Arial", 9), width=10)
+        main_app.motor_tuning_pole_pairs_entry.pack(side='left', padx=(10, 0))
         
         # Checkboxes for features
         features_frame = tk.Frame(specs_frame, bg=self.colors['main_bg'])
         features_frame.pack(fill='x', pady=(5, 0))
         
-        main_app.has_index_var = tk.BooleanVar(value=False)
+        main_app.motor_tuning_has_index_var = tk.BooleanVar(value=False)
         index_check = tk.Checkbutton(features_frame, text="Has Index Pulse",
-                                   variable=main_app.has_index_var,
+                                   variable=main_app.motor_tuning_has_index_var,
                                    font=("Arial", 9), bg=self.colors['main_bg'],
                                    fg=self.colors['main_fg'])
         index_check.pack(side='left')
         
-        main_app.has_halls_var = tk.BooleanVar(value=True)
+        main_app.motor_tuning_has_halls_var = tk.BooleanVar(value=True)
         halls_check = tk.Checkbutton(features_frame, text="Has Hall Sensors",
-                                   variable=main_app.has_halls_var,
+                                   variable=main_app.motor_tuning_has_halls_var,
                                    font=("Arial", 9), bg=self.colors['main_bg'],
                                    fg=self.colors['main_fg'])
         halls_check.pack(side='left', padx=(20, 0))
@@ -1537,8 +1327,8 @@ class GUIFramework:
         tk.Label(comm_frame, text="Commutation Method:", font=("Arial", 10, "bold"),
                bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(anchor='w')
         
-        main_app.commutation_method_var = tk.StringVar(value="bx")
-        comm_combo = ttk.Combobox(comm_frame, textvariable=main_app.commutation_method_var,
+        main_app.motor_tuning_commutation_method_var = tk.StringVar(value="bx")
+        comm_combo = ttk.Combobox(comm_frame, textvariable=main_app.motor_tuning_commutation_method_var,
                                 values=["bx", "bz", "bc_bi"],
                                 width=30, state="readonly")
         comm_combo.pack(anchor='w', pady=(5, 0))
@@ -1553,27 +1343,27 @@ class GUIFramework:
         setup_buttons_frame = tk.Frame(motor_setup_content, bg=self.colors['main_bg'])
         setup_buttons_frame.pack(fill='x', pady=(10, 0))
         
-        main_app.run_motor_setup_btn = tk.Button(setup_buttons_frame, text="🚀 Run Complete Setup", 
+        main_app.run_motor_tuning_btn = tk.Button(setup_buttons_frame, text="🚀 Run Complete Setup", 
                                                font=("Arial", 10, "bold"),
                                                bg=self.colors['success_green'], fg='white',
-                                               command=main_app.run_motor_setup)
-        main_app.run_motor_setup_btn.pack(side='left', padx=(0, 10))
+                                               command=main_app.run_motor_tuning)
+        main_app.run_motor_tuning_btn.pack(side='left', padx=(0, 10))
         
-        main_app.step_by_step_btn = tk.Button(setup_buttons_frame, text="📋 Step-by-Step Setup", 
+        main_app.step_by_step_tuning_btn = tk.Button(setup_buttons_frame, text="📋 Step-by-Step Setup", 
                                             font=("Arial", 10, "bold"),
                                             bg=self.colors['accent_blue'], fg='white',
-                                            command=main_app.show_step_by_step_setup)
-        main_app.step_by_step_btn.pack(side='left', padx=(0, 10))
+                                            command=main_app.show_step_by_step_tuning)
+        main_app.step_by_step_tuning_btn.pack(side='left', padx=(0, 10))
         
-        main_app.stop_motor_setup_btn = tk.Button(setup_buttons_frame, text="⏹️ Stop Setup", 
+        main_app.stop_motor_tuning_btn = tk.Button(setup_buttons_frame, text="⏹️ Stop Setup", 
                                                 font=("Arial", 10, "bold"),
                                                 bg=self.colors['error_red'], fg='white',
-                                                command=main_app.stop_motor_setup,
+                                                command=main_app.stop_motor_tuning,
                                                 state='disabled')
-        main_app.stop_motor_setup_btn.pack(side='left', padx=(0, 10))
-        
+        main_app.stop_motor_tuning_btn.pack(side='left', padx=(0, 10))
+
         # Command Interface Section
-        command_frame = tk.LabelFrame(diag_frame, text="💻 Command Interface", 
+        command_frame = tk.LabelFrame(tuning_frame, text="💻 Command Interface", 
                                     font=("Arial", 12, "bold"),
                                     bg=self.colors['main_bg'], fg=self.colors['main_fg'],
                                     relief='solid', bd=1)
@@ -1590,21 +1380,21 @@ class GUIFramework:
         tk.Label(cmd_input_frame, text="Send Command:", font=("Arial", 10, "bold"),
                bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
         
-        main_app.command_entry = tk.Entry(cmd_input_frame, font=("Courier", 10), width=30)
-        main_app.command_entry.pack(side='left', padx=(10, 10))
-        main_app.command_entry.bind('<Return>', lambda e: main_app.send_command())
+        main_app.motor_tuning_command_entry = tk.Entry(cmd_input_frame, font=("Courier", 10), width=30)
+        main_app.motor_tuning_command_entry.pack(side='left', padx=(10, 10))
+        main_app.motor_tuning_command_entry.bind('<Return>', lambda e: main_app.send_motor_tuning_command())
         
-        main_app.send_command_btn = tk.Button(cmd_input_frame, text="Send", 
+        main_app.send_motor_tuning_command_btn = tk.Button(cmd_input_frame, text="Send", 
                                             font=("Arial", 10, "bold"),
                                             bg=self.colors['accent_blue'], fg='white',
-                                            command=main_app.send_command)
-        main_app.send_command_btn.pack(side='left', padx=(0, 10))
+                                            command=main_app.send_motor_tuning_command)
+        main_app.send_motor_tuning_command_btn.pack(side='left', padx=(0, 10))
         
-        main_app.clear_commands_btn = tk.Button(cmd_input_frame, text="Clear", 
+        main_app.clear_motor_tuning_commands_btn = tk.Button(cmd_input_frame, text="Clear", 
                                               font=("Arial", 10, "bold"),
                                               bg=self.colors['warning_orange'], fg='white',
-                                              command=main_app.clear_command_history)
-        main_app.clear_commands_btn.pack(side='left')
+                                              command=main_app.clear_motor_tuning_command_history)
+        main_app.clear_motor_tuning_commands_btn.pack(side='left')
         
         # Quick command buttons
         quick_cmd_frame = tk.Frame(command_content, bg=self.colors['main_bg'])
@@ -1632,7 +1422,7 @@ class GUIFramework:
             btn = tk.Button(quick_buttons_frame, text=f"{cmd}", 
                           font=("Arial", 8), width=8,
                           bg=self.colors['secondary_bg'], fg=self.colors['main_fg'],
-                          command=lambda c=cmd: main_app.insert_command(c))
+                          command=lambda c=cmd: main_app.insert_motor_tuning_command(c))
             btn.pack(side='left', padx=(0, 5), pady=2)
             
             # Add tooltip description
@@ -1645,150 +1435,21 @@ class GUIFramework:
         tk.Label(cmd_history_frame, text="Command History:", font=("Arial", 10, "bold"),
                bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(anchor='w')
         
-        main_app.command_history_text = tk.Text(cmd_history_frame, height=8, width=80,
+        main_app.motor_tuning_command_history_text = tk.Text(cmd_history_frame, height=8, width=80,
                                               font=("Courier", 9), bg=self.colors['card_bg'],
                                               fg=self.colors['main_fg'], relief='solid', bd=1)
-        main_app.command_history_text.pack(fill='both', expand=True, pady=(5, 0))
+        main_app.motor_tuning_command_history_text.pack(fill='both', expand=True, pady=(5, 0))
         
         # Add scrollbar to command history
         cmd_scrollbar = tk.Scrollbar(cmd_history_frame, orient="vertical", 
-                                   command=main_app.command_history_text.yview)
-        main_app.command_history_text.configure(yscrollcommand=cmd_scrollbar.set)
+                                   command=main_app.motor_tuning_command_history_text.yview)
+        main_app.motor_tuning_command_history_text.configure(yscrollcommand=cmd_scrollbar.set)
         cmd_scrollbar.pack(side="right", fill="y")
         
-        main_app.test_connection_btn = tk.Button(buttons_frame, text="🔍 Test Connection", 
-                                               font=("Arial", 12, "bold"),
-                                               bg=self.colors['warning_orange'], fg='white',
-                                               command=main_app.test_controller_connection_diagnostics)
-        main_app.test_connection_btn.pack(side='left', padx=(0, 10))
-        
-        main_app.scan_network_btn = tk.Button(buttons_frame, text="🌐 Scan Network", 
-                                            font=("Arial", 12, "bold"),
-                                            bg=self.colors['accent_blue'], fg='white',
-                                            command=main_app.scan_network_for_controllers)
-        main_app.scan_network_btn.pack(side='left', padx=(0, 10))
-        
-        main_app.quick_connect_btn = tk.Button(buttons_frame, text="🔌 Quick Connect", 
-                                             font=("Arial", 12, "bold"),
-                                             bg=self.colors['success_green'], fg='white',
-                                             command=main_app.quick_connect_to_ip)
-        main_app.quick_connect_btn.pack(side='left', padx=(0, 10))
-        
-        main_app.telnet_test_btn = tk.Button(buttons_frame, text="📡 Telnet Test", 
-                                           font=("Arial", 12, "bold"),
-                                           bg=self.colors['warning_orange'], fg='white',
-                                           command=main_app.test_telnet_connection)
-        main_app.telnet_test_btn.pack(side='left', padx=(0, 10))
-        
-        main_app.connect_keep_btn = tk.Button(buttons_frame, text="🔗 Connect & Keep", 
-                                            font=("Arial", 12, "bold"),
-                                            bg=self.colors['accent_blue'], fg='white',
-                                            command=main_app.connect_and_keep_connected)
-        main_app.connect_keep_btn.pack(side='left')
-        
-        # Progress Section
-        progress_frame = tk.LabelFrame(diag_frame, text="Progress", 
-                                     font=("Arial", 12, "bold"),
-                                     bg=self.colors['main_bg'], fg=self.colors['main_fg'],
-                                     relief='solid', bd=1)
-        progress_frame.pack(fill='x', pady=(0, 20), padx=10)
-        
-        # Progress content
-        progress_content = tk.Frame(progress_frame, bg=self.colors['main_bg'])
-        progress_content.pack(fill='x', padx=15, pady=15)
-        
-        # Progress bar
-        main_app.diagnostics_progress = tk.DoubleVar()
-        progress_bar = ttk.Progressbar(progress_content, variable=main_app.diagnostics_progress,
-                                     maximum=100, length=400, mode='determinate')
-        progress_bar.pack(fill='x', pady=(0, 10))
-        
-        # Progress label
-        main_app.diagnostics_progress_label = tk.Label(progress_content, text="Ready to run diagnostics",
-                                                      font=("Arial", 10),
-                                                      bg=self.colors['main_bg'], fg=self.colors['main_fg'])
-        main_app.diagnostics_progress_label.pack(anchor='w')
-        
-        # Results Section
-        results_frame = tk.LabelFrame(diag_frame, text="Test Results", 
-                                    font=("Arial", 12, "bold"),
-                                    bg=self.colors['main_bg'], fg=self.colors['main_fg'],
-                                    relief='solid', bd=1)
-        results_frame.pack(fill='both', expand=True, pady=(0, 20), padx=10)
-        
-        # Results content
-        results_content = tk.Frame(results_frame, bg=self.colors['main_bg'])
-        results_content.pack(fill='both', expand=True, padx=15, pady=15)
-        
-        # Results text with scrollbar
-        results_text_frame = tk.Frame(results_content, bg=self.colors['main_bg'])
-        results_text_frame.pack(fill='both', expand=True)
-        
-        main_app.diagnostics_results_text = tk.Text(results_text_frame, height=20, width=100,
-                                                   font=("Courier", 9), bg=self.colors['card_bg'],
-                                                   fg=self.colors['main_fg'], relief='solid', bd=1)
-        results_scrollbar = tk.Scrollbar(results_text_frame, orient='vertical',
-                                       command=main_app.diagnostics_results_text.yview)
-        main_app.diagnostics_results_text.configure(yscrollcommand=results_scrollbar.set)
-        
-        main_app.diagnostics_results_text.pack(side='left', fill='both', expand=True)
-        results_scrollbar.pack(side='right', fill='y')
-        
-        # Summary Section
-        summary_frame = tk.LabelFrame(diag_frame, text="Summary", 
-                                    font=("Arial", 12, "bold"),
-                                    bg=self.colors['main_bg'], fg=self.colors['main_fg'],
-                                    relief='solid', bd=1)
-        summary_frame.pack(fill='x', pady=(0, 20), padx=10)
-        
-        # Summary content
-        summary_content = tk.Frame(summary_frame, bg=self.colors['main_bg'])
-        summary_content.pack(fill='x', padx=15, pady=15)
-        
-        main_app.diagnostics_summary_label = tk.Label(summary_content, text="No diagnostics run yet",
-                                                     font=("Arial", 10),
-                                                     bg=self.colors['main_bg'], fg=self.colors['main_fg'])
-        main_app.diagnostics_summary_label.pack(anchor='w')
-        
-        # Axis Diagnostics Section
-        axis_frame = tk.LabelFrame(diag_frame, text="Axis Diagnostics", 
-                                 font=("Arial", 12, "bold"),
-                                 bg=self.colors['main_bg'], fg=self.colors['main_fg'],
-                                 relief='solid', bd=1)
-        axis_frame.pack(fill='x', pady=(0, 20), padx=10)
-        
-        # Axis selection
-        axis_selection_frame = tk.Frame(axis_frame, bg=self.colors['main_bg'])
-        axis_selection_frame.pack(fill='x', padx=15, pady=10)
-        
-        tk.Label(axis_selection_frame, text="Axis:", font=("Arial", 10, "bold"),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
-        
-        main_app.diag_axis_var = tk.StringVar(value="A")
-        diag_axis_combo = ttk.Combobox(axis_selection_frame, textvariable=main_app.diag_axis_var, 
-                                      values=["A", "B", "C", "D"], width=10)
-        diag_axis_combo.pack(side='left', padx=(10, 20))
-        
-        # Diagnostic buttons
-        diag_buttons_frame = tk.Frame(axis_frame, bg=self.colors['main_bg'])
-        diag_buttons_frame.pack(fill='x', padx=15, pady=(0, 10))
-        
-        test_axis_btn = tk.Button(diag_buttons_frame, text="🔍 Test Axis", 
-                                 font=("Arial", 10, "bold"),
-                                 bg=self.colors['warning_orange'], fg='white',
-                                 command=main_app.test_axis_diagnostics)
-        test_axis_btn.pack(side='left', padx=(0, 10))
-        
-        remove_limits_btn = tk.Button(diag_buttons_frame, text="🚫 Remove Limits", 
-                                     font=("Arial", 10, "bold"),
-                                     bg=self.colors['error_red'], fg='white',
-                                     command=main_app.remove_axis_b_limits)
-        remove_limits_btn.pack(side='left')
-        
-        # Diagnostics page complete
+        # Motor tuning page complete
         # Update scroll region
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
-    
+
     def create_network_config_page(self, main_app):
         """Create the Network Config page GUI"""
         # Title
@@ -2343,7 +2004,96 @@ class GUIFramework:
                                          command=main_app.toggle_auto_update)
         auto_update_check.pack(pady=(0, 10))
         
-        # 2. MOTION TESTING SECTION
+        # 2. JOG CONTROLS SECTION
+        jog_frame = tk.LabelFrame(main_frame, text="Jog Controls", 
+                                font=("Arial", 12, "bold"),
+                                bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                relief='solid', bd=1)
+        jog_frame.pack(fill='x', pady=(0, 10))
+        
+        # Axis selection for jog
+        jog_axis_frame = tk.Frame(jog_frame, bg=self.colors['main_bg'])
+        jog_axis_frame.pack(fill='x', padx=15, pady=10)
+        
+        tk.Label(jog_axis_frame, text="Axis:", font=("Arial", 10, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
+        
+        main_app.jog_axis_var = tk.StringVar(value="A")
+        jog_axis_combo = ttk.Combobox(jog_axis_frame, textvariable=main_app.jog_axis_var, 
+                                     values=["A", "B", "C", "D"], width=10)
+        jog_axis_combo.pack(side='left', padx=(10, 20))
+        
+        # Jog distance
+        tk.Label(jog_axis_frame, text="Distance:", font=("Arial", 10, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
+        
+        main_app.jog_distance_entry = tk.Entry(jog_axis_frame, font=("Arial", 10), width=10)
+        main_app.jog_distance_entry.pack(side='left', padx=(10, 20))
+        main_app.jog_distance_entry.insert(0, "1000")
+        
+        # Jog buttons
+        jog_buttons_frame = tk.Frame(jog_frame, bg=self.colors['main_bg'])
+        jog_buttons_frame.pack(fill='x', padx=15, pady=(0, 10))
+        
+        jog_neg_btn = tk.Button(jog_buttons_frame, text="← Jog -", 
+                               font=("Arial", 10, "bold"),
+                               bg=self.colors['warning_orange'], fg='white',
+                               command=main_app.jog_negative)
+        jog_neg_btn.pack(side='left', padx=(0, 10))
+        
+        jog_pos_btn = tk.Button(jog_buttons_frame, text="Jog + →", 
+                               font=("Arial", 10, "bold"),
+                               bg=self.colors['success_green'], fg='white',
+                               command=main_app.jog_positive)
+        jog_pos_btn.pack(side='left')
+        
+        # Stop button
+        stop_btn = tk.Button(jog_buttons_frame, text="⏹ Stop", 
+                            font=("Arial", 10, "bold"),
+                            bg=self.colors['error_red'], fg='white',
+                            command=main_app.stop_all_motion)
+        stop_btn.pack(side='right')
+        
+        # 3. MOTION PARAMETERS SECTION
+        params_frame = tk.LabelFrame(main_frame, text="Motion Parameters", 
+                                   font=("Arial", 12, "bold"),
+                                   bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                   relief='solid', bd=1)
+        params_frame.pack(fill='x', pady=(0, 10))
+        
+        # Speed and acceleration
+        motion_params_frame = tk.Frame(params_frame, bg=self.colors['main_bg'])
+        motion_params_frame.pack(fill='x', padx=15, pady=10)
+        
+        # Speed
+        tk.Label(motion_params_frame, text="Speed:", font=("Arial", 10),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).grid(row=0, column=0, sticky='w')
+        main_app.speed_entry = tk.Entry(motion_params_frame, font=("Arial", 10), width=15)
+        main_app.speed_entry.grid(row=0, column=1, padx=(10, 20))
+        main_app.speed_entry.insert(0, "5000")
+        
+        # Acceleration
+        tk.Label(motion_params_frame, text="Acceleration:", font=("Arial", 10),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).grid(row=0, column=2, sticky='w')
+        main_app.accel_entry = tk.Entry(motion_params_frame, font=("Arial", 10), width=15)
+        main_app.accel_entry.grid(row=0, column=3, padx=(10, 20))
+        main_app.accel_entry.insert(0, "1000")
+        
+        # Deceleration
+        tk.Label(motion_params_frame, text="Deceleration:", font=("Arial", 10),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).grid(row=0, column=4, sticky='w')
+        main_app.decel_entry = tk.Entry(motion_params_frame, font=("Arial", 10), width=15)
+        main_app.decel_entry.grid(row=0, column=5, padx=(10, 0))
+        main_app.decel_entry.insert(0, "2000")
+        
+        # Apply button
+        apply_btn = tk.Button(params_frame, text="Apply Parameters", 
+                            font=("Arial", 10, "bold"),
+                            bg=self.colors['accent_blue'], fg='white',
+                            command=main_app.apply_motion_params)
+        apply_btn.pack(pady=(0, 10))
+        
+        # 4. MOTION TESTING SECTION
         motion_frame = tk.LabelFrame(main_frame, text="Motion Testing", 
                                    font=("Arial", 12, "bold"),
                                    bg=self.colors['main_bg'], fg=self.colors['main_fg'],

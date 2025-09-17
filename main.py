@@ -27,7 +27,6 @@ from command_compatibility_checker import GalilCommandChecker
 from controller_commands import ControllerCommands
 from gui_framework import GUIFramework
 from utils import LoggingUtils, estimate_bm_from_movement, calculate_motion_parameters, validate_motion_parameters
-from diagnostics import GalilDiagnostics, TestResult
 
 class GalilSetupApp:
     def __init__(self, root):
@@ -52,7 +51,6 @@ class GalilSetupApp:
         self.test_encoder_update_running = False
         self.auto_connect_running = False
         self.motor_direction_test_active = False  # Flag to control encoder position logging
-        self.diagnostics = None  # Will be initialized when controller connects
         
         # Initialize managers
         self.gui_framework = None  # Will be initialized after colors are set
@@ -101,17 +99,17 @@ class GalilSetupApp:
         """Setup the main UI with Acertara-style layout"""
         if self.gui_framework:
             self.gui_framework.setup_ui()
-        # Set references to GUI framework components
-        self.main_content = self.gui_framework.main_content
-        self.sidebar = self.gui_framework.sidebar
-        self.header = self.gui_framework.header
-        self.canvas = self.gui_framework.canvas
-        self.scrollbar = self.gui_framework.scrollbar
-        self.connection_status = self.gui_framework.connection_status
-        self.ip_display = self.gui_framework.ip_display
-        self.encoder_displays = self.gui_framework.encoder_displays
-        self.encoder_labels = self.gui_framework.encoder_labels
-        self.persistent_log_text = self.gui_framework.persistent_log_text
+            # Set references to GUI framework components
+            self.main_content = self.gui_framework.main_content
+            self.sidebar = self.gui_framework.sidebar
+            self.header = self.gui_framework.header
+            self.canvas = self.gui_framework.canvas
+            self.scrollbar = self.gui_framework.scrollbar
+            self.connection_status = self.gui_framework.connection_status
+            self.ip_display = self.gui_framework.ip_display
+            self.encoder_displays = self.gui_framework.encoder_displays
+            self.encoder_labels = self.gui_framework.encoder_labels
+            self.persistent_log_text = self.gui_framework.persistent_log_text
     
     def _on_mousewheel(self, event):
         """Handle mouse wheel scrolling for all text widgets"""
@@ -195,12 +193,13 @@ class GalilSetupApp:
         """Calculate appropriate font size for button text"""
         if self.gui_framework:
             return self.gui_framework._calculate_button_font_size(text)
-            return 10
+        return 10
             
     def _create_missing_encoder_label(self, axis):
         """Create a missing encoder label for the specified axis"""
         if self.gui_framework:
-            self.gui_framework._create_missing_encoder_label(axis)
+            return self.gui_framework._create_missing_encoder_label(axis)
+        return None
             
     def _force_update_encoder_displays(self):
         """Force update encoder displays to ensure all axes are visible"""
@@ -475,13 +474,6 @@ class GalilSetupApp:
         """Show motor setup interface"""
         self.show_motor_setup_new()
     
-    def show_motion_controls_new(self):
-        """Show motion controls interface using GUI framework"""
-        self.clear_main_content()
-        self.gui_framework.create_motion_controls_page(self)
-        
-        # Refresh connection status display
-        self.refresh_connection_status_display()
     
     def show_encoder_overlay_new(self):
         """Show encoder overlay interface using GUI framework"""
@@ -491,13 +483,6 @@ class GalilSetupApp:
         # Refresh connection status display
         self.refresh_connection_status_display()
     
-    def show_diagnostics_new(self):
-        """Show diagnostics interface using GUI framework"""
-        self.clear_main_content()
-        self.gui_framework.create_diagnostics_page(self)
-        
-        # Refresh connection status display
-        self.refresh_connection_status_display()
     
     def show_network_config_new(self):
         """Show network config interface using GUI framework"""
@@ -539,158 +524,27 @@ class GalilSetupApp:
         # Start encoder position updates when page is shown
         self.on_motor_setup_show()
             
-    def show_motion_controls(self):
-        """Show motion controls interface"""
-        self.clear_main_content()
-        
-        # Motion content frame
-        self.motion_content = tk.Frame(self.motion_frame, bg=self.colors['main_bg'])
-        self.motion_content.pack(fill='x', padx=15, pady=10)
-        
-        # Speed and acceleration
-        motion_params_frame = tk.Frame(self.motion_content, bg=self.colors['main_bg'])
-        motion_params_frame.pack(fill='x', pady=(0, 10))
-        
-        # Speed
-        tk.Label(motion_params_frame, "Speed:", font=("Arial", 10),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).grid(row=0, column=0, sticky='w')
-        self.speed_entry = tk.Entry(motion_params_frame, font=("Arial", 10), width=15)
-        self.speed_entry.grid(row=0, column=1, padx=(10, 20))
-        self.speed_entry.insert(0, "5000")
-        
-        # Acceleration
-        tk.Label(motion_params_frame, "Acceleration:", font=("Arial", 10),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).grid(row=0, column=2, sticky='w')
-        self.accel_entry = tk.Entry(motion_params_frame, font=("Arial", 10), width=15)
-        self.accel_entry.grid(row=0, column=3, padx=(10, 20))
-        self.accel_entry.insert(0, "1000")
-        
-        # Deceleration
-        tk.Label(motion_params_frame, "Deceleration:", font=("Arial", 10),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).grid(row=0, column=4, sticky='w')
-        self.decel_entry = tk.Entry(motion_params_frame, font=("Arial", 10), width=15)
-        self.decel_entry.grid(row=0, column=5, padx=(10, 0))
-        self.decel_entry.insert(0, "2000")
-        
-        # Apply button
-        apply_btn = tk.Button(self.motion_content, "Apply Parameters", 
-                            font=("Arial", 10, "bold"),
-                            bg=self.colors['accent_blue'], fg='white',
-                            command=self.apply_motion_params)
-        apply_btn.pack(pady=(0, 10))
-        
-        # Motion controls setup complete
             
-    def show_motion_controls(self):
-        """Show motion controls interface"""
-        self.clear_main_content()
-        
-        # Title
-        title = tk.Label(self.main_content, "Motion Controls", 
-                        font=("Arial", 24, "bold"), 
-                        bg=self.colors['main_bg'], fg=self.colors['main_fg'])
-        title.pack(anchor='w', pady=(0, 20))
-        
-        # Motion controls content
-        controls_frame = tk.Frame(self.main_content, bg=self.colors['main_bg'])
-        controls_frame.pack(fill='both', expand=True)
-        
-        # Configure content scaling for the controls frame
-        self._configure_content_scaling(controls_frame)
-        
-        # Jog Controls Section
-        jog_frame = tk.LabelFrame(controls_frame, "Jog Controls", 
-                                font=("Arial", 12, "bold"),
-                                bg=self.colors['main_bg'], fg=self.colors['main_fg'],
-                                relief='solid', bd=1)
-        jog_frame.pack(fill='x', pady=(0, 20), padx=10)
-        
-        # Axis selection for jog
-        jog_axis_frame = tk.Frame(jog_frame, bg=self.colors['main_bg'])
-        jog_axis_frame.pack(fill='x', padx=15, pady=10)
-        
-        tk.Label(jog_axis_frame, "Axis:", font=("Arial", 10, "bold"),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
-        
-        self.jog_axis_var = tk.StringVar(value="A")
-        jog_axis_combo = ttk.Combobox(jog_axis_frame, textvariable=self.jog_axis_var, 
-                                     values=["A", "B", "C", "D"], width=10)
-        jog_axis_combo.pack(side='left', padx=(10, 20))
-        
-        # Jog distance
-        tk.Label(jog_axis_frame, "Distance (mm):", font=("Arial", 10, "bold"),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
-        
-        self.jog_distance_entry = tk.Entry(jog_axis_frame, font=("Arial", 10), width=15)
-        self.jog_distance_entry.pack(side='left', padx=(10, 0))
-        self.jog_distance_entry.insert(0, "10.0")
-        
-        # Jog buttons
-        jog_buttons_frame = tk.Frame(jog_frame, bg=self.colors['main_bg'])
-        jog_buttons_frame.pack(fill='x', padx=15, pady=10)
-        
-        tk.Button(jog_buttons_frame, "Jog +", 
-                font=("Arial", 10, "bold"),
-                bg=self.colors['success_green'], fg='white',
-                command=lambda: self.jog_axis(1)).pack(side='left', padx=(0, 10))
-        
-        tk.Button(jog_buttons_frame, "Jog -", 
-                font=("Arial", 10, "bold"),
-                bg=self.colors['error_red'], fg='white',
-                command=lambda: self.jog_axis(-1)).pack(side='left', padx=(0, 10))
-        
-        tk.Button(jog_buttons_frame, "Stop", 
-                font=("Arial", 10, "bold"),
-                bg=self.colors['warning_orange'], fg='white',
-                command=self.stop_axis).pack(side='left')
-        
-        # Position Control Section
-        position_frame = tk.LabelFrame(controls_frame, "Position Control", 
-                                     font=("Arial", 12, "bold"),
-                                     bg=self.colors['main_bg'], fg=self.colors['main_fg'],
-                                     relief='solid', bd=1)
-        position_frame.pack(fill='x', pady=(0, 20), padx=10)
-        
-        # Position inputs
-        pos_inputs_frame = tk.Frame(position_frame, bg=self.colors['main_bg'])
-        pos_inputs_frame.pack(fill='x', padx=15, pady=10)
-        
-        tk.Label(pos_inputs_frame, "Axis:", font=("Arial", 10, "bold"),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).grid(row=0, column=0, sticky='w')
-        
-        self.pos_axis_var = tk.StringVar(value="A")
-        pos_axis_combo = ttk.Combobox(pos_inputs_frame, textvariable=self.pos_axis_var, 
-                                     values=["A", "B", "C", "D"], width=10)
-        pos_axis_combo.grid(row=0, column=1, padx=(10, 20))
-        
-        tk.Label(pos_inputs_frame, "Position (counts):", font=("Arial", 10, "bold"),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).grid(row=0, column=2, sticky='w')
-        
-        self.position_entry = tk.Entry(pos_inputs_frame, font=("Arial", 10), width=15)
-        self.position_entry.grid(row=0, column=3, padx=(10, 20))
-        self.position_entry.insert(0, "10000")
-        
-        tk.Button(pos_inputs_frame, "Move", 
-                font=("Arial", 10, "bold"),
-                bg=self.colors['accent_blue'], fg='white',
-                command=self.move_to_position).grid(row=0, column=4, padx=(10, 0))
-        
-        # Motion controls setup complete
     
-    def show_motion_controls(self):
-        """Show motion controls interface"""
-        self.show_motion_controls_new()
         
     def show_encoder_overlay(self):
         """Show encoder overlay interface"""
         self.show_encoder_overlay_new()
-            
-    def show_diagnostics(self):
-        """Show diagnostics interface"""
-        self.show_diagnostics_new()
+    
+    def show_motor_tuning(self):
+        """Show motor tuning interface"""
+        self.show_motor_tuning_new()
         
         # Update controller info display
         self.update_controller_info_display()
+    
+    def show_motor_tuning_new(self):
+        """Show motor tuning interface using GUI framework"""
+        self.clear_main_content()
+        self.gui_framework.create_motor_tuning_page(self)
+        
+        # Refresh connection status display
+        self.refresh_connection_status_display()
             
     def show_network_config(self):
         """Show network config interface"""
@@ -920,8 +774,7 @@ class GalilSetupApp:
                 # Update local references
                 self.controller = self.connection_manager.controller
                 self.controller_commands = self.connection_manager.controller_commands
-                # Initialize diagnostics
-                self.diagnostics = GalilDiagnostics(self.controller, safe_mode=True)
+                # Diagnostics removed
                 
                 # Debug: Log controller reference status
                 self.append_test_log(f"DEBUG: Controller reference set: {self.controller is not None}")
@@ -1281,8 +1134,7 @@ class GalilSetupApp:
         try:
             self.controller = self.connection_manager.controller
             self.controller_commands = self.connection_manager.controller_commands
-            # Initialize diagnostics
-            self.diagnostics = GalilDiagnostics(self.controller, safe_mode=True)
+            # Diagnostics removed
         except Exception as e:
             self.append_test_log(f"Error updating controller references: {e}")
     
@@ -4052,9 +3904,7 @@ class GalilSetupApp:
         if self.connection_manager.controller:
             self.controller = self.connection_manager.controller
             self.controller_commands = self.connection_manager.controller_commands
-            # Reinitialize diagnostics if needed
-            if not self.diagnostics:
-                self.diagnostics = GalilDiagnostics(self.controller, safe_mode=True)
+            # Diagnostics removed
         
         return True
     
@@ -4470,9 +4320,7 @@ class GalilSetupApp:
             if self.connection_manager and self.connection_manager.controller:
                 self.controller = self.connection_manager.controller
                 self.controller_commands = self.connection_manager.controller_commands
-                # Reinitialize diagnostics with current controller
-                if self.controller:
-                    self.diagnostics = GalilDiagnostics(self.controller, safe_mode=True)
+                # Diagnostics removed
             
             # Update controller information display (after controller reference is set)
             # Add a small delay to let the connection stabilize before querying info
@@ -6421,50 +6269,158 @@ Subnet mask and gateway are handled by your system's network configuration.
                 self.show_basic_controller_info()
                 return
             
-            # Get controller IP address (with timeout protection)
+            # Get controller IP address with robust fallbacks
+            current_ip = "Unknown"
             try:
-                ip_response = self.controller.send_command("MG _IP")
-                if ip_response and ip_response != '?' and 'timeout' not in str(ip_response).lower():
-                    current_ip = ip_response.replace(',', '.')
-                else:
-                    current_ip = "Unknown"
-            except:
-                current_ip = "Unknown"
+                ip_resp = self.controller.send_command("MG _IP")
+                if ip_resp and ip_resp.strip() != '?' and 'timeout' not in str(ip_resp).lower():
+                    current_ip = ip_resp.replace(',', '.').strip()
+            except Exception:
+                pass
+            if current_ip in (None, "", "?", "Unknown"):
+                try:
+                    legacy_ip = self.controller.send_command("IP")
+                    if legacy_ip and legacy_ip.strip() != '?' and 'timeout' not in str(legacy_ip).lower():
+                        current_ip = legacy_ip.replace(',', '.').strip()
+                except Exception:
+                    pass
+            # Final fallback: use connection manager's remembered IP
+            if current_ip in (None, "", "?", "Unknown"):
+                try:
+                    if hasattr(self, 'connection_manager') and getattr(self.connection_manager, 'connected_ip', None):
+                        current_ip = self.connection_manager.connected_ip
+                except Exception:
+                    pass
             
-            # Get controller model/version info (with timeout protection)
+            # Get controller model number with fallbacks
+            model_info = "Unknown"
             try:
-                model_response = self.controller.send_command("^R^V")
-                if model_response and model_response != '?' and 'timeout' not in str(model_response).lower():
-                    model_info = model_response.strip()
-                else:
-                    model_info = "Unknown"
-            except:
-                model_info = "Unknown"
+                model_response = self.controller.send_command("MG _ID")
+                if model_response and model_response.strip() != '?' and 'timeout' not in str(model_response).lower():
+                    model_info_raw = model_response.strip()
+                    # If numeric like 4143, prefix with DMC
+                    if model_info_raw.isdigit():
+                        model_info = f"DMC{model_info_raw}"
+                    else:
+                        model_info = model_info_raw
+            except Exception:
+                pass
+            if model_info in (None, "", "?", "Unknown"):
+                try:
+                    # ^R^V may include model text; use it as a fallback
+                    rv = self.controller.send_command("^R^V")
+                    if rv and rv.strip() != '?' and 'timeout' not in str(rv).lower():
+                        banner = rv.strip().splitlines()[0].strip()
+                        # Example: "10.1.0.21, DMC4143 Rev 1.3k, 18954"
+                        # Extract the token containing DMC...
+                        for part in [p.strip() for p in banner.split(',')]:
+                            if part.upper().startswith('DMC'):
+                                model_info = part.split(' Rev')[0].strip()
+                                break
+                except Exception:
+                    pass
+            if model_info in (None, "", "?", "Unknown"):
+                try:
+                    # Parse from ID multi-line response
+                    id_resp = self.controller.send_command("ID")
+                    if id_resp and id_resp.strip() != '?' and 'timeout' not in str(id_resp).lower():
+                        lines = [ln.strip() for ln in id_resp.strip().splitlines() if ln.strip() and not ln.strip().startswith((':', ';'))]
+                        fw_model = None
+                        dmc_line_model = None
+                        # Prefer model from FW line (matches ^R^V banner, e.g., DMC4143)
+                        for ln in lines:
+                            # Example: FW, DMC4143 Rev 1.3a
+                            if fw_model is None and ln.upper().startswith('FW') and 'DMC' in ln.upper():
+                                for token in [t.strip() for t in ln.split(',')]:
+                                    if token.upper().startswith('DMC'):
+                                        fw_model = token.split(' Rev')[0].strip()
+                                        break
+                            # Capture numeric DMC line as a fallback (e.g., DMC, 4103, Rev 11)
+                            if dmc_line_model is None and ln.upper().startswith('DMC') and ',' in ln:
+                                parts = [p.strip() for p in ln.split(',')]
+                                if len(parts) >= 2 and parts[1].isdigit():
+                                    dmc_line_model = f"DMC{parts[1]}"
+                        model_info = fw_model or model_info
+                        if model_info in (None, "", "?", "Unknown"):
+                            model_info = dmc_line_model or model_info
+                        # If still empty, try any token containing DMC
+                        if model_info in (None, "", "?", "Unknown"):
+                            for ln in lines:
+                                for token in ln.split(','):
+                                    token = token.strip()
+                                    if token.upper().startswith('DMC'):
+                                        model_info = token.split(' Rev')[0].strip()
+                                        break
+                                if model_info not in (None, "", "?", "Unknown"):
+                                    break
+                except Exception:
+                    pass
             
-            # Get firmware version (with timeout protection)
+            # Get firmware version with fallbacks
+            firmware = "Unknown"
             try:
-                fw_response = self.controller.send_command("^R^V")
-                if fw_response and fw_response != '?' and 'timeout' not in str(fw_response).lower():
+                fw_response = self.controller.send_command("MG _FW")
+                if fw_response and fw_response.strip() != '?' and 'timeout' not in str(fw_response).lower():
                     firmware = fw_response.strip()
-                else:
-                    firmware = "Unknown"
-            except:
-                firmware = "Unknown"
-            
-            # Get network settings (with timeout protection)
+            except Exception:
+                pass
+            # If still unknown, try to parse firmware from ^R^V output
+            if firmware in (None, "", "?", "Unknown"):
+                try:
+                    rv = self.controller.send_command("^R^V")
+                    if rv and rv.strip() != '?' and 'timeout' not in str(rv).lower():
+                        rv_str = rv.strip()
+                        # Heuristic: extract something resembling a version number
+                        import re as _re
+                        m = _re.search(r"(\bFW\s*[=:]?\s*([\w.\-]+))|(Rev\s*[\w.\-]+)|(\b\d+\.\d+[a-z]?)", rv_str, _re.IGNORECASE)
+                        if m:
+                            firmware = m.group(0).replace('FW', '').replace('Rev', '').replace(':', '').strip()
+                        else:
+                            firmware = rv_str
+                except Exception:
+                    pass
+            if firmware in (None, "", "?", "Unknown"):
+                try:
+                    # Parse from ID response: FW, DMC4143 Rev 1.3a
+                    id_resp = self.controller.send_command("ID")
+                    if id_resp and id_resp.strip() != '?' and 'timeout' not in str(id_resp).lower():
+                        lines = [ln.strip() for ln in id_resp.strip().splitlines() if ln.strip()]
+                        for ln in lines:
+                            if ln.upper().startswith('FW'):
+                                # Grab text after the first comma
+                                parts = [p.strip() for p in ln.split(',', 1)]
+                                if len(parts) == 2:
+                                    fw_text = parts[1]
+                                    # Remove leading DMC model if present, keep Rev ...
+                                    import re as _re
+                                    m = _re.search(r"Rev\s*[\w.\-]+", fw_text, _re.IGNORECASE)
+                                    if m:
+                                        firmware = m.group(0).strip()
+                                    else:
+                                        firmware = fw_text
+                                break
+                except Exception:
+                    pass
+
+            # Get serial number with fallbacks
+            serial_num = "Unknown"
             try:
-                subnet_response = self.controller.send_command("MG _SM")
-                subnet = subnet_response.replace(',', '.') if subnet_response and subnet_response != '?' and 'timeout' not in str(subnet_response).lower() else "Unknown"
-                
-                gateway_response = self.controller.send_command("MG _GW")
-                gateway = gateway_response.replace(',', '.') if gateway_response and gateway_response != '?' and 'timeout' not in str(gateway_response).lower() else "Unknown"
-                
-                dhcp_response = self.controller.send_command("MG _DH")
-                dhcp_status = "Enabled" if dhcp_response == "1" else "Disabled" if dhcp_response == "0" else "Unknown"
-            except:
-                subnet = "Unknown"
-                gateway = "Unknown"
-                dhcp_status = "Unknown"
+                sn_resp = self.controller.send_command("MG _BN")
+                if sn_resp and sn_resp.strip() != '?' and 'timeout' not in str(sn_resp).lower():
+                    serial_num = sn_resp.strip()
+            except Exception:
+                pass
+            if serial_num in (None, "", "?", "Unknown"):
+                try:
+                    rv = self.controller.send_command("^R^V")
+                    if rv and rv.strip() != '?' and 'timeout' not in str(rv).lower():
+                        banner = rv.strip().splitlines()[0].strip()
+                        # Example: "10.1.0.21, DMC4143 Rev 1.3k, 18954" → last comma part is serial
+                        parts = [p.strip() for p in banner.split(',')]
+                        if len(parts) >= 3 and parts[-1].replace(' ', '').isdigit():
+                            serial_num = parts[-1]
+                except Exception:
+                    pass
             
             # Update IP display
             if hasattr(self, 'current_controller_ip_label') and self.current_controller_ip_label.winfo_exists():
@@ -6473,10 +6429,8 @@ Subnet mask and gateway are handled by your system's network configuration.
             # Update details display
             details_text = f"""Model: {model_info}
 Firmware: {firmware}
-IP Address: {current_ip}
-Subnet Mask: {subnet}
-Gateway: {gateway}
-DHCP: {dhcp_status}"""
+Serial: {serial_num}
+IP Address: {current_ip}"""
             
             if hasattr(self, 'controller_details_label') and self.controller_details_label.winfo_exists():
                 self.controller_details_label.config(text=details_text, fg=self.colors['main_fg'])
@@ -6499,10 +6453,7 @@ DHCP: {dhcp_status}"""
             # Update details display with basic info
             details_text = """Model: Connected but unresponsive
 Firmware: Cannot read
-IP Address: Cannot read
-Subnet Mask: Cannot read
-Gateway: Cannot read
-DHCP: Cannot read"""
+IP Address: Cannot read"""
             
             if hasattr(self, 'controller_details_label') and self.controller_details_label.winfo_exists():
                 self.controller_details_label.config(text=details_text, fg=self.colors['warning_orange'])
@@ -8646,915 +8597,79 @@ DHCP: Cannot read"""
         self.append_test_log("\n" + "="*80)
 
     # ============================================================================
-    # DIAGNOSTICS METHODS
+    # MOTOR TUNING METHODS
     # ============================================================================
     
-    def update_diagnostics_controller_info_display(self):
-        """Update the controller information display in diagnostics page (diagnostics tab)"""
-        if hasattr(self, 'controller_info_text') and self.controller_info_text:
-            self.controller_info_text.delete(1.0, tk.END)
+    def run_motor_tuning(self):
+        """Run motor tuning process"""
+        # Use the existing motor setup functionality
+        self.run_motor_setup()
+    
+    def stop_motor_tuning(self):
+        """Stop motor tuning process"""
+        # Use the existing motor setup stop functionality
+        self.stop_motor_setup()
+    
+    def show_step_by_step_tuning(self):
+        """Show step-by-step motor tuning dialog"""
+        # Use the existing step-by-step setup functionality
+        self.show_step_by_step_setup()
+    
+    def send_motor_tuning_command(self):
+        """Send command from motor tuning interface"""
+        if not hasattr(self, 'motor_tuning_command_entry'):
+            return
+        
+        command = self.motor_tuning_command_entry.get().strip()
+        if not command:
+            return
+        
+        # Clear the entry
+        self.motor_tuning_command_entry.delete(0, tk.END)
+        
+        # Send the command
+        self.send_command_from_interface(command, 'motor_tuning')
+    
+    def insert_motor_tuning_command(self, command):
+        """Insert command into motor tuning command entry"""
+        if hasattr(self, 'motor_tuning_command_entry'):
+            self.motor_tuning_command_entry.delete(0, tk.END)
+            self.motor_tuning_command_entry.insert(0, command)
+    
+    def clear_motor_tuning_command_history(self):
+        """Clear motor tuning command history"""
+        if hasattr(self, 'motor_tuning_command_history_text'):
+            self.motor_tuning_command_history_text.delete(1.0, tk.END)
+    
+    def send_command_from_interface(self, command, interface_type='default'):
+        """Send command from various interfaces"""
+        if not self.controller:
+            messagebox.showerror("Error", "No controller connected")
+            return
+        
+        try:
+            # Send command to controller
+            response = self.controller.send_command(command)
             
-            if self.controller:
-                try:
-                    # Get basic controller information
-                    info_lines = []
-                    info_lines.append("Controller Information:")
-                    info_lines.append("-" * 30)
-                    
-                    # Try to get controller info
-                    try:
-                        firmware = self.controller.send_command("MG _REV")
-                        info_lines.append(f"Firmware: {firmware}")
-                    except:
-                        info_lines.append("Firmware: Unable to read")
-                    
-                    try:
-                        model = self.controller.send_command("MG _BM")
-                        info_lines.append(f"Model: {model}")
-                    except:
-                        info_lines.append("Model: Unable to read")
-                    
-                    try:
-                        burn_count = self.controller.send_command("MG _BN")
-                        info_lines.append(f"Burn Count: {burn_count}")
-                    except:
-                        info_lines.append("Burn Count: Unable to read")
-                    
-                    try:
-                        mac = self.controller.send_command("TH")
-                        info_lines.append(f"MAC Address: {mac}")
-                    except:
-                        info_lines.append("MAC Address: Unable to read")
-                    
-                    try:
-                        ip = self.controller.send_command("IA")
-                        info_lines.append(f"IP Address: {ip}")
-                    except:
-                        info_lines.append("IP Address: Unable to read")
-                    
-                    info_text = "\n".join(info_lines)
-                    self.controller_info_text.insert(1.0, info_text)
-                    
-                except Exception as e:
-                    self.controller_info_text.insert(1.0, f"Error reading controller info: {e}")
-            else:
-                self.controller_info_text.insert(1.0, "No controller connected")
-    
-    def run_full_diagnostics(self):
-        """Run the complete diagnostics suite - DISABLED TO PREVENT CONTROLLER CORRUPTION"""
-        # DIAGNOSTICS DISABLED - They were corrupting the controller and causing IP loss
-        messagebox.showwarning("Diagnostics Disabled", 
-                              "Full diagnostics have been temporarily disabled to prevent controller corruption.\n\n"
-                              "The diagnostics were overwhelming the controller and causing:\n"
-                              "• Controller to become unresponsive\n"
-                              "• IP address loss\n"
-                              "• Need for master reset\n\n"
-                              "Use individual testing tools instead for safer controller testing.")
-        return
-        
-        # Original diagnostics code commented out for safety
-        # Ensure we have a healthy connection before starting diagnostics
-        if not self.connection_manager or not self.connection_manager.ensure_connection():
-            messagebox.showerror("Error", "No healthy controller connection available")
-            return
-        
-        # Update local references to ensure they're current
-        if self.connection_manager.controller:
-            self.controller = self.connection_manager.controller
-            self.controller_commands = self.connection_manager.controller_commands
-            # Reinitialize diagnostics with current controller
-            self.diagnostics = GalilDiagnostics(self.controller, safe_mode=True)
-        
-        if not self.diagnostics:
-            messagebox.showerror("Error", "Diagnostics not initialized")
-            return
-        
-        # Update safe mode setting
-        safe_mode = getattr(self, 'safe_mode_var', None)
-        if safe_mode:
-            self.diagnostics.safe_mode = safe_mode.get()
-        
-        # Disable run button and enable stop button
-        if hasattr(self, 'run_diagnostics_btn'):
-            self.run_diagnostics_btn.config(state='disabled')
-        if hasattr(self, 'stop_diagnostics_btn'):
-            self.stop_diagnostics_btn.config(state='normal')
-        
-        # Clear previous results
-        if hasattr(self, 'diagnostics_results_text'):
-            self.diagnostics_results_text.delete(1.0, tk.END)
-        
-        # Start diagnostics in a separate thread
-        def run_diagnostics_thread():
-            try:
-                # Progress callback
-                def progress_callback(message, current, total):
-                    progress_percent = (current / total) * 100
-                    self.root.after(0, lambda: self.update_diagnostics_progress(progress_percent, message))
-                
-                # Run diagnostics
-                report = self.diagnostics.run_diagnostics(callback=progress_callback)
-                
-                # Update UI with results
-                self.root.after(0, lambda: self.display_diagnostics_results(report))
-                
-            except Exception as e:
-                self.root.after(0, lambda: self.handle_diagnostics_error(e))
-            finally:
-                # Re-enable run button and disable stop button
-                self.root.after(0, lambda: self.reset_diagnostics_buttons())
-        
-        # Start the thread
-        diagnostics_thread = threading.Thread(target=run_diagnostics_thread, daemon=True)
-        diagnostics_thread.start()
-    
-    def update_diagnostics_progress(self, progress, message):
-        """Update the diagnostics progress display"""
-        if hasattr(self, 'diagnostics_progress'):
-            self.diagnostics_progress.set(progress)
-        if hasattr(self, 'diagnostics_progress_label'):
-            self.diagnostics_progress_label.config(text=message)
-    
-    def display_diagnostics_results(self, report):
-        """Display the diagnostics results"""
-        if not hasattr(self, 'diagnostics_results_text'):
-            return
-        
-        # Clear previous results
-        self.diagnostics_results_text.delete(1.0, tk.END)
-        
-        # Display results
-        results_text = []
-        results_text.append("DMC-4103 DIAGNOSTICS RESULTS")
-        results_text.append("=" * 50)
-        results_text.append(f"Timestamp: {report.timestamp}")
-        results_text.append(f"Overall Result: {report.overall_result.value}")
-        results_text.append(f"Execution Time: {report.total_execution_time:.2f} seconds")
-        results_text.append("")
-        
-        # Display summary
-        if report.summary:
-            results_text.append("SUMMARY")
-            results_text.append("-" * 20)
-            results_text.append(f"Total Categories: {report.summary.get('total_categories', 0)}")
-            results_text.append(f"Total Steps: {report.summary.get('total_steps', 0)}")
-            results_text.append(f"Passed Steps: {report.summary.get('passed_steps', 0)}")
-            results_text.append(f"Failed Steps: {report.summary.get('failed_steps', 0)}")
-            results_text.append(f"Error Steps: {report.summary.get('error_steps', 0)}")
-            results_text.append(f"Pass Rate: {report.summary.get('pass_rate', 0):.1f}%")
-            results_text.append("")
-        
-        # Display category results
-        for category in report.test_categories:
-            results_text.append(f"{category.name.upper()}")
-            results_text.append("-" * len(category.name))
-            results_text.append(f"Result: {category.overall_result.value}")
-            results_text.append(f"Execution Time: {category.execution_time:.2f}s")
+            # Log the command and response
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            log_entry = f"[{timestamp}] > {command}\n[{timestamp}] < {response}\n"
             
-            if category.notes:
-                results_text.append(f"Notes: {category.notes}")
+            # Update appropriate command history based on interface type
+            if interface_type == 'motor_tuning' and hasattr(self, 'motor_tuning_command_history_text'):
+                self.motor_tuning_command_history_text.insert(tk.END, log_entry)
+                self.motor_tuning_command_history_text.see(tk.END)
+            elif hasattr(self, 'command_history_text'):
+                self.command_history_text.insert(tk.END, log_entry)
+                self.command_history_text.see(tk.END)
             
-            # Show failed steps
-            failed_steps = [s for s in category.steps if s.result == TestResult.FAIL]
-            if failed_steps:
-                results_text.append("Failed Steps:")
-                for step in failed_steps:
-                    results_text.append(f"  - {step.description}")
-                    if step.actual_response:
-                        results_text.append(f"    Response: {step.actual_response}")
-                    if step.notes:
-                        results_text.append(f"    Notes: {step.notes}")
+            # Also log to main test log
+            self.append_test_log(f"Command: {command} -> Response: {response}")
             
-            results_text.append("")
-        
-        # Update results text
-        self.diagnostics_results_text.insert(1.0, "\n".join(results_text))
-        
-        # Update summary label
-        if hasattr(self, 'diagnostics_summary_label'):
-            summary_text = f"Result: {report.overall_result.value} | Pass Rate: {report.summary.get('pass_rate', 0):.1f}% | Time: {report.total_execution_time:.2f}s"
-            self.diagnostics_summary_label.config(text=summary_text)
-        
-        # Enable save button
-        if hasattr(self, 'save_report_btn'):
-            self.save_report_btn.config(state='normal')
-        
-        # Store the report for saving
-        self.last_diagnostics_report = report
-    
-    def handle_diagnostics_error(self, error):
-        """Handle diagnostics errors"""
-        if hasattr(self, 'diagnostics_results_text'):
-            self.diagnostics_results_text.delete(1.0, tk.END)
-            self.diagnostics_results_text.insert(1.0, f"Diagnostics Error: {error}")
-        
-        if hasattr(self, 'diagnostics_summary_label'):
-            self.diagnostics_summary_label.config(text=f"Error: {error}")
-        
-        messagebox.showerror("Diagnostics Error", f"An error occurred during diagnostics: {error}")
-    
-    def reset_diagnostics_buttons(self):
-        """Reset the diagnostics control buttons"""
-        if hasattr(self, 'run_diagnostics_btn'):
-            self.run_diagnostics_btn.config(state='normal')
-        if hasattr(self, 'stop_diagnostics_btn'):
-            self.stop_diagnostics_btn.config(state='disabled')
-    
-    def stop_diagnostics(self):
-        """Stop running diagnostics"""
-        if self.diagnostics:
-            self.diagnostics.stop_diagnostics()
-            if hasattr(self, 'diagnostics_progress_label'):
-                self.diagnostics_progress_label.config(text="Stopping diagnostics...")
-    
-    def save_diagnostics_report(self):
-        """Save the diagnostics report to a file"""
-        if not hasattr(self, 'last_diagnostics_report') or not self.last_diagnostics_report:
-            messagebox.showerror("Error", "No diagnostics report to save")
-            return
-        
-        # Ask user for filename
-        filename = filedialog.asksaveasfilename(
-            defaultextension=".json",
-            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
-            title="Save Diagnostics Report"
-        )
-        
-        if filename:
-            try:
-                self.diagnostics.save_report(filename)
-                messagebox.showinfo("Success", f"Report saved to {filename}")
-            except Exception as e:
-                messagebox.showerror("Error", f"Failed to save report: {e}")
-    
-    def test_controller_connection_diagnostics(self):
-        """Test controller connection from diagnostics page"""
-        if hasattr(self, 'diagnostics_results_text'):
-            self.diagnostics_results_text.delete(1.0, tk.END)
-            self.diagnostics_results_text.insert(1.0, "Testing controller connection...\n")
-        
-        # Test connection in a separate thread
-        def test_connection_thread():
-            try:
-                # Test basic connectivity
-                test_results = []
-                test_results.append("CONTROLLER CONNECTION TEST")
-                test_results.append("=" * 40)
-                test_results.append("")
-                
-                # Test 1: Ping test
-                test_results.append("1. PING TEST")
-                test_results.append("-" * 20)
-                try:
-                    ip = self.test_ip_entry.get().strip() if hasattr(self, 'test_ip_entry') else "10.1.0.21"
-                    ping_result = ping_controller(ip)
-                    if ping_result:
-                        test_results.append(f"✓ Ping to {ip}: SUCCESS")
-                    else:
-                        test_results.append(f"✗ Ping to {ip}: FAILED")
-                except Exception as e:
-                    test_results.append(f"✗ Ping test error: {e}")
-                test_results.append("")
-                
-                # Test 2: Network discovery
-                test_results.append("2. NETWORK DISCOVERY")
-                test_results.append("-" * 20)
-                try:
-                    controllers = discover_galil_controllers()
-                    if controllers:
-                        test_results.append(f"✓ Found {len(controllers)} controller(s):")
-                        for controller in controllers:
-                            test_results.append(f"  - {controller}")
-                    else:
-                        test_results.append("✗ No controllers found on network")
-                except Exception as e:
-                    test_results.append(f"✗ Discovery error: {e}")
-                test_results.append("")
-                
-                # Test 3: Direct connection attempt
-                test_results.append("3. DIRECT CONNECTION TEST")
-                test_results.append("-" * 20)
-                try:
-                    if self.connection_manager:
-                        ip = self.test_ip_entry.get().strip() if hasattr(self, 'test_ip_entry') else "10.1.0.21"
-                        
-                        # Try different connection methods
-                        test_results.append(f"Testing connection to {ip}...")
-                        
-                        # Method 1: Standard connection
-                        try:
-                            success = self.connection_manager.connect_to_controller(ip, self.update_connection_status)
-                            if success:
-                                test_results.append(f"✓ Standard connection: SUCCESS")
-                                test_results.append("✓ Controller is reachable and responding")
-                                
-                                # Keep the connection alive for further testing
-                                test_results.append("✓ Connection maintained for testing")
-                            else:
-                                test_results.append(f"✗ Standard connection: FAILED")
-                        except Exception as e:
-                            test_results.append(f"✗ Standard connection error: {e}")
-                        
-                        # Method 2: Direct gclib connection test
-                        test_results.append("Testing direct gclib connection...")
-                        try:
-                            import gclib
-                            g = gclib.py()
-                            g.GOpen(f"{ip} --direct")
-                            test_results.append("✓ Direct gclib connection: SUCCESS")
-                            g.GClose()
-                        except Exception as e:
-                            test_results.append(f"✗ Direct gclib connection error: {e}")
-                        
-                        # Method 3: TCP socket test
-                        test_results.append("Testing TCP socket connection...")
-                        try:
-                            import socket
-                            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                            sock.settimeout(5)
-                            result = sock.connect_ex((ip, 23))  # Galil default port
-                            if result == 0:
-                                test_results.append("✓ TCP socket connection: SUCCESS")
-                                sock.close()
-                            else:
-                                test_results.append(f"✗ TCP socket connection: FAILED (error {result})")
-                        except Exception as e:
-                            test_results.append(f"✗ TCP socket connection error: {e}")
-                        
-                        # Method 4: Try different ports
-                        test_results.append("Testing different ports...")
-                        ports_to_test = [23, 22, 80, 443, 8080]
-                        for port in ports_to_test:
-                            try:
-                                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                                sock.settimeout(2)
-                                result = sock.connect_ex((ip, port))
-                                if result == 0:
-                                    test_results.append(f"✓ Port {port}: OPEN")
-                                else:
-                                    test_results.append(f"✗ Port {port}: CLOSED")
-                                sock.close()
-                            except:
-                                test_results.append(f"✗ Port {port}: ERROR")
-                        
-                    else:
-                        test_results.append("✗ Connection manager not available")
-                except Exception as e:
-                    test_results.append(f"✗ Connection error: {e}")
-                test_results.append("")
-                
-                # Test 4: Basic command test
-                test_results.append("4. BASIC COMMAND TEST")
-                test_results.append("-" * 20)
-                
-                # Try to use existing connection or create new one
-                controller_available = False
-                if self.controller:
-                    controller_available = True
-                    test_results.append("✓ Using existing controller connection")
-                else:
-                    # Try to connect if we don't have a connection
-                    try:
-                        if self.connection_manager:
-                            ip = self.test_ip_entry.get().strip() if hasattr(self, 'test_ip_entry') else "10.1.0.21"
-                            success = self.connection_manager.connect_to_controller(ip, self.update_connection_status)
-                            if success:
-                                controller_available = True
-                                test_results.append("✓ Connected to controller for testing")
-                            else:
-                                test_results.append("✗ Failed to connect to controller")
-                        else:
-                            test_results.append("✗ Connection manager not available")
-                    except Exception as e:
-                        test_results.append(f"✗ Connection error: {e}")
-                
-                if controller_available and self.controller:
-                    try:
-                        response = self.controller.send_command("TP A")
-                        test_results.append(f"✓ TP A command: {response}")
-                        
-                        response = self.controller.send_command("MG _REV")
-                        test_results.append(f"✓ Firmware: {response}")
-                        
-                        response = self.controller.send_command("MG _BM")
-                        test_results.append(f"✓ Model: {response}")
-                        
-                        response = self.controller.send_command("MG _BN")
-                        test_results.append(f"✓ Burn count: {response}")
-                        
-                    except Exception as e:
-                        test_results.append(f"✗ Command test error: {e}")
-                else:
-                    test_results.append("✗ No controller connection available for command testing")
-                
-                # Add troubleshooting recommendations
-                test_results.append("5. TROUBLESHOOTING RECOMMENDATIONS")
-                test_results.append("-" * 30)
-                
-                # Analyze the results to provide specific recommendations
-                ping_success = any("✓ Ping to" in line for line in test_results)
-                discovery_success = any("✓ Found" in line for line in test_results)
-                connection_failed = any("✗ Standard connection: FAILED" in line for line in test_results)
-                tcp_success = any("✓ TCP socket connection: SUCCESS" in line for line in test_results)
-                
-                if ping_success and discovery_success and connection_failed:
-                    test_results.append("DIAGNOSIS: Controller is reachable but connection protocol issue")
-                    test_results.append("")
-                    test_results.append("SOLUTIONS TO TRY:")
-                    test_results.append("1. Controller may be in a different mode")
-                    test_results.append("2. Try connecting with different software first (Galil Tools)")
-                    test_results.append("3. Controller may need to be reset")
-                    test_results.append("4. Check if controller is in program mode")
-                    test_results.append("5. Try sending a simple command via telnet:")
-                    test_results.append(f"   telnet {ip} 23")
-                    test_results.append("   Then type: TP A")
-                    test_results.append("")
-                    test_results.append("6. If telnet works, try these commands:")
-                    test_results.append("   RS (reset)")
-                    test_results.append("   MG _REV (get firmware)")
-                    test_results.append("   MG _BM (get model)")
-                elif ping_success and not tcp_success:
-                    test_results.append("DIAGNOSIS: Network reachable but Galil service not responding")
-                    test_results.append("")
-                    test_results.append("SOLUTIONS TO TRY:")
-                    test_results.append("1. Controller may not be powered on")
-                    test_results.append("2. Controller may be in boot mode")
-                    test_results.append("3. Check network cable connection")
-                    test_results.append("4. Try power cycling the controller")
-                else:
-                    test_results.append("DIAGNOSIS: General connectivity issue")
-                    test_results.append("")
-                    test_results.append("SOLUTIONS TO TRY:")
-                    test_results.append("1. Check controller power")
-                    test_results.append("2. Verify network cable")
-                    test_results.append("3. Check IP address configuration")
-                    test_results.append("4. Try different network port")
-                
-                # Update UI with results
-                self.root.after(0, lambda: self.display_connection_test_results(test_results))
-                
-            except Exception as e:
-                self.root.after(0, lambda: self.display_connection_test_results([f"Connection test failed: {e}"]))
-        
-        # Start the test thread
-        test_thread = threading.Thread(target=test_connection_thread, daemon=True)
-        test_thread.start()
-    
-    def display_connection_test_results(self, results):
-        """Display connection test results"""
-        if hasattr(self, 'diagnostics_results_text'):
-            self.diagnostics_results_text.delete(1.0, tk.END)
-            self.diagnostics_results_text.insert(1.0, "\n".join(results))
-        
-        if hasattr(self, 'diagnostics_summary_label'):
-            # Count successes and failures
-            success_count = sum(1 for line in results if line.startswith("✓"))
-            fail_count = sum(1 for line in results if line.startswith("✗"))
-            self.diagnostics_summary_label.config(text=f"Connection Test: {success_count} passed, {fail_count} failed")
-    
-    def scan_network_for_controllers(self):
-        """Scan the network for Galil controllers"""
-        if hasattr(self, 'diagnostics_results_text'):
-            self.diagnostics_results_text.delete(1.0, tk.END)
-            self.diagnostics_results_text.insert(1.0, "Scanning network for Galil controllers...\n")
-        
-        # Update progress
-        if hasattr(self, 'diagnostics_progress_label'):
-            self.diagnostics_progress_label.config(text="Scanning network...")
-        
-        # Scan in a separate thread
-        def scan_network_thread():
-            try:
-                scan_results = []
-                scan_results.append("NETWORK SCAN FOR GALIL CONTROLLERS")
-                scan_results.append("=" * 50)
-                scan_results.append("")
-                
-                # Get local network information
-                scan_results.append("1. LOCAL NETWORK INFORMATION")
-                scan_results.append("-" * 30)
-                try:
-                    import socket
-                    hostname = socket.gethostname()
-                    local_ip = socket.gethostbyname(hostname)
-                    scan_results.append(f"Hostname: {hostname}")
-                    scan_results.append(f"Local IP: {local_ip}")
-                    
-                    # Determine network range
-                    ip_parts = local_ip.split('.')
-                    network_base = f"{ip_parts[0]}.{ip_parts[1]}.{ip_parts[2]}"
-                    scan_results.append(f"Network Range: {network_base}.0/24")
-                    scan_results.append("")
-                except Exception as e:
-                    scan_results.append(f"Error getting network info: {e}")
-                    scan_results.append("")
-                
-                # Test common Galil IP addresses
-                scan_results.append("2. TESTING COMMON GALIL IP ADDRESSES")
-                scan_results.append("-" * 30)
-                common_ips = [
-                    "10.1.0.21", "10.1.0.20", "10.1.0.22", "10.1.0.23",
-                    "192.168.1.100", "192.168.1.101", "192.168.1.102",
-                    "192.168.0.100", "192.168.0.101", "192.168.0.102",
-                    "10.0.0.100", "10.0.0.101", "10.0.0.102"
-                ]
-                
-                found_controllers = []
-                for ip in common_ips:
-                    try:
-                        if ping_controller(ip):
-                            scan_results.append(f"✓ {ip}: PING SUCCESS")
-                            # Try to connect and get controller info
-                            try:
-                                temp_controller = GalilController()
-                                temp_controller.connect(ip)
-                                try:
-                                    model = temp_controller.send_command("MG _BM")
-                                    firmware = temp_controller.send_command("MG _REV")
-                                    scan_results.append(f"  → Model: {model}")
-                                    scan_results.append(f"  → Firmware: {firmware}")
-                                    found_controllers.append({
-                                        'ip': ip,
-                                        'model': model,
-                                        'firmware': firmware
-                                    })
-                                except:
-                                    scan_results.append(f"  → Galil controller detected (no info)")
-                                    found_controllers.append({'ip': ip, 'model': 'Unknown', 'firmware': 'Unknown'})
-                                finally:
-                                    temp_controller.disconnect()
-                            except:
-                                scan_results.append(f"  → Device responds to ping but not Galil commands")
-                        else:
-                            scan_results.append(f"✗ {ip}: No response")
-                    except Exception as e:
-                        scan_results.append(f"✗ {ip}: Error - {e}")
-                
-                scan_results.append("")
-                
-                # Network discovery scan
-                scan_results.append("3. NETWORK DISCOVERY SCAN")
-                scan_results.append("-" * 30)
-                try:
-                    discovered = discover_galil_controllers()
-                    if discovered:
-                        scan_results.append(f"✓ Discovery found {len(discovered)} controller(s):")
-                        for controller in discovered:
-                            scan_results.append(f"  → {controller}")
-                    else:
-                        scan_results.append("✗ No controllers found via discovery")
-                except Exception as e:
-                    scan_results.append(f"✗ Discovery error: {e}")
-                scan_results.append("")
-                
-                # Summary
-                scan_results.append("4. SCAN SUMMARY")
-                scan_results.append("-" * 30)
-                if found_controllers:
-                    scan_results.append(f"✓ Found {len(found_controllers)} Galil controller(s):")
-                    for controller in found_controllers:
-                        scan_results.append(f"  → {controller['ip']} ({controller['model']}, {controller['firmware']})")
-                    scan_results.append("")
-                    scan_results.append("RECOMMENDATION:")
-                    scan_results.append(f"Try connecting to: {found_controllers[0]['ip']}")
-                else:
-                    scan_results.append("✗ No Galil controllers found")
-                    scan_results.append("")
-                    scan_results.append("TROUBLESHOOTING SUGGESTIONS:")
-                    scan_results.append("1. Check if controller is powered on")
-                    scan_results.append("2. Verify network cable connection")
-                    scan_results.append("3. Check controller IP configuration")
-                    scan_results.append("4. Try different network ranges")
-                    scan_results.append("5. Check firewall settings")
-                
-                # Update UI with results
-                self.root.after(0, lambda: self.display_network_scan_results(scan_results, found_controllers))
-                
-            except Exception as e:
-                self.root.after(0, lambda: self.display_network_scan_results([f"Network scan failed: {e}"], []))
-        
-        # Start the scan thread
-        scan_thread = threading.Thread(target=scan_network_thread, daemon=True)
-        scan_thread.start()
-    
-    def display_network_scan_results(self, results, found_controllers):
-        """Display network scan results"""
-        if hasattr(self, 'diagnostics_results_text'):
-            self.diagnostics_results_text.delete(1.0, tk.END)
-            self.diagnostics_results_text.insert(1.0, "\n".join(results))
-        
-        if hasattr(self, 'diagnostics_summary_label'):
-            if found_controllers:
-                summary = f"Network Scan: Found {len(found_controllers)} controller(s)"
-            else:
-                summary = "Network Scan: No controllers found"
-            self.diagnostics_summary_label.config(text=summary)
-        
-        # Update progress
-        if hasattr(self, 'diagnostics_progress_label'):
-            self.diagnostics_progress_label.config(text="Network scan completed")
-    
-    def quick_connect_to_ip(self):
-        """Quickly connect to the IP address specified in the test IP field"""
-        if not hasattr(self, 'test_ip_entry'):
-            messagebox.showerror("Error", "IP address input field not found")
-            return
-        
-        ip = self.test_ip_entry.get().strip()
-        if not ip:
-            messagebox.showerror("Error", "Please enter an IP address")
-            return
-        
-        if not validate_ip_address(ip):
-            messagebox.showerror("Error", "Invalid IP address format")
-            return
-        
-        # Update progress
-        if hasattr(self, 'diagnostics_progress_label'):
-            self.diagnostics_progress_label.config(text=f"Connecting to {ip}...")
-        
-        # Connect in a separate thread
-        def connect_thread():
-            try:
-                if self.connection_manager:
-                    success = self.connection_manager.connect_to_controller(ip, self.update_connection_status)
-                    if success:
-                        self.root.after(0, lambda: self.show_connection_success(ip))
-                    else:
-                        self.root.after(0, lambda: self.show_connection_failure(ip))
-                else:
-                    self.root.after(0, lambda: self.show_connection_failure(ip, "Connection manager not available"))
-            except Exception as e:
-                self.root.after(0, lambda: self.show_connection_failure(ip, str(e)))
-        
-        # Start the connection thread
-        connect_thread_obj = threading.Thread(target=connect_thread, daemon=True)
-        connect_thread_obj.start()
-    
-    def show_connection_success(self, ip):
-        """Show connection success message"""
-        messagebox.showinfo("Success", f"Successfully connected to controller at {ip}")
-        if hasattr(self, 'diagnostics_progress_label'):
-            self.diagnostics_progress_label.config(text=f"Connected to {ip}")
-        if hasattr(self, 'diagnostics_summary_label'):
-            self.diagnostics_summary_label.config(text=f"Connected to {ip}")
-    
-    def show_connection_failure(self, ip, error_msg=None):
-        """Show connection failure message"""
-        if error_msg:
-            messagebox.showerror("Connection Failed", f"Failed to connect to {ip}\n\nError: {error_msg}")
-        else:
-            messagebox.showerror("Connection Failed", f"Failed to connect to {ip}\n\nController may not be reachable or powered on.")
-        if hasattr(self, 'diagnostics_progress_label'):
-            self.diagnostics_progress_label.config(text=f"Connection to {ip} failed")
-        if hasattr(self, 'diagnostics_summary_label'):
-            self.diagnostics_summary_label.config(text=f"Connection to {ip} failed")
-    
-    def test_telnet_connection(self):
-        """Test telnet connection to the controller"""
-        if not hasattr(self, 'test_ip_entry'):
-            messagebox.showerror("Error", "IP address input field not found")
-            return
-        
-        ip = self.test_ip_entry.get().strip()
-        if not ip:
-            messagebox.showerror("Error", "Please enter an IP address")
-            return
-        
-        if not validate_ip_address(ip):
-            messagebox.showerror("Error", "Invalid IP address format")
-            return
-        
-        # Update progress
-        if hasattr(self, 'diagnostics_progress_label'):
-            self.diagnostics_progress_label.config(text=f"Testing telnet connection to {ip}...")
-        
-        # Test telnet in a separate thread
-        def telnet_test_thread():
-            try:
-                telnet_results = []
-                telnet_results.append("TELNET CONNECTION TEST")
-                telnet_results.append("=" * 30)
-                telnet_results.append(f"Testing telnet connection to {ip}:23")
-                telnet_results.append("")
-                
-                # Test 1: Basic telnet connection
-                telnet_results.append("1. BASIC TELNET CONNECTION")
-                telnet_results.append("-" * 25)
-                try:
-                    import socket
-                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    sock.settimeout(10)
-                    result = sock.connect_ex((ip, 23))
-                    if result == 0:
-                        telnet_results.append("✓ Telnet connection: SUCCESS")
-                        sock.close()
-                    else:
-                        telnet_results.append(f"✗ Telnet connection: FAILED (error {result})")
-                except Exception as e:
-                    telnet_results.append(f"✗ Telnet connection error: {e}")
-                telnet_results.append("")
-                
-                # Test 2: Try to send a simple command
-                telnet_results.append("2. COMMAND TEST")
-                telnet_results.append("-" * 25)
-                try:
-                    import socket
-                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    sock.settimeout(10)
-                    sock.connect((ip, 23))
-                    
-                    # Send a simple command
-                    command = "TP A\r\n"
-                    sock.send(command.encode())
-                    
-                    # Try to receive response
-                    sock.settimeout(5)
-                    response = sock.recv(1024).decode('utf-8', errors='ignore')
-                    if response:
-                        telnet_results.append("✓ Command sent and response received:")
-                        telnet_results.append(f"  Command: {command.strip()}")
-                        telnet_results.append(f"  Response: {response.strip()}")
-                    else:
-                        telnet_results.append("✗ No response to command")
-                    
-                    sock.close()
-                except Exception as e:
-                    telnet_results.append(f"✗ Command test error: {e}")
-                telnet_results.append("")
-                
-                # Test 3: Try different commands
-                telnet_results.append("3. MULTIPLE COMMAND TEST")
-                telnet_results.append("-" * 25)
-                commands_to_test = ["TP A", "MG _REV", "MG _BM", "RS"]
-                for cmd in commands_to_test:
-                    try:
-                        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                        sock.settimeout(5)
-                        sock.connect((ip, 23))
-                        
-                        command = f"{cmd}\r\n"
-                        sock.send(command.encode())
-                        
-                        sock.settimeout(3)
-                        response = sock.recv(1024).decode('utf-8', errors='ignore')
-                        if response:
-                            telnet_results.append(f"✓ {cmd}: {response.strip()}")
-                        else:
-                            telnet_results.append(f"✗ {cmd}: No response")
-                        
-                        sock.close()
-                    except Exception as e:
-                        telnet_results.append(f"✗ {cmd}: Error - {e}")
-                
-                telnet_results.append("")
-                telnet_results.append("4. RECOMMENDATIONS")
-                telnet_results.append("-" * 25)
-                if any("✓ Telnet connection: SUCCESS" in line for line in telnet_results):
-                    telnet_results.append("✓ Controller is responding to telnet")
-                    telnet_results.append("")
-                    telnet_results.append("NEXT STEPS:")
-                    telnet_results.append("1. Controller is reachable via telnet")
-                    telnet_results.append("2. Try connecting with Galil Tools software")
-                    telnet_results.append("3. If Galil Tools works, the issue is with gclib")
-                    telnet_results.append("4. Try updating gclib or using different version")
-                    telnet_results.append("")
-                    telnet_results.append("MANUAL TELNET TEST:")
-                    telnet_results.append(f"1. Open Command Prompt as Administrator")
-                    telnet_results.append("2. Enable telnet: dism /online /Enable-Feature /FeatureName:TelnetClient")
-                    telnet_results.append(f"3. Type: telnet {ip} 23")
-                    telnet_results.append("4. Try commands: TP A, MG _REV, MG _BM")
-                    telnet_results.append("")
-                    telnet_results.append("ALTERNATIVE: Use PowerShell:")
-                    telnet_results.append(f"Test-NetConnection -ComputerName {ip} -Port 23")
-                else:
-                    telnet_results.append("✗ Controller not responding to telnet")
-                    telnet_results.append("")
-                    telnet_results.append("TROUBLESHOOTING:")
-                    telnet_results.append("1. Check if controller is powered on")
-                    telnet_results.append("2. Verify network cable connection")
-                    telnet_results.append("3. Try power cycling the controller")
-                    telnet_results.append("4. Check if controller is in boot mode")
-                
-                # Update UI with results
-                self.root.after(0, lambda: self.display_telnet_test_results(telnet_results))
-                
-            except Exception as e:
-                self.root.after(0, lambda: self.display_telnet_test_results([f"Telnet test failed: {e}"]))
-        
-        # Start the telnet test thread
-        telnet_thread = threading.Thread(target=telnet_test_thread, daemon=True)
-        telnet_thread.start()
-    
-    def display_telnet_test_results(self, results):
-        """Display telnet test results"""
-        if hasattr(self, 'diagnostics_results_text'):
-            self.diagnostics_results_text.delete(1.0, tk.END)
-            self.diagnostics_results_text.insert(1.0, "\n".join(results))
-        
-        if hasattr(self, 'diagnostics_summary_label'):
-            if any("✓ Telnet connection: SUCCESS" in line for line in results):
-                summary = "Telnet Test: Controller responding"
-            else:
-                summary = "Telnet Test: Controller not responding"
-            self.diagnostics_summary_label.config(text=summary)
-        
-        # Update progress
-        if hasattr(self, 'diagnostics_progress_label'):
-            self.diagnostics_progress_label.config(text="Telnet test completed")
-    
-    def connect_and_keep_connected(self):
-        """Connect to controller and maintain the connection"""
-        if not hasattr(self, 'test_ip_entry'):
-            messagebox.showerror("Error", "IP address input field not found")
-            return
-        
-        ip = self.test_ip_entry.get().strip()
-        if not ip:
-            messagebox.showerror("Error", "Please enter an IP address")
-            return
-        
-        if not validate_ip_address(ip):
-            messagebox.showerror("Error", "Invalid IP address format")
-            return
-        
-        # Update progress
-        if hasattr(self, 'diagnostics_progress_label'):
-            self.diagnostics_progress_label.config(text=f"Connecting to {ip} and maintaining connection...")
-        
-        # Connect in a separate thread
-        def connect_thread():
-            try:
-                if self.connection_manager:
-                    success = self.connection_manager.connect_to_controller(ip, self.update_connection_status)
-                    if success:
-                        # Test the connection with a few commands
-                        test_results = []
-                        test_results.append("CONNECTION ESTABLISHED")
-                        test_results.append("=" * 30)
-                        test_results.append(f"✓ Connected to {ip}")
-                        test_results.append("")
-                        
-                        # Test basic commands
-                        test_results.append("TESTING CONNECTION:")
-                        test_results.append("-" * 20)
-                        
-                        try:
-                            response = self.controller.send_command("TP A")
-                            test_results.append(f"✓ TP A: {response}")
-                            
-                            response = self.controller.send_command("MG _REV")
-                            test_results.append(f"✓ MG _REV: {response}")
-                            
-                            response = self.controller.send_command("MG _BM")
-                            test_results.append(f"✓ MG _BM: {response}")
-                            
-                            response = self.controller.send_command("MG _BN")
-                            test_results.append(f"✓ MG _BN: {response}")
-                            
-                            test_results.append("")
-                            test_results.append("✓ CONNECTION IS STABLE AND READY")
-                            test_results.append("✓ You can now use all controller features")
-                            test_results.append("✓ Connection will be maintained")
-                            
-                        except Exception as e:
-                            test_results.append(f"✗ Command test failed: {e}")
-                            test_results.append("✗ Connection may not be stable")
-                        
-                        # Update UI with results
-                        self.root.after(0, lambda: self.display_connection_results(test_results, True))
-                        
-                    else:
-                        self.root.after(0, lambda: self.display_connection_results([f"Failed to connect to {ip}"], False))
-                else:
-                    self.root.after(0, lambda: self.display_connection_results(["Connection manager not available"], False))
-                    
-            except Exception as e:
-                self.root.after(0, lambda: self.display_connection_results([f"Connection error: {e}"], False))
-        
-        # Start the connection thread
-        connect_thread_obj = threading.Thread(target=connect_thread, daemon=True)
-        connect_thread_obj.start()
-    
-    def display_connection_results(self, results, success):
-        """Display connection results"""
-        if hasattr(self, 'diagnostics_results_text'):
-            self.diagnostics_results_text.delete(1.0, tk.END)
-            self.diagnostics_results_text.insert(1.0, "\n".join(results))
-        
-        if hasattr(self, 'diagnostics_summary_label'):
-            if success:
-                summary = "✓ Controller Connected and Ready"
-            else:
-                summary = "✗ Connection Failed"
-            self.diagnostics_summary_label.config(text=summary)
-        
-        # Update progress
-        if hasattr(self, 'diagnostics_progress_label'):
-            if success:
-                self.diagnostics_progress_label.config(text="Connection established and maintained")
-            else:
-                self.diagnostics_progress_label.config(text="Connection failed")
+        except Exception as e:
+            error_msg = f"Command failed: {e}"
+            messagebox.showerror("Command Error", error_msg)
+            self.append_test_log(error_msg)
 
 def main():
     root = tk.Tk()
