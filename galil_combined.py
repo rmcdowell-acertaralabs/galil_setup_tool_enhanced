@@ -23,14 +23,13 @@ class GalilController:
 
     def connect(self, address):
         try:
-            print(f"DEBUG: Creating gclib.py instance...")
+            # Creating gclib instance
             self.g = gclib.py()
-            print(f"DEBUG: Attempting GOpen to {address}...")
+            # Attempting connection
             
             # For COM ports, add some troubleshooting info
             if address.upper().startswith('COM'):
-                print(f"DEBUG: COM port connection attempt - ensure device is connected and not in use by another application")
-                print(f"DEBUG: Check Device Manager to verify COM port exists and has correct drivers")
+                # COM port connection attempt
                 
                 # Add a small delay to prevent rapid connection attempts
                 time.sleep(0.2)
@@ -62,14 +61,14 @@ class GalilController:
             last_error = None
             for i, open_str in enumerate(open_attempts):
                 try:
-                    print(f"DEBUG: Trying GOpen with: {open_str}")
+                    # Trying connection
                     self.g.GOpen(open_str)
-                    print(f"DEBUG: GOpen successful with: {open_str}")
+                    # Connection successful
                     break
                 except Exception as e:
                     last_error = e
                     error_msg = str(e).lower()
-                    print(f"DEBUG: GOpen attempt failed ({open_str}): {e}")
+                    # GOpen attempt failed
                     
                     # If port is already open, rethrow immediately
                     if "already open" in error_msg or "access denied" in error_msg:
@@ -77,63 +76,48 @@ class GalilController:
                     
                     # For timeouts, try a longer wait before next attempt
                     if "timeout" in error_msg:
-                        print(f"DEBUG: Timeout detected, waiting longer before next attempt...")
+                        # Timeout detected, waiting longer
                         time.sleep(1.0)  # Longer wait for timeouts
                     else:
                         time.sleep(0.2)  # Short wait for other errors
                     
                     # If this is the last attempt, provide more detailed error info
                     if i == len(open_attempts) - 1:
-                        print(f"DEBUG: All {len(open_attempts)} connection attempts failed")
-                        print(f"DEBUG: Last error: {last_error}")
+                        # All connection attempts failed
                         if "timeout" in error_msg:
-                            print(f"DEBUG: Timeout errors suggest:")
-                            print(f"DEBUG: 1. Controller may not be responding on any baud rate")
-                            print(f"DEBUG: 2. Controller may need power cycle")
-                            print(f"DEBUG: 3. Wrong controller type or firmware")
-                            print(f"DEBUG: 4. USB cable or driver issues")
-                            print(f"DEBUG: 5. FIRMWARE CORRUPTION - Controller may need firmware reset")
-                            print(f"DEBUG: 6. HARDWARE FAILURE - USB-to-serial chip or controller board")
-                            print(f"DEBUG: ")
-                            print(f"DEBUG: RECOMMENDED ACTIONS:")
-                            print(f"DEBUG: 1. Try Galil firmware recovery tools")
-                            print(f"DEBUG: 2. Contact Galil support for firmware update")
-                            print(f"DEBUG: 3. Check if controller has recovery mode")
-                            print(f"DEBUG: 4. Verify controller model and firmware version")
+                            # Timeout errors suggest connection issues
+                            pass
             else:
                 # If we exhausted attempts without break, raise last error
                 raise last_error if last_error else RuntimeError("Unable to open controller")
-            print(f"DEBUG: GOpen successful, waiting for connection to stabilize...")
+            # Connection established, waiting for stabilization
             
             # Give the connection time to establish properly
             time.sleep(0.5)
             
-            print(f"DEBUG: Testing connection with TP A command...")
+            # Testing connection
             # Test the connection with a simple command that works on DMC-4103
             test_response = self.g.GCommand("TP A")
-            print(f"DEBUG: Connection test successful, response: {test_response}")
+            # Connection test successful
         except Exception as e:
-            print(f"DEBUG: Connection failed: {e}")
-            print(f"DEBUG: Exception type: {type(e)}")
+            # Connection failed
             
             # Provide specific troubleshooting advice based on error type
             if "device failed to open" in str(e).lower():
                 if address.upper().startswith('COM'):
-                    print(f"DEBUG: COM port connection failed - troubleshooting suggestions:")
-                    print(f"DEBUG: 1. Check if device is properly connected via USB")
-                    print(f"DEBUG: 2. Verify COM port exists in Device Manager")
-                    print(f"DEBUG: 3. Ensure no other application is using the COM port")
-                    print(f"DEBUG: 4. Try unplugging and reconnecting the USB cable")
-                    print(f"DEBUG: 5. Check if Galil drivers are properly installed")
+                    # COM port connection failed
+                    pass
                 else:
-                    print(f"DEBUG: Network connection failed - check IP address and network connectivity")
+                    # Network connection failed
+                    pass
             
             if self.g:
                 try:
-                    print(f"DEBUG: Attempting to close connection...")
+                    # Attempting to close connection
                     self.g.GClose()
                 except Exception as close_error:
-                    print(f"DEBUG: Error closing connection: {close_error}")
+                    # Error closing connection
+                    pass
                 self.g = None
             raise
 
@@ -150,17 +134,15 @@ class GalilController:
             raise ValueError(f"Invalid command contains widget reference: {command}")
         
         try:
-            # Debug: Log the command being sent
-            print(f"DEBUG: GalilController sending command: '{command}' (type: {type(command)})")
+            # Send command and return response
             response = self.g.GCommand(command)
-            print(f"DEBUG: Command '{command}' response: {response}")
             return response
         except Exception as e:
             # Log the error for debugging
             print(f"Command '{command}' failed: {e}")
             # Check if this is a connection error
             if "not connected" in str(e).lower() or "connection" in str(e).lower():
-                print(f"DEBUG: Connection lost, setting g to None")
+                # Connection lost
                 self.g = None
             raise
 

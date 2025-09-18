@@ -150,11 +150,10 @@ class GUIFramework:
         
         # Navigation buttons
         nav_buttons = [
-            ("Motor Setup", self.main_app.show_motor_setup if self.main_app else None),
-            ("Encoder Overlay", self.main_app.show_encoder_overlay if self.main_app else None),
             ("Motor Tuning", self.main_app.show_motor_tuning if self.main_app else None),
             ("Network Config", self.main_app.show_network_config if self.main_app else None),
             ("Controller Testing", self.main_app.show_controller_testing if self.main_app else None),
+            ("Visual Testing", self.main_app.show_visual_testing if self.main_app else None),
             ("Settings", self.main_app.show_settings if self.main_app else None)
         ]
         
@@ -788,17 +787,11 @@ class GUIFramework:
         """Discover controllers - placeholder for main app method"""
         self.log("Discover controllers method called - implement in main app")
     
-    def show_motor_setup(self):
-        """Show motor setup page - placeholder for main app method"""
-        self.log("Show motor setup method called - implement in main app")
     
     def show_motion_controls(self):
         """Show motion controls page - placeholder for main app method"""
         self.log("Show motion controls method called - implement in main app")
     
-    def show_encoder_overlay(self):
-        """Show encoder overlay page - placeholder for main app method"""
-        self.log("Show encoder overlay method called - implement in main app")
     
     def show_diagnostics(self):
         """Show diagnostics page - placeholder for main app method"""
@@ -927,297 +920,8 @@ class GUIFramework:
         """Copy axis A settings to all axes - placeholder for main app method"""
         self.log("Copy axis A to all axes method called - implement in main app")
     
-    def create_motor_setup_page(self, main_app):
-        """Create the Motor Setup page GUI"""
-        # Title
-        title = tk.Label(self.scrollable_frame, text="Motor Setup", 
-                        font=("Arial", 24, "bold"), 
-                        bg=self.colors['main_bg'], fg=self.colors['main_fg'])
-        title.pack(anchor='w', pady=(0, 20))
-        
-        # Main container
-        main_container = tk.Frame(self.scrollable_frame, bg=self.colors['main_bg'])
-        main_container.pack(fill='both', expand=True)
-        
-        # TOP SECTION: Real-time Encoder Position Display
-        encoder_frame = tk.LabelFrame(main_container, text="📊 Real-time Encoder Positions", 
-                                    font=("Arial", 12, "bold"),
-                                    bg=self.colors['main_bg'], fg=self.colors['main_fg'],
-                                    relief='solid', bd=1)
-        encoder_frame.pack(fill='x', pady=(0, 15), padx=10)
-        
-        # Ensure encoder frame has proper sizing - make it taller for better visibility
-        encoder_frame.pack_propagate(False)
-        encoder_frame.configure(height=560)
-        
-        # Four-axis encoder displays
-        encoder_displays_frame = tk.Frame(encoder_frame, bg=self.colors['main_bg'])
-        encoder_displays_frame.pack(fill='x', expand=True, padx=15, pady=(0, 15))
-        
-        # Get shared encoder displays from main app
-        main_app.encoder_displays, main_app.encoder_labels = main_app.get_shared_encoder_displays()
-        
-        for i, axis in enumerate(['A', 'B', 'C', 'D']):
-            # Individual axis frame - make it taller to accommodate both speed bar and position dial
-            axis_frame = tk.Frame(encoder_displays_frame, bg=self.colors['main_bg'], relief='solid', bd=1)
-            axis_frame.pack(side='left', fill='both', expand=True, padx=3, pady=3)
-            
-            # Ensure minimum size for visibility - make them much larger to prevent cutoff
-            axis_frame.pack_propagate(False)
-            axis_frame.configure(width=280, height=480)
-            
-            # Force the frame to maintain its size
-            axis_frame.update_idletasks()
-            axis_frame.configure(width=280, height=480)
-            
-            # Axis title
-            axis_title = tk.Label(axis_frame, text=f"Axis {axis}", 
-                                font=("Arial", 12, "bold"),
-                                bg=self.colors['main_bg'], fg=self.colors['main_fg'])
-            axis_title.pack(pady=(5, 2))
-            
-            # Speed bar canvas (half-moon shaped) - make it much larger to prevent cutoff
-            speed_canvas = tk.Canvas(axis_frame, bg='white', height=140, width=250, relief='sunken', bd=1)
-            speed_canvas.pack(padx=8, pady=5)
-            
-            # Position dial canvas (clock-like) - make it much larger to prevent cutoff
-            position_canvas = tk.Canvas(axis_frame, bg='white', height=200, width=200, relief='sunken', bd=1)
-            position_canvas.pack(padx=8, pady=5)
-            
-            # Position label for this axis
-            position_label = tk.Label(axis_frame, text="Position: 0", 
-                                    font=("Arial", 11, "bold"),
-                                    bg=self.colors['main_bg'], fg=self.colors['main_fg'])
-            position_label.pack(pady=(8, 15))
-            
-            # Store references - we'll store both canvases
-            main_app.encoder_displays[axis] = {
-                'speed': speed_canvas,
-                'position': position_canvas
-            }
-            main_app.encoder_labels[axis] = position_label
-            
-            # Initialize the display
-            self._initialize_encoder_display(axis)
-            axis_frame.update_idletasks()
-        
-        # After all displays are created, update them with current positions if available
-        main_app.root.after(100, main_app._update_displays_with_current_positions)
-        
-        # Also start a periodic update to ensure displays stay current
-        main_app.root.after(200, main_app._start_periodic_display_updates)
-        
-        # Force an immediate update to test the display system
-        main_app.root.after(300, main_app._force_immediate_display_update)
-        
-        # Update button
-        update_btn = tk.Button(encoder_frame, text="🔄 Update Positions", 
-                             font=("Arial", 10, "bold"),
-                             bg=self.colors['accent_blue'], fg='white',
-                             command=main_app.update_encoder_positions)
-        update_btn.pack(pady=(0, 10))
-        
-        # Test connection button
-        test_btn = tk.Button(encoder_frame, text="🔍 Test Connection", 
-                           font=("Arial", 10, "bold"),
-                           bg=self.colors['success_green'], fg='white',
-                           command=main_app.test_controller_connection)
-        test_btn.pack(pady=(0, 10))
-        
-        # Auto-update checkbox
-        main_app.auto_update_var = tk.BooleanVar(value=True)
-        auto_update_check = tk.Checkbutton(encoder_frame, text="Auto-update positions every 0.5 seconds", 
-                                         font=("Arial", 9),
-                                         bg=self.colors['main_bg'], fg=self.colors['main_fg'],
-                                         variable=main_app.auto_update_var,
-                                         command=main_app.toggle_auto_update)
-        auto_update_check.pack(pady=(0, 10))
-        
-        # MIDDLE SECTION: PID Configuration
-        main_app.pid_frame = tk.LabelFrame(main_container, text="⚙️ PID Configuration", 
-                                     font=("Arial", 12, "bold"),
-                                     bg=self.colors['main_bg'], fg=self.colors['main_fg'],
-                                     relief='solid', bd=1)
-        main_app.pid_frame.pack(fill='x', pady=(0, 15), padx=10)
-        
-        # PID content container
-        main_app.pid_content = tk.Frame(main_app.pid_frame, bg=self.colors['main_bg'])
-        main_app.pid_content.pack(fill='x', padx=15, pady=15)
-        
-        # Axis selection
-        tk.Label(main_app.pid_content, text="Axis:", font=("Arial", 10, "bold"),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(anchor='w')
-        
-        main_app.axis_var = tk.StringVar(value="A")
-        axis_combo = ttk.Combobox(main_app.pid_content, textvariable=main_app.axis_var, 
-                                 values=["A", "B", "C", "D"], width=10)
-        axis_combo.pack(anchor='w', pady=(5, 15))
-        
-        # KP input
-        tk.Label(main_app.pid_content, text="KP:", font=("Arial", 10, "bold"),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(anchor='w')
-        
-        main_app.kp_entry = tk.Entry(main_app.pid_content, font=("Arial", 10), width=15)
-        main_app.kp_entry.pack(anchor='w', pady=(5, 10))
-        main_app.kp_entry.insert(0, "10.0")
-        
-        # KI input
-        tk.Label(main_app.pid_content, text="KI:", font=("Arial", 10, "bold"),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(anchor='w')
-        
-        main_app.ki_entry = tk.Entry(main_app.pid_content, font=("Arial", 10), width=15)
-        main_app.ki_entry.pack(anchor='w', pady=(5, 10))
-        main_app.ki_entry.insert(0, "0.1")
-        
-        # KD input
-        tk.Label(main_app.pid_content, text="KD:", font=("Arial", 10, "bold"),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(anchor='w')
-        
-        main_app.kd_entry = tk.Entry(main_app.pid_content, font=("Arial", 10), width=15)
-        main_app.kd_entry.pack(anchor='w', pady=(5, 15))
-        main_app.kd_entry.insert(0, "50.0")
-        
-        # Tune button
-        tune_btn = tk.Button(main_app.pid_content, text="Tune Axis", 
-                           font=("Arial", 10, "bold"),
-                           bg=self.colors['success_green'], fg='white',
-                           command=main_app.tune_axis)
-        tune_btn.pack(anchor='w')
-        
-        # Motor setup page complete
-        # Update scroll region
-        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
     
     
-    def create_encoder_overlay_page(self, main_app):
-        """Create the Encoder Overlay page GUI"""
-        # Title
-        title = tk.Label(self.scrollable_frame, text="Encoder Overlay", 
-                        font=("Arial", 24, "bold"), 
-                        bg=self.colors['main_bg'], fg=self.colors['main_fg'])
-        title.pack(anchor='w', pady=(0, 20))
-        
-        # Encoder overlay content
-        overlay_frame = tk.Frame(self.scrollable_frame, bg=self.colors['main_bg'])
-        overlay_frame.pack(fill='both', expand=True)
-        
-        # Controls Section
-        controls_frame = tk.LabelFrame(overlay_frame, text="Encoder Controls", 
-                                     font=("Arial", 12, "bold"),
-                                     bg=self.colors['main_bg'], fg=self.colors['main_fg'],
-                                     relief='solid', bd=1)
-        controls_frame.pack(fill='x', pady=(0, 20), padx=10)
-        
-        # Axis selection
-        axis_frame = tk.Frame(controls_frame, bg=self.colors['main_bg'])
-        axis_frame.pack(fill='x', padx=15, pady=10)
-        
-        tk.Label(axis_frame, text="Axis:", font=("Arial", 10, "bold"),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
-        
-        main_app.overlay_axis_var = tk.StringVar(value="A")
-        overlay_axis_combo = ttk.Combobox(axis_frame, textvariable=main_app.overlay_axis_var, 
-                                         values=["A", "B", "C", "D"], width=10)
-        overlay_axis_combo.pack(side='left', padx=(10, 20))
-        
-        # Update interval
-        tk.Label(axis_frame, text="Update Interval (ms):", font=("Arial", 10, "bold"),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
-        
-        main_app.update_interval_entry = tk.Entry(axis_frame, font=("Arial", 10), width=10)
-        main_app.update_interval_entry.pack(side='left', padx=(10, 20))
-        main_app.update_interval_entry.insert(0, "100")
-        
-        # Control buttons
-        buttons_frame = tk.Frame(controls_frame, bg=self.colors['main_bg'])
-        buttons_frame.pack(fill='x', padx=15, pady=(0, 10))
-        
-        start_btn = tk.Button(buttons_frame, text="▶ Start Overlay", 
-                             font=("Arial", 10, "bold"),
-                             bg=self.colors['success_green'], fg='white',
-                             command=main_app.start_encoder_overlay)
-        start_btn.pack(side='left', padx=(0, 10))
-        
-        stop_btn = tk.Button(buttons_frame, text="⏹ Stop Overlay", 
-                            font=("Arial", 10, "bold"),
-                            bg=self.colors['error_red'], fg='white',
-                            command=main_app.stop_encoder_overlay)
-        stop_btn.pack(side='left')
-        
-        # Encoder Display Section - Real-time Encoder Positions
-        encoder_frame = tk.LabelFrame(overlay_frame, text="Real-time Encoder Positions", 
-                                    font=("Arial", 12, "bold"),
-                                    bg=self.colors['main_bg'], fg=self.colors['main_fg'],
-                                    relief='solid', bd=1)
-        encoder_frame.pack(fill='x', pady=(0, 10))
-        
-        # Ensure encoder frame has proper sizing - make it taller for better visibility
-        encoder_frame.pack_propagate(False)
-        encoder_frame.configure(height=560)
-        
-        # Four-axis encoder displays
-        encoder_displays_frame = tk.Frame(encoder_frame, bg=self.colors['main_bg'])
-        encoder_displays_frame.pack(fill='x', expand=True, padx=15, pady=(0, 15))
-        
-        # Get shared encoder displays from main app
-        main_app.encoder_displays, main_app.encoder_labels = main_app.get_shared_encoder_displays()
-        
-        for i, axis in enumerate(['A', 'B', 'C', 'D']):
-            # Individual axis frame - make it taller to accommodate both speed bar and position dial
-            axis_frame = tk.Frame(encoder_displays_frame, bg=self.colors['main_bg'], relief='solid', bd=1)
-            axis_frame.pack(side='left', fill='both', expand=True, padx=3, pady=3)
-            
-            # Ensure minimum size for visibility - make them much larger to prevent cutoff
-            axis_frame.pack_propagate(False)
-            axis_frame.configure(width=280, height=480)
-            
-            # Force the frame to maintain its size
-            axis_frame.update_idletasks()
-            axis_frame.configure(width=280, height=480)
-            
-            # Axis title
-            axis_title = tk.Label(axis_frame, text=f"Axis {axis}", 
-                                font=("Arial", 12, "bold"),
-                                bg=self.colors['main_bg'], fg=self.colors['main_fg'])
-            axis_title.pack(pady=(5, 2))
-            
-            # Speed bar canvas (half-moon shaped) - make it much larger to prevent cutoff
-            speed_canvas = tk.Canvas(axis_frame, bg='white', height=140, width=250, relief='sunken', bd=1)
-            speed_canvas.pack(padx=8, pady=5)
-            
-            # Position dial canvas (clock-like) - make it much larger to prevent cutoff
-            position_canvas = tk.Canvas(axis_frame, bg='white', height=200, width=200, relief='sunken', bd=1)
-            position_canvas.pack(padx=8, pady=5)
-            
-            # Position label for this axis
-            position_label = tk.Label(axis_frame, text="Position: 0", 
-                                    font=("Arial", 11, "bold"),
-                                    bg=self.colors['main_bg'], fg=self.colors['main_fg'])
-            position_label.pack(pady=(8, 15))
-            
-            # Store references - we'll store both canvases
-            main_app.encoder_displays[axis] = {
-                'speed': speed_canvas,
-                'position': position_canvas
-            }
-            main_app.encoder_labels[axis] = position_label
-            
-            # Initialize the display
-            self._initialize_encoder_display(axis)
-            axis_frame.update_idletasks()
-        
-        # After all displays are created, update them with current positions if available
-        main_app.root.after(100, main_app._update_displays_with_current_positions)
-        
-        # Also start a periodic update to ensure displays stay current
-        main_app.root.after(200, main_app._start_periodic_display_updates)
-        
-        # Force an immediate update to test the display system
-        main_app.root.after(300, main_app._force_immediate_display_update)
-        
-        # Encoder overlay page complete
-        # Update scroll region
-        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
     
     def create_motor_tuning_page(self, main_app):
         """Create the Motor Tuning page GUI with motor setup and command interface"""
@@ -1361,6 +1065,57 @@ class GUIFramework:
                                                 command=main_app.stop_motor_tuning,
                                                 state='disabled')
         main_app.stop_motor_tuning_btn.pack(side='left', padx=(0, 10))
+
+        # PID Configuration Section
+        pid_frame = tk.LabelFrame(tuning_frame, text="⚙️ PID Configuration", 
+                                font=("Arial", 12, "bold"),
+                                bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                                relief='solid', bd=1)
+        pid_frame.pack(fill='x', pady=(0, 20), padx=10)
+        
+        # PID content container
+        pid_content = tk.Frame(pid_frame, bg=self.colors['main_bg'])
+        pid_content.pack(fill='x', padx=15, pady=15)
+        
+        # Axis selection
+        tk.Label(pid_content, text="Axis:", font=("Arial", 10, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(anchor='w')
+        
+        main_app.axis_var = tk.StringVar(value="A")
+        axis_combo = ttk.Combobox(pid_content, textvariable=main_app.axis_var, 
+                                 values=["A", "B", "C", "D"], width=10)
+        axis_combo.pack(anchor='w', pady=(5, 15))
+        
+        # KP input
+        tk.Label(pid_content, text="KP:", font=("Arial", 10, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(anchor='w')
+        
+        main_app.kp_entry = tk.Entry(pid_content, font=("Arial", 10), width=15)
+        main_app.kp_entry.pack(anchor='w', pady=(5, 10))
+        main_app.kp_entry.insert(0, "10.0")
+        
+        # KI input
+        tk.Label(pid_content, text="KI:", font=("Arial", 10, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(anchor='w')
+        
+        main_app.ki_entry = tk.Entry(pid_content, font=("Arial", 10), width=15)
+        main_app.ki_entry.pack(anchor='w', pady=(5, 10))
+        main_app.ki_entry.insert(0, "0.1")
+        
+        # KD input
+        tk.Label(pid_content, text="KD:", font=("Arial", 10, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(anchor='w')
+        
+        main_app.kd_entry = tk.Entry(pid_content, font=("Arial", 10), width=15)
+        main_app.kd_entry.pack(anchor='w', pady=(5, 15))
+        main_app.kd_entry.insert(0, "50.0")
+        
+        # Tune button
+        tune_btn = tk.Button(pid_content, text="Tune Axis", 
+                           font=("Arial", 10, "bold"),
+                           bg=self.colors['success_green'], fg='white',
+                           command=main_app.tune_axis)
+        tune_btn.pack(anchor='w')
 
         # Command Interface Section
         command_frame = tk.LabelFrame(tuning_frame, text="💻 Command Interface", 
@@ -1995,14 +1750,27 @@ class GUIFramework:
                            command=main_app.test_controller_connection)
         test_btn.pack(pady=(0, 10))
         
-        # Auto-update checkbox
-        main_app.auto_update_var = tk.BooleanVar(value=True)
-        auto_update_check = tk.Checkbutton(encoder_frame, text="Auto-update positions every 0.5 seconds", 
-                                         font=("Arial", 9),
-                                         bg=self.colors['main_bg'], fg=self.colors['main_fg'],
-                                         variable=main_app.auto_update_var,
-                                         command=main_app.toggle_auto_update)
-        auto_update_check.pack(pady=(0, 10))
+        # Comprehensive motor test button
+        comprehensive_test_btn = tk.Button(encoder_frame, text="🧪 Comprehensive Motor Test", 
+                                         font=("Arial", 12, "bold"),
+                                         bg=self.colors['error_red'], fg='white',
+                                         command=main_app.run_comprehensive_motor_test)
+        comprehensive_test_btn.pack(pady=(0, 10))
+        
+        # Auto-update checkbox - HIDDEN per user requirements (encoder always visible, no toggle)
+        # main_app.auto_update_var = tk.BooleanVar(value=True)
+        # auto_update_check = tk.Checkbutton(encoder_frame, text="Auto-update positions every 0.5 seconds", 
+        #                                  font=("Arial", 9),
+        #                                  bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+        #                                  variable=main_app.auto_update_var,
+        #                                  command=main_app.toggle_auto_update)
+        # auto_update_check.pack(pady=(0, 10))
+        
+        # Auto-update is always enabled - no toggle needed
+        auto_update_label = tk.Label(encoder_frame, text="Auto-update enabled (always visible)", 
+                                   font=("Arial", 9),
+                                   bg=self.colors['main_bg'], fg=self.colors['secondary_fg'])
+        auto_update_label.pack(pady=(0, 10))
         
         # 2. JOG CONTROLS SECTION
         jog_frame = tk.LabelFrame(main_frame, text="Jog Controls", 
@@ -2169,6 +1937,34 @@ class GUIFramework:
         send_btn.pack(side='left')
         
         # Controller testing page complete
+        # Update scroll region
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+    
+    def create_visual_testing_page(self, main_app):
+        """Create the Visual Testing page GUI"""
+        # Title
+        title = tk.Label(self.scrollable_frame, text="Visual Motor Testing", 
+                        font=("Arial", 24, "bold"), 
+                        bg=self.colors['main_bg'], fg=self.colors['main_fg'])
+        title.pack(anchor='w', pady=(0, 20))
+        
+        # Description
+        desc = tk.Label(self.scrollable_frame, 
+                       text="Interactive visual testing with real-time progress tracking and detailed step-by-step monitoring.",
+                       font=("Arial", 12),
+                       bg=self.colors['main_bg'], fg=self.colors['secondary_fg'],
+                       wraplength=800)
+        desc.pack(anchor='w', pady=(0, 20))
+        
+        # Main content frame for visual testing interface
+        visual_frame = tk.Frame(self.scrollable_frame, bg=self.colors['main_bg'])
+        visual_frame.pack(fill='both', expand=True)
+        
+        # Create visual testing interface
+        from visual_testing_interface import VisualTestingInterface
+        self.visual_testing_interface = VisualTestingInterface(visual_frame, self.colors, main_app)
+        
+        # Visual testing page complete
         # Update scroll region
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
     

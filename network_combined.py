@@ -1864,9 +1864,10 @@ class ControllerConnectionManager:
                 update_connection_status_callback(True)
             
             # Debug: Log controller reference status
-            self.log(f"DEBUG: Connection successful, controller reference: {self.controller is not None}")
+            # Connection successful
             if self.controller:
-                self.log(f"DEBUG: Controller type: {type(self.controller)}")
+                # Controller type identified
+                pass
             
             return True
                 
