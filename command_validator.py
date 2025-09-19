@@ -320,7 +320,7 @@ class DMC4103CommandValidator:
                 bm_val = float(value)
                 if bm_val < 100:
                     warnings.append("BM value seems low, verify encoder counts and pole pairs")
-                elif bm_val > 10000:
+                elif bm_val > 50000:  # Increased threshold - 16000 is normal for 64k counts/4 pole pairs
                     warnings.append("BM value seems high, verify encoder counts and pole pairs")
             except ValueError:
                 pass

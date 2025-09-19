@@ -604,13 +604,15 @@ def test_controller_connection(ip_address: str) -> Dict[str, any]:
         
         # Test basic commands
         try:
-            firmware = g.GCommand("MG _FW")
+            # MG _FW not supported on DMC-4143, use ID command instead
+            firmware = g.GCommand("ID")
             result['firmware'] = firmware.strip()
         except:
             pass
         
         try:
-            model = g.GCommand("MG _ID")
+            # MG _ID not supported on DMC-4143, use ID command instead
+            model = g.GCommand("ID")
             result['model'] = model.strip()
         except:
             pass
@@ -672,7 +674,8 @@ def configure_controller_network_dmc4143(controller, ip_address: str) -> Dict[st
             # Try to get current IP using different methods
             current_ip = None
             try:
-                current_ip = controller.send_command("MG _IP")
+                # MG _IP not supported on DMC-4143, skip IP query
+                current_ip = "Not supported on DMC-4143"
                 results['debug_info'].append(f"Current IP (MG _IP): {current_ip}")
             except:
                 pass
@@ -1212,7 +1215,8 @@ def force_save_network_settings_dmc4143(controller, ip_address: str) -> Dict[str
         # Method 2: Try MG _IP command (may not work on DMC-4143)
         if not verification_success:
             try:
-                current_ip_mg = controller.send_command("MG _IP")
+                # MG _IP not supported on DMC-4143, skip IP query
+                current_ip_mg = "Not supported on DMC-4143"
                 results['debug_info'].append(f"Verification MG _IP command: '{current_ip_mg}'")
                 if current_ip_mg and not current_ip_mg.startswith('?') and current_ip_mg.strip() == ip_address:
                     verification_success = True
@@ -1289,8 +1293,8 @@ def comprehensive_network_test(controller) -> Dict[str, any]:
         # Test 1: Basic controller information
         basic_commands = [
             "TP",           # Tell Position
-            "MG _FW",       # Firmware version
-            "MG _ID",       # Controller ID
+            "ID",           # Firmware version and Controller ID
+            "ID",           # Controller ID
             "MG _BN",       # Serial number
         ]
         
@@ -1307,7 +1311,7 @@ def comprehensive_network_test(controller) -> Dict[str, any]:
             ("IP", "IP address command (legacy)"),
             ("SM", "Subnet mask command"),
             ("GW", "Gateway command"),
-            ("MG _IP", "Get IP address"),
+            ("Not supported", "Get IP address"),
             ("MG _SM", "Get subnet mask"),
             ("MG _GW", "Get gateway"),
             ("MG _MAC", "Get MAC address"),
@@ -1472,7 +1476,8 @@ def get_controller_network_status(controller) -> Dict[str, any]:
     try:
         # Get IP address
         try:
-            status['ip_address'] = controller.send_command("MG _IP").strip()
+            # MG _IP not supported on DMC-4143, skip IP query
+            status['ip_address'] = "Not supported on DMC-4143"
         except:
             pass
         

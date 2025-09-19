@@ -905,6 +905,8 @@ class GUIFramework:
         self.log("Toggle live diagnostics method called - implement in main app")
     
     def toggle_encoder_display(self):
+        # DISABLED: User wants encoder always visible with no toggle
+        return
         """Toggle encoder display - placeholder for main app method"""
         self.log("Toggle encoder display method called - implement in main app")
     

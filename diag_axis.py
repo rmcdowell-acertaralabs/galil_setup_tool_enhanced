@@ -1,6 +1,6 @@
 # diag_axis.py
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Tuple
 
 @dataclass
 class AxisInfo:
@@ -42,7 +42,7 @@ def classify_mode(mt: Optional[float]) -> str:
         return "stepper"
     return "servo"
 
-def safe_enable_if_needed(io, axis: str, mode: str) -> tuple[bool, str]:
+def safe_enable_if_needed(io, axis: str, mode: str) -> Tuple[bool, str]:
     """
     Safe servo enable that handles steppers properly:
     - Servo: MO -> AZ1 -> SH, verify _MOx==0

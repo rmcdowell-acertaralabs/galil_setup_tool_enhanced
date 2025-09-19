@@ -430,14 +430,14 @@ def get_controller_info(controller):
     Static snapshot of firmware, serial, all-axis positions, error codes, etc.
     """
     commands = [
-        ("Firmware",            "MG _FW",  "MG _ID"),
+        ("Firmware",            "ID",      "ID"),
         ("Serial",              "MG _BN",  None),
         ("All Positions",       "TP",      None),
         ("Torque Command",      "MG _TC",  None),
         ("Error Code",          "MG _TE",  None),
         ("Limit Switch Status", "MG _LF",  None),
         ("Motion Status",       "MG _BG",  None),
-        ("IP Address",          "MG _IP",  None),
+        ("IP Address",          "Not supported",  None),
     ]
 
     out = []
@@ -618,8 +618,8 @@ def diagnose_firmware_issue(com_port: str) -> Dict[str, any]:
         print(f"Testing controller responsiveness...")
         test_commands = [
             "TP A",      # Tell Position
-            "MG _FW",    # Firmware version
-            "MG _ID",    # Controller ID
+            "ID",        # Firmware version and Controller ID
+            "ID",        # Controller ID
             "MG _BN",    # Serial number
         ]
         

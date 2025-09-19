@@ -29,8 +29,9 @@ python main.py
 - **Motor Control**: Smooth jogging, absolute/relative positioning, speed control
 - **PID Tuning**: Real-time servo loop tuning with live feedback
 - **Diagnostics**: Comprehensive motor testing and position accuracy verification with enhanced motor detection
-- **Real-time Monitoring**: Live encoder position display for all axes (A, B, C, D)
+- **Real-time Monitoring**: Always-visible live encoder position display for all axes (A, B, C, D) with auto-start updates
 - **Manual Command Interface**: Direct DMC-4103 command input with real-time response display
+- **Visual Testing Interface**: Comprehensive motor testing with real-time progress bars and status monitoring
 - **Brushless Motor Setup**: Complete 4-step brushless motor configuration process
 - **Auto-Connection**: Automatic controller detection and connection
 - **Configuration Management**: Save/load settings with external config file support
@@ -38,6 +39,15 @@ python main.py
 - **Command Reference**: Comprehensive DMC-4103 command documentation
 
 ## 🆕 Recent Updates
+
+### Version 2.1 - Encoder & Visual Testing Enhancements
+- **Always-Visible Encoders**: Encoder displays now always visible with no toggle required
+- **Auto-Start Encoder Updates**: Encoder polling automatically starts in both controller testing and overlay views
+- **Move Button Fixes**: Resolved move button functionality issues with improved error handling
+- **Enhanced Visual Testing**: Comprehensive motor testing with real-time progress bars and status monitoring
+- **Thread-Safe Controller Access**: Improved thread safety for encoder updates and motion commands
+- **Resilient Update Loops**: Encoder loops continue running even when controller is disconnected
+- **Improved Cleanup**: Proper cleanup stops both encoder loops and prevents memory leaks
 
 ### Version 2.0 - Enhanced DMC-4103 Support
 - **Manual Command Interface**: Added direct command input box for sending DMC-4103 commands
@@ -49,6 +59,11 @@ python main.py
 - **Quick Command Buttons**: Pre-configured buttons for common DMC-4103 commands
 
 ### Key Improvements
+- **Fixed Encoder Visibility Issues**: Encoders now display continuously without manual toggle
+- **Resolved Move Button Problems**: Motion commands now work reliably with proper error handling
+- **Enhanced Visual Testing Framework**: Real motor testing with progress tracking and status monitoring
+- **Improved Thread Safety**: Better handling of concurrent encoder polling and motion commands
+- **Robust Error Recovery**: System continues functioning even when controller disconnects
 - Fixed motor detection issues with proper motor type setting and timing
 - Enhanced error handling and logging for better troubleshooting
 - Improved user interface with better layout and navigation

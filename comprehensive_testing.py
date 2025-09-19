@@ -70,6 +70,9 @@ class ComprehensiveTester:
         self.test_results = {}
         self.active_axes = []
         
+        # Command serialization lock to prevent polling conflicts
+        self.command_lock = threading.Lock()
+        
         # Test configuration
         self.config = {
             "axes": ["A", "B", "C", "D"],
@@ -622,3 +625,201 @@ class ComprehensiveTester:
             "current_phase": self.current_phase.name if self.current_phase else None,
             "active_axes": self.active_axes
         }
+    
+    def gsend(self, command: str) -> str:
+        """Send a single Galil command and return its full reply.
+           If controller returns '?', raise with TC 1 text."""
+        with self.command_lock:
+            try:
+                reply = self.controller.GCommand(command)
+                # Galil sometimes returns extra prompts/newlines; normalize:
+                reply = reply.strip()
+                
+                # Check for question mark response
+                if reply == "?":
+                    # Ask the controller why *right now* before any other traffic:
+                    try:
+                        why = self.controller.GCommand("TC 1").strip()
+                    except Exception:
+                        why = "unknown (TC fetch failed)"
+                    raise RuntimeError(f"Galil error on '{command}': {why}")
+                
+                return reply
+            except Exception as e:
+                # Ask the controller why *right now* before any other traffic:
+                try:
+                    why = self.controller.GCommand("TC 1").strip()
+                except Exception:
+                    why = "unknown (TC fetch failed)"
+                raise RuntimeError(f"Galil error on '{command}': {why}") from e
+    
+    def safe_command(self, command: str) -> Tuple[bool, str]:
+        """Safely send a command and get detailed error information (legacy method)"""
+        try:
+            result = self.gsend(command)
+            return True, result
+        except Exception as e:
+            return False, str(e)
+    
+    def init_servo_brushless(self, axes="ABCD"):
+        """Initialize controller for servo brushless operation - resolves TC=161"""
+        try:
+            self.log("Initializing servo brushless operation...")
+            
+            # Panic-safe start
+            self.gsend("AB")
+            self.gsend("MO")
+            self.gsend("AZ2")
+            
+            # Servo (not stepper) on all used axes
+            mt_vals = ",".join("1" for _ in axes)  # 1 = servo
+            self.gsend(f"MT {mt_vals}")
+            
+            # Assign internal brushless amps and init sine amps - use per-axis commands
+            for ax in axes:
+                self.gsend(f"BA {ax}")
+                self.gsend(f"BX {ax}")       # <-- resolves TC=161
+            
+            # Optional: align/commutate if your procedure requires
+            # self.gsend(f"BZ {axes}")
+            
+            # Safety limits (tune to your machine) - use per-axis commands
+            for ax in axes:
+                self.gsend(f"ER{ax}=20000")
+                self.gsend(f"OE{ax}=3")
+                self.gsend(f"TL{ax}=2")
+                self.gsend(f"TK{ax}=4")
+            
+            # Enable servos and verify
+            for ax in axes:
+                self.gsend(f"SH{ax}")
+                # Small sanity check: read error & switches
+                te = float(self.gsend(f"TE{ax}"))
+                ts = int(float(self.gsend(f"TS{ax}")))
+                # Bit 5 set means motor OFF; if set here, SH failed silently
+                if ts & (1 << 5):
+                    raise RuntimeError(f"Axis {ax}: still Motor Off after SH; check BA/BX/BZ/limits")
+                # Large following error right after SH may indicate wrong polarity/feedback
+                if abs(te) > 5000:
+                    raise RuntimeError(f"Axis {ax}: large error {te} after SH; verify wiring/polarity")
+                self.log(f"Axis {ax}: Servo enabled and verified (TE={te:.1f}, TS={ts})")
+            
+            self.log("Servo brushless initialization completed successfully")
+            return True
+            
+        except Exception as e:
+            self.log(f"Servo brushless initialization failed: {e}")
+            return False
+    
+    def configure_controller_for_servo_operation(self) -> bool:
+        """Configure controller for servo operation - one-time setup"""
+        return self.init_servo_brushless("ABCD")
+    
+    def test_controller_communication(self) -> TestResult:
+        """Test basic controller communication"""
+        try:
+            self.log("Testing controller communication...")
+            # Test basic communication with position query
+            success, result = self.safe_command("PA")
+            if success:
+                self.log("Communication test passed: Position A = " + str(result))
+                return TestResult.PASS
+            else:
+                self.log("Communication test failed: " + result)
+                return TestResult.FAIL
+        except Exception as e:
+            self.log(f"Communication test error: {e}")
+            return TestResult.ERROR
+    
+    def test_axis_presence(self) -> Dict[str, TestResult]:
+        """Test which axes are present"""
+        results = {}
+        axes = ["A", "B", "C", "D"]
+        
+        for axis in axes:
+            try:
+                self.log(f"Testing axis {axis}...")
+                # Try to read position for each axis
+                success, result = self.safe_command(f"PA{axis}")
+                if success:
+                    self.log(f"Axis {axis}: Present - Position: {result}")
+                    results[axis] = TestResult.PASS
+                else:
+                    self.log(f"Axis {axis}: Not present or error - {result}")
+                    results[axis] = TestResult.FAIL
+            except Exception as e:
+                self.log(f"Axis {axis}: Error - {e}")
+                results[axis] = TestResult.ERROR
+        
+        return results
+    
+    def test_servo_enable(self, axes: List[str]) -> Dict[str, TestResult]:
+        """Test servo enable functionality for specified axes"""
+        results = {}
+        
+        for axis in axes:
+            try:
+                self.log(f"Testing servo enable for axis {axis}...")
+                # Try to enable servo (SH command)
+                success, result = self.safe_command(f"SH{axis}")
+                if success:
+                    # Check if servo is actually enabled
+                    mo_success, mo_result = self.safe_command(f"MO{axis}")
+                    if mo_success:
+                        self.log(f"Axis {axis}: Servo enable successful")
+                        results[axis] = TestResult.PASS
+                    else:
+                        self.log(f"Axis {axis}: Servo enable failed - motor not enabled: {mo_result}")
+                        results[axis] = TestResult.FAIL
+                else:
+                    self.log(f"Axis {axis}: Servo enable failed: {result}")
+                    results[axis] = TestResult.FAIL
+            except Exception as e:
+                self.log(f"Axis {axis}: Servo enable error: {e}")
+                results[axis] = TestResult.ERROR
+        
+        return results
+    
+    def test_basic_motion(self, axes: List[str], distance: int = 100) -> Dict[str, TestResult]:
+        """Test basic motion functionality for specified axes"""
+        results = {}
+        
+        for axis in axes:
+            try:
+                self.log(f"Testing motion for axis {axis}...")
+                # Get current position
+                start_pos = float(self.gsend(f"TP{axis}"))
+                self.log(f"Axis {axis}: Starting position: {start_pos}")
+                
+                # Try a small move using the new move_abs method
+                target_pos = start_pos + distance
+                actual_pos, error = self.move_abs(axis, target_pos, sp=5000, ac=50000, dc=50000)
+                
+                # Check if move was successful (within tolerance)
+                if error < 5:  # 5 count tolerance
+                    self.log(f"Axis {axis}: Motion test successful - target: {target_pos:.1f}, actual: {actual_pos:.1f}, error: {error:.1f}")
+                    results[axis] = TestResult.PASS
+                else:
+                    self.log(f"Axis {axis}: Motion test failed - large error: {error:.1f} counts")
+                    results[axis] = TestResult.FAIL
+                    
+            except Exception as e:
+                self.log(f"Axis {axis}: Motion test error: {e}")
+                results[axis] = TestResult.ERROR
+        
+        return results
+    
+    def move_abs(self, axis: str, pos: float, sp: int = 5000, ac: int = 50000, dc: int = 50000) -> Tuple[float, float]:
+        """Move axis to absolute position and return actual position and error"""
+        try:
+            self.gsend(f"SP{axis}={sp}")
+            self.gsend(f"AC{axis}={ac}")
+            self.gsend(f"DC{axis}={dc}")
+            self.gsend(f"PA{axis}={pos}")
+            self.gsend(f"BG{axis}")
+            self.gsend(f"AM{axis}")
+            actual = float(self.gsend(f"TP{axis}"))
+            err = abs(actual - pos)
+            return actual, err
+        except Exception as e:
+            raise RuntimeError(f"Move failed for axis {axis}: {e}")

@@ -215,6 +215,13 @@ class VisualTestingInterface:
                                     bg=self.colors['warning_orange'], fg='white',
                                     command=self.reset_test)
         self.reset_button.pack(side='left')
+        
+        # Motion test button
+        self.motion_test_button = tk.Button(buttons_frame, text="🏃 Motion Test", 
+                                          font=("Arial", 12, "bold"),
+                                          bg=self.colors['accent_blue'], fg='white',
+                                          command=self.run_motion_test)
+        self.motion_test_button.pack(side='left', padx=(10, 0))
     
     def initialize_test_steps(self):
         """Initialize the test steps"""
@@ -342,6 +349,14 @@ class VisualTestingInterface:
         
         self.is_running = True
         
+        # Stop encoder updates to prevent conflicts during testing
+        if hasattr(self.main_app, 'test_encoder_update_running'):
+            self.main_app.test_encoder_update_running = False
+        if hasattr(self.main_app, 'encoder_update_running'):
+            self.main_app.encoder_update_running = False
+        if hasattr(self.main_app, 'encoder_running'):
+            self.main_app.encoder_running = False
+        
         # Reset all steps
         for step in self.test_steps:
             step.status = TestStatus.PENDING
@@ -386,11 +401,24 @@ class VisualTestingInterface:
         
         # Reset progress
         self.update_overall_progress(0, "Ready to start testing")
-        
-        # Clear details
-        self.details_text.delete(1.0, tk.END)
-        self.details_text.insert(tk.END, "Ready to run comprehensive motor testing...\n")
-        self.details_text.insert(tk.END, "Click 'Start Test' to begin the visual testing process.\n")
+    
+    def run_motion_test(self):
+        """Run a focused motion test to verify motors are working"""
+        try:
+            self.add_detail("🏃 Starting motion test...")
+            self.add_detail("Setting up axis B for motion testing...")
+            
+            # Run the motion test
+            success = self.main_app.run_visual_motion_test()
+            
+            if success:
+                self.add_detail("✅ Motion test completed successfully!")
+                self.add_detail("Both axes A and B should have moved visibly.")
+            else:
+                self.add_detail("❌ Motion test failed - check logs for details.")
+                
+        except Exception as e:
+            self.add_detail(f"❌ Motion test error: {str(e)}")
         
         # Reset buttons
         self.start_button.config(state='normal')
@@ -425,6 +453,7 @@ class VisualTestingInterface:
         # Define test phases
         phases = [
             ("communication", "Controller Communication", "Testing basic controller communication"),
+            ("controller_config", "Controller Configuration", "Configuring controller for servo operation"),
             ("axis_presence", "Axis Discovery", "Discovering which axes are present"),
             ("servo_enable", "Servo Enable", "Testing servo enable functionality"),
             ("basic_motion", "Basic Motion", "Testing basic motion functionality")
@@ -449,6 +478,10 @@ class VisualTestingInterface:
                 # Run the actual test phase
                 if phase_id == "communication":
                     phase_result = tester.test_controller_communication()
+                elif phase_id == "controller_config":
+                    # Configure controller for servo operation
+                    config_success = tester.configure_controller_for_servo_operation()
+                    phase_result = TestResult.PASS if config_success else TestResult.FAIL
                 elif phase_id == "axis_presence":
                     axis_results = tester.test_axis_presence()
                     phase_result = TestResult.PASS if any(r == TestResult.PASS for r in axis_results.values()) else TestResult.FAIL
@@ -573,6 +606,11 @@ class VisualTestingInterface:
         self.is_running = False
         self.start_button.config(state='normal')
         self.stop_button.config(state='disabled')
+        
+        # Restart encoder updates after testing is complete
+        if hasattr(self.main_app, 'start_encoder_update'):
+            self.main_app.start_encoder_update()
+        
         self.add_detail("Test completed.")
     
     def _progress_callback(self, event_type, step_id=None, step_name=None, progress=0, result=None, error=None, notes=None):
