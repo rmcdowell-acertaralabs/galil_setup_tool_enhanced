@@ -1,16 +1,15 @@
 """
 Command Validator for DMC-4103 Controller
 
-This module validates motor setup commands against the DMC-4103 command reference
-to ensure all commands are correct and properly formatted.
+Validates motor setup commands against the DMC-4103 command reference.
 """
 
 from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass
+import re
 
 @dataclass
 class CommandValidation:
-    """Result of command validation"""
     valid: bool
     command: str
     description: str
@@ -18,372 +17,335 @@ class CommandValidation:
     warning_message: Optional[str] = None
 
 class DMC4103CommandValidator:
-    """Validator for DMC-4103 commands based on official command reference"""
-    
     def __init__(self):
-        """Initialize command validator with DMC-4103 command definitions"""
         self.valid_commands = self._load_command_reference()
         self.axis_commands = self._load_axis_commands()
         self.parameter_commands = self._load_parameter_commands()
-    
+
     def _load_command_reference(self) -> Dict[str, Dict]:
-        """Load DMC-4103 command reference"""
         return {
-            # Motor Control Commands
-            "MO": {"description": "Motor Off", "parameters": ["axis"], "required": True},
-            "SH": {"description": "Servo Here (Enable)", "parameters": ["axis"], "required": True},
-            "ST": {"description": "Stop Motion", "parameters": ["axis"], "required": False},
-            "BG": {"description": "Begin Motion", "parameters": ["axis"], "required": True},
-            "AM": {"description": "After Motion", "parameters": ["axis"], "required": True},
-            
-            # Position Commands
-            "TP": {"description": "Tell Position", "parameters": ["axis"], "required": True},
-            "DP": {"description": "Define Position", "parameters": ["axis", "value"], "required": True},
-            "PA": {"description": "Position Absolute", "parameters": ["axis", "value"], "required": True},
-            "PR": {"description": "Position Relative", "parameters": ["axis", "value"], "required": True},
-            "JG": {"description": "Jog", "parameters": ["axis", "value"], "required": True},
-            
-            # Brushless Motor Commands
-            "BA": {"description": "Brushless Amplifier", "parameters": ["axis"], "required": True},
-            "BM": {"description": "Brushless Modulo", "parameters": ["axis", "value"], "required": True},
-            "BX": {"description": "Brushless eXchange", "parameters": ["axis", "value"], "required": True},
-            "BZ": {"description": "Brushless Zero", "parameters": ["axis", "value"], "required": True},
-            "BC": {"description": "Brushless Calibrate", "parameters": ["axis"], "required": True},
-            "BI": {"description": "Brushless Input", "parameters": ["axis", "value"], "required": True},
-            "QH": {"description": "Query Hall", "parameters": ["axis"], "required": True},
-            
-            # Encoder Commands
-            "CE": {"description": "Count Enable", "parameters": ["axis", "value"], "required": True},
-            "AL": {"description": "After Latch", "parameters": ["axis"], "required": True},
-            "RL": {"description": "Read Latch", "parameters": ["axis"], "required": True},
-            
-            # Safety Commands
-            "OE": {"description": "Overtravel Enable", "parameters": ["axis", "value"], "required": True},
-            "ER": {"description": "Error Limit", "parameters": ["axis", "value"], "required": True},
-            
-            # System Commands
-            "BN": {"description": "Burn", "parameters": [], "required": False},
-            "RS": {"description": "Reset", "parameters": [], "required": False},
-            "MG": {"description": "Message", "parameters": ["variable"], "required": True},
-            "WT": {"description": "Wait", "parameters": ["time"], "required": True},
+            # Motion / servo
+            "MO": {"description": "Motor Off", "parameters": ["axis"]},
+            "SH": {"description": "Servo Here (Enable)", "parameters": ["axis"]},
+            "ST": {"description": "Stop Motion", "parameters": ["axis"]},
+            "BG": {"description": "Begin Motion", "parameters": ["axis"]},
+            "AM": {"description": "After Motion", "parameters": ["axis"]},
+
+            # Positioning
+            "TP": {"description": "Tell Position", "parameters": ["axis"]},
+            "DP": {"description": "Define Position", "parameters": ["axis", "value"]},
+            "PA": {"description": "Position Absolute", "parameters": ["axis", "value"]},
+            "PR": {"description": "Position Relative", "parameters": ["axis", "value"]},
+            "JG": {"description": "Jog", "parameters": ["axis", "value"]},
+            "FI": {"description": "Find Index", "parameters": ["axis"]},
+
+            # Brushless
+            "BA": {"description": "Brushless Amplifier", "parameters": ["axis"]},
+            "BM": {"description": "Brushless Modulo", "parameters": ["axis", "value"]},
+            "BX": {"description": "Brushless eXchange", "parameters": ["axis", "value"]},
+            "BZ": {"description": "Brushless Zero", "parameters": ["axis", "value"]},
+            "BC": {"description": "Brushless Calibrate", "parameters": ["axis"]},
+            "BI": {"description": "Brushless Input", "parameters": ["axis", "value"]},
+            "QH": {"description": "Query Hall", "parameters": []},
+
+            # Encoder / latch
+            "CE": {"description": "Count Enable", "parameters": ["axis", "value"]},
+            "AL": {"description": "After Latch", "parameters": ["axis"]},
+            "RL": {"description": "Read Latch", "parameters": ["axis"]},
+
+            # Safety / limits
+            "OE": {"description": "Off on Error", "parameters": ["axis", "value"]},
+            "ER": {"description": "Error Limit", "parameters": ["axis", "value"]},
+
+            # Tuning / servo parameters (axis=value)
+            "TL": {"description": "Torque Limit", "parameters": ["axis", "value"]},
+            "TK": {"description": "Torque Bias", "parameters": ["axis", "value"]},
+            "OF": {"description": "DAC Offset", "parameters": ["axis", "value"]},
+            "KP": {"description": "Proportional Gain", "parameters": ["axis", "value"]},
+            "KI": {"description": "Integral Gain", "parameters": ["axis", "value"]},
+            "KD": {"description": "Derivative Gain", "parameters": ["axis", "value"]},
+            "AC": {"description": "Acceleration", "parameters": ["axis", "value"]},
+            "DC": {"description": "Deceleration", "parameters": ["axis", "value"]},
+            "SP": {"description": "Speed", "parameters": ["axis", "value"]},
+
+            # System / diagnostics / misc
+            "BN": {"description": "Burn (save parameters)", "parameters": []},
+            "RS": {"description": "Reset", "parameters": []},
+            "AB": {"description": "Abort", "parameters": []},
+            "AZ": {"description": "Amplifier Fault Reset", "parameters": []},
+            "MG": {"description": "Message", "parameters": ["variable"]},
+            "WT": {"description": "Wait", "parameters": ["time"]},
+            "MT": {"description": "Motor Type", "parameters": ["list"]},
+            "TE": {"description": "Tell Error Code", "parameters": []},
+            # TC optionally accepts a mode digit (e.g., "TC1"); we accept both "TC" and "TC 1"/"TC1"
+            "TC": {"description": "Tell Error Text", "parameters": ["optional_mode"]},
         }
-    
+
     def _load_axis_commands(self) -> List[str]:
-        """Load commands that require axis parameter"""
-        return ["MO", "SH", "ST", "BG", "AM", "TP", "DP", "PA", "PR", "JG", 
-                "BA", "BM", "BX", "BZ", "BC", "BI", "QH", "CE", "AL", "RL", "OE", "ER"]
-    
+        return [
+            "MO","SH","ST","BG","AM","TP","DP","PA","PR","JG","FI",
+            "BA","BM","BX","BZ","BC","BI","CE","AL","RL","OE","ER",
+            "TL","TK","OF","KP","KI","KD","AC","DC","SP"
+        ]
+
     def _load_parameter_commands(self) -> List[str]:
-        """Load commands that require parameter values"""
-        return ["DP", "PA", "PR", "JG", "BM", "BX", "BZ", "BI", "CE", "ER", "WT"]
-    
+        return [
+            "DP","PA","PR","JG","BM","BX","BZ","BI","CE","ER","WT",
+            "TL","TK","OF","KP","KI","KD","AC","DC","SP","MT","TC"
+        ]
+
+    _NUM = r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?"
+
     def validate_command(self, command: str) -> CommandValidation:
-        """
-        Validate a single command against DMC-4103 reference
-        
-        Args:
-            command: Command string to validate (e.g., "MOA", "BMA=2500")
-            
-        Returns:
-            CommandValidation object with validation results
-        """
         try:
-            # Parse command
-            if "=" in command:
-                cmd_part, value_part = command.split("=", 1)
-                value = value_part.strip()
-            elif "<" in command and ">" in command:
-                # Handle commands like BX<1000> or BZ<200>100
-                cmd_part = command.split("<")[0].strip()
-                value = command[command.find("<"):command.find(">")+1]
-            elif " " in command and not "=" in command:
-                # Handle commands like "WT 1000" or "QH A"
-                parts = command.split(" ", 1)
-                cmd_part = parts[0].strip()
-                value = parts[1].strip() if len(parts) > 1 else None
+            raw = command.strip()
+
+            # Parse head/value, preserving bracket-tail like "<200>100"
+            if "<" in raw and ">" in raw:
+                lt = raw.find("<"); gt = raw.find(">", lt + 1)
+                cmd_part = raw[:lt].strip()
+                right_tail = raw[gt + 1:].strip()
+                value = raw[lt:gt + 1] + (right_tail if right_tail else "")
+            elif "=" in raw:
+                cmd_part, value = raw.split("=", 1); cmd_part = cmd_part.strip(); value = value.strip()
+            elif " " in raw:
+                cmd_part, value = raw.split(" ", 1); cmd_part = cmd_part.strip(); value = value.strip()
             else:
-                cmd_part = command.strip()
-                value = None
-            
-            # Extract base command and axis
-            base_cmd = None
-            axis = None
-            
-            # Find base command
-            for cmd in self.valid_commands.keys():
-                if cmd_part.startswith(cmd):
-                    base_cmd = cmd
-                    remaining = cmd_part[len(cmd):].strip()
-                    # For commands with spaces, the axis comes after the space
-                    if " " in command and not "=" in command:
-                        # Commands like "QH A" - axis is in the value part
-                        axis = value
-                    else:
-                        # Commands like "MOA" - axis is attached to command
-                        axis = remaining
-                    break
-            
+                cmd_part, value = raw, None
+
+            # Longest-prefix match for base command
+            candidates = [c for c in self.valid_commands if cmd_part.startswith(c)]
+            base_cmd = max(candidates, key=len) if candidates else None
             if not base_cmd:
-                return CommandValidation(
-                    False, command, "Unknown command",
-                    f"Command '{base_cmd}' not found in DMC-4103 reference"
-                )
-            
-            # Validate axis parameter
+                return CommandValidation(False, raw, "Unknown command",
+                                         f"Command '{cmd_part}' not found in DMC-4103 reference")
+
+            # Extract axis or (for non-axis commands) inline value after the base
+            axis = None
+            remainder = cmd_part[len(base_cmd):].strip()
             if base_cmd in self.axis_commands:
-                # Special case: BX and BZ can be used without axis for hold time setting
-                if base_cmd in ["BX", "BZ"] and value and value.startswith("<") and value.endswith(">"):
-                    # This is a hold time setting command like "BX<1000>"
-                    pass  # No axis required
-                elif not axis or axis not in ['A', 'B', 'C', 'D']:
-                    return CommandValidation(
-                        False, command, self.valid_commands[base_cmd]["description"],
-                        f"Command '{base_cmd}' requires valid axis (A, B, C, D), got '{axis}'"
-                    )
-            
-            # Validate parameter value
-            if base_cmd in self.parameter_commands:
-                # Special case: BX and BZ hold time commands don't need parameter validation
-                if base_cmd in ["BX", "BZ"] and value and value.startswith("<") and value.endswith(">"):
-                    # This is a hold time setting command - validate the bracket format
-                    validation_result = self._validate_parameter(base_cmd, value)
-                    if not validation_result[0]:
-                        return CommandValidation(
-                            False, command, self.valid_commands[base_cmd]["description"],
-                            validation_result[1]
-                        )
-                elif value is None:
-                    return CommandValidation(
-                        False, command, self.valid_commands[base_cmd]["description"],
-                        f"Command '{base_cmd}' requires a parameter value"
-                    )
-                else:
-                    # Validate parameter format
-                    validation_result = self._validate_parameter(base_cmd, value)
-                    if not validation_result[0]:
-                        return CommandValidation(
-                            False, command, self.valid_commands[base_cmd]["description"],
-                            validation_result[1]
-                        )
-            
-            # Check for warnings
-            warning = self._check_warnings(base_cmd, axis, value)
-            
-            return CommandValidation(
-                True, command, self.valid_commands[base_cmd]["description"],
-                warning_message=warning
-            )
-            
-        except Exception as e:
-            return CommandValidation(
-                False, command, "Parse error",
-                f"Failed to parse command: {str(e)}"
-            )
-    
-    def _validate_parameter(self, command: str, value: str) -> Tuple[bool, Optional[str]]:
-        """
-        Validate parameter value for specific command
-        
-        Args:
-            command: Base command
-            value: Parameter value
-            
-        Returns:
-            Tuple of (valid, error_message)
-        """
-        try:
-            if command in ["DP", "PA", "PR", "JG", "BM"]:
-                # Numeric parameters
-                float(value)
-                return True, None
-            
-            elif command in ["BX", "BZ"]:
-                # BX and BZ can have numeric values or bracket values
-                if value.startswith("<") and value.endswith(">"):
-                    # Handle bracket parameters in the bracket validation section
-                    return True, None
-                else:
-                    # Numeric value
-                    float(value)
-                    return True, None
-            
-            elif command == "ER":
-                # Error limit - can be numeric or variable like _BMA
-                if value.startswith("_"):
-                    # Variable reference (like _BMA)
-                    return True, None
-                else:
-                    # Numeric value
-                    float(value)
-                    return True, None
-            
-            elif command == "BI":
-                # Brushless Input - can be -1 or input number
-                if value == "-1":
-                    return True, None
-                try:
-                    int_val = int(value)
-                    if 1 <= int_val <= 8:
-                        return True, None
-                    else:
-                        return False, "BI parameter must be -1 or input number 1-8"
-                except ValueError:
-                    return False, "BI parameter must be -1 or integer 1-8"
-            
-            elif command == "CE":
-                # Count Enable - 0 or 2
-                if value in ["0", "2"]:
-                    return True, None
-                else:
-                    return False, "CE parameter must be 0 (normal) or 2 (reversed)"
-            
-            elif command == "OE":
-                # Overtravel Enable - 0 or 1
-                if value in ["0", "1"]:
-                    return True, None
-                else:
-                    return False, "OE parameter must be 0 (disabled) or 1 (enabled)"
-            
-            elif command == "WT":
-                # Wait time - positive number
-                time_val = float(value)
-                if time_val > 0:
-                    return True, None
-                else:
-                    return False, "WT parameter must be positive"
-            
-            elif command in ["BX", "BZ"] and value and value.startswith("<") and value.endswith(">"):
-                # Angle bracket parameters like <1000> or <200>100
-                bracket_content = value[1:-1]  # Remove < and >
-                if ">" in bracket_content:
-                    # Two parameters like <200>100
-                    parts = bracket_content.split(">")
-                    if len(parts) == 2:
-                        try:
-                            float(parts[0])
-                            float(parts[1])
-                            return True, None
-                        except ValueError:
-                            return False, f"Invalid bracket parameters: {value}"
-                    else:
-                        return False, f"Invalid bracket format: {value}"
-                else:
-                    # Single parameter like <1000>
-                    try:
-                        float(bracket_content)
-                        return True, None
-                    except ValueError:
-                        return False, f"Invalid bracket parameter: {value}"
-            
+                if remainder:
+                    axis = remainder  # e.g., "BZA" -> "A"
+                elif value and value in {"A","B","C","D"}:
+                    axis = value      # e.g., "BA A"
             else:
-                return True, None
-                
-        except ValueError:
+                # Non-axis commands may have inline numeric mode, e.g., "TC1"
+                if remainder and value is None:
+                    value = remainder
+
+            # Axis validation (skip for BX/BZ hold-time only form)
+            if base_cmd in self.axis_commands:
+                if base_cmd in ("BX","BZ") and value and value.startswith("<"):
+                    pass
+                else:
+                    if axis not in {"A","B","C","D"}:
+                        return CommandValidation(False, raw, self.valid_commands[base_cmd]["description"],
+                                                 f"Command '{base_cmd}' requires valid axis (A, B, C, D), got '{axis}'")
+
+            # Parameter validation
+            if base_cmd in self.parameter_commands:
+                if base_cmd in ("BX","BZ"):
+                    ok, err = self._validate_bx_bz(value)
+                elif base_cmd == "BI":
+                    ok, err = self._validate_bi(value)
+                elif base_cmd == "CE":
+                    ok, err = self._validate_ce(value)
+                elif base_cmd == "OE":
+                    ok, err = self._validate_oe(value)
+                elif base_cmd == "ER":
+                    ok, err = self._validate_er(value)
+                elif base_cmd == "WT":
+                    ok, err = self._validate_positive_number(value, "WT")
+                elif base_cmd == "MT":
+                    ok, err = self._validate_mt_list(value)
+                elif base_cmd == "TC":
+                    ok, err = self._validate_tc_mode_optional(value)
+                else:
+                    ok, err = self._validate_generic_numeric_required(value, base_cmd)
+                if not ok:
+                    return CommandValidation(False, raw, self.valid_commands[base_cmd]["description"], err)
+
+            # Warnings / soft bounds
+            warning = self._check_warnings(base_cmd, axis, value)
+            return CommandValidation(True, raw, self.valid_commands[base_cmd]["description"],
+                                     warning_message=warning)
+
+        except Exception as e:
+            return CommandValidation(False, command, "Parse error", f"Failed to parse command: {e}")
+
+    # ----------- helpers -----------
+
+    def _validate_generic_numeric_required(self, value: Optional[str], base_cmd: str) -> Tuple[bool, Optional[str]]:
+        if value is None:
+            return False, f"Command '{base_cmd}' requires a parameter value"
+        try:
+            float(value)
+            return True, None
+        except Exception:
             return False, f"Invalid numeric value: {value}"
-    
+
+    def _validate_bx_bz(self, value: Optional[str]) -> Tuple[bool, Optional[str]]:
+        if value is None:
+            return False, "BX/BZ requires a parameter (axis+value, numeric value, or <p>[o])"
+        if value.startswith("<"):
+            # Accept "<p>" or "<p>o"
+            m = re.match(rf"^<\s*{self._NUM}\s*>\s*(?:{self._NUM})?$", value)
+            return (True, None) if m else (False, f"Invalid BX/BZ bracket form: {value}")
+        try:
+            float(value)
+            return True, None
+        except Exception:
+            return False, f"Invalid BX/BZ numeric value: {value}"
+
+    def _validate_bi(self, value: Optional[str]) -> Tuple[bool, Optional[str]]:
+        if value is None:
+            return False, "BI requires -1 or integer 1-8"
+        if value == "-1":
+            return True, None
+        try:
+            iv = int(value)
+            return (True, None) if 1 <= iv <= 8 else (False, "BI parameter must be -1 or input number 1-8")
+        except Exception:
+            return False, "BI parameter must be -1 or integer 1-8"
+
+    def _validate_ce(self, value: Optional[str]) -> Tuple[bool, Optional[str]]:
+        return (True, None) if value in ("0","2") else (False, "CE parameter must be 0 (normal) or 2 (reversed)")
+
+    def _validate_oe(self, value: Optional[str]) -> Tuple[bool, Optional[str]]:
+        return (True, None) if value in ("0","1") else (False, "OE parameter must be 0 (disabled) or 1 (enabled)")
+
+    def _validate_er(self, value: Optional[str]) -> Tuple[bool, Optional[str]]:
+        if value is None:
+            return False, "ER requires a numeric value or a variable reference (e.g., _BMA)"
+        if value.startswith("_"):
+            return True, None
+        try:
+            float(value)
+            return True, None
+        except Exception:
+            return False, f"Invalid ER value: {value}"
+
+    def _validate_positive_number(self, value: Optional[str], name: str) -> Tuple[bool, Optional[str]]:
+        try:
+            v = float(value)
+            return (True, None) if v > 0 else (False, f"{name} must be positive")
+        except Exception:
+            return False, f"Invalid numeric value for {name}: {value}"
+
+    def _validate_mt_list(self, value: Optional[str]) -> Tuple[bool, Optional[str]]:
+        if value is None:
+            return False, "MT requires a list like '1,1,1,1'"
+        parts = [p.strip() for p in value.split(",")]
+        if not parts:
+            return False, "MT requires comma-separated values"
+        for p in parts:
+            if not re.fullmatch(r"\d+", p):
+                return False, f"MT contains non-integer token: {p}"
+        return True, None
+
+    def _validate_tc_mode_optional(self, value: Optional[str]) -> Tuple[bool, Optional[str]]:
+        # Accept: "TC" (no mode), "TC 1", or "TC1" (we already mapped inline remainder to value)
+        if value is None or value == "":
+            return True, None
+        # allow small integer mode selector
+        if re.fullmatch(r"\d+", value):
+            return True, None
+        return False, f"Invalid TC mode '{value}' (use e.g. 'TC', 'TC 1' or 'TC1')"
+
+    # ----------- warnings / soft bounds -----------
+
     def _check_warnings(self, command: str, axis: Optional[str], value: Optional[str]) -> Optional[str]:
-        """
-        Check for potential warnings in command usage
-        
-        Args:
-            command: Base command
-            axis: Axis parameter
-            value: Parameter value
-            
-        Returns:
-            Warning message if any
-        """
         warnings = []
-        
-        if command == "BX" and value:
+
+        def _float_ok(x: Optional[str]) -> Optional[float]:
             try:
-                bx_val = float(value)
-                if abs(bx_val) < 2:
-                    warnings.append("BX voltage may be too low, consider using -3 or -4")
-                elif abs(bx_val) > 5:
-                    warnings.append("BX voltage may be too high, risk of damage")
-            except ValueError:
-                pass
-        
-        if command == "BZ" and value:
-            try:
-                bz_val = float(value)
-                if abs(bz_val) < 2:
-                    warnings.append("BZ voltage may be too low, consider using -3 or -4")
-                elif abs(bz_val) > 5:
-                    warnings.append("BZ voltage may be too high, risk of damage")
-            except ValueError:
-                pass
-        
+                return float(x) if x is not None else None
+            except Exception:
+                return None
+
+        if command in ("BX","BZ") and value and not value.startswith("<"):
+            v = _float_ok(value)
+            if v is not None:
+                if abs(v) < 2:
+                    warnings.append(f"{command} voltage may be low; -3 is typical for alignment")
+                elif abs(v) > 5:
+                    warnings.append(f"{command} voltage may be high; verify driver limits")
+
         if command == "BM" and value:
-            try:
-                bm_val = float(value)
-                if bm_val < 100:
-                    warnings.append("BM value seems low, verify encoder counts and pole pairs")
-                elif bm_val > 50000:  # Increased threshold - 16000 is normal for 64k counts/4 pole pairs
-                    warnings.append("BM value seems high, verify encoder counts and pole pairs")
-            except ValueError:
-                pass
-        
+            v = _float_ok(value)
+            if v is not None:
+                if v < 100:
+                    warnings.append("BM value seems low; verify encoder counts and pole pairs")
+                elif v > 50000:
+                    warnings.append("BM value seems high; verify encoder counts and pole pairs")
+
+        if command == "TL" and value:
+            v = _float_ok(value)
+            if v is not None:
+                if v < 0:
+                    warnings.append("TL (torque limit) is negative; set ≥ 0")
+                elif v > 10:
+                    warnings.append("TL exceeds 10; most AMP/DAC ranges are ±10V")
+
+        if command in ("TK","OF") and value:
+            v = _float_ok(value)
+            if v is not None and abs(v) > 10:
+                warnings.append(f"{command} magnitude >10; typical DAC range is ±10V")
+
+        if command in ("KP","KI","KD") and value:
+            v = _float_ok(value)
+            if v is not None and v < 0:
+                warnings.append(f"{command} is negative; gains are usually ≥ 0")
+
+        if command in ("AC","DC","SP") and value:
+            v = _float_ok(value)
+            if v is not None and v < 0:
+                warnings.append(f"{command} is negative; expected ≥ 0")
+
         return "; ".join(warnings) if warnings else None
-    
+
+    # ----------- sequence / help -----------
+
     def validate_motor_setup_sequence(self, commands: List[str]) -> List[CommandValidation]:
-        """
-        Validate a sequence of motor setup commands
-        
-        Args:
-            commands: List of command strings
-            
-        Returns:
-            List of CommandValidation objects
-        """
-        results = []
-        for command in commands:
-            result = self.validate_command(command)
-            results.append(result)
-        return results
-    
+        return [self.validate_command(c) for c in commands]
+
     def get_command_help(self, command: str) -> str:
-        """
-        Get help information for a command
-        
-        Args:
-            command: Command to get help for
-            
-        Returns:
-            Help string
-        """
         if command in self.valid_commands:
-            cmd_info = self.valid_commands[command]
-            help_text = f"{command}: {cmd_info['description']}\n"
-            
-            if "parameters" in cmd_info:
-                help_text += f"Parameters: {', '.join(cmd_info['parameters'])}\n"
-            
-            # Add specific examples
-            if command == "MO":
-                help_text += "Example: MOA (turn off motor A)\n"
-            elif command == "SH":
-                help_text += "Example: SHA (enable servo A)\n"
-            elif command == "BM":
-                help_text += "Example: BMA=2500 (set brushless modulo for axis A)\n"
-            elif command == "BX":
-                help_text += "Example: BXA=-3 (initialize commutation with -3V)\n"
-            elif command == "CE":
-                help_text += "Example: CEA=0 (normal encoder polarity), CEA=2 (reversed)\n"
-            
+            d = self.valid_commands[command]
+            help_text = f"{command}: {d['description']}\n"
+            if "parameters" in d:
+                help_text += f"Parameters: {', '.join(d['parameters'])}\n"
+            examples = {
+                "MO": "MOA",
+                "SH": "SHA",
+                "BM": "BMA=16000",
+                "BX": "BXA=-3   |   BX<200>100",
+                "BZ": "BZA=-3   |   BZ<200>100",
+                "CE": "CEA=0 (normal), CEA=2 (reversed)",
+                "FI": "FIA",
+                "TL": "TLA=8.0",
+                "TK": "TKA=0",
+                "OF": "OFA=0",
+                "KP": "KPA=10.0",
+                "KI": "KIA=0.1",
+                "KD": "KDA=50.0",
+                "AC": "ACA=200000",
+                "DC": "DCA=200000",
+                "SP": "SPA=20000",
+                "MT": "MT 1,1,1,1",
+                "TE": "TE",
+                "TC": "TC   |   TC 1   |   TC1",
+            }
+            if command in examples:
+                help_text += "Example: " + examples[command] + "\n"
             return help_text
-        else:
-            return f"Unknown command: {command}"
-    
+        return f"Unknown command: {command}"
+
     def get_all_commands(self) -> List[str]:
-        """Get list of all valid commands"""
         return list(self.valid_commands.keys())
-    
+
     def get_axis_commands(self) -> List[str]:
-        """Get list of commands that require axis parameter"""
         return self.axis_commands.copy()
-    
+
     def get_parameter_commands(self) -> List[str]:
-        """Get list of commands that require parameters"""
         return self.parameter_commands.copy()

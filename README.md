@@ -40,6 +40,12 @@ python main.py
 
 ## 🆕 Recent Updates
 
+### Version 2.2 - Latest Improvements (December 2024)
+- **Enhanced Command Validation**: Improved command validator with comprehensive DMC-4103 command support
+- **Motor Setup Optimization**: Streamlined motor setup process with better error handling
+- **Main Application Updates**: Latest bug fixes and performance improvements in core functionality
+- **Code Quality**: Improved code organization and maintainability
+
 ### Version 2.1 - Encoder & Visual Testing Enhancements
 - **Always-Visible Encoders**: Encoder displays now always visible with no toggle required
 - **Auto-Start Encoder Updates**: Encoder polling automatically starts in both controller testing and overlay views

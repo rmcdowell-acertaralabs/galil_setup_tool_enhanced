@@ -3987,8 +3987,8 @@ class GalilSetupApp:
             
             # Check connection before starting
             try:
-                test_response = self.connection_manager.controller.send_command("TP A")
-                cmd_history.insert(tk.END, f"✓ Connection verified: TP A -> {test_response}\n")
+                test_response = self.connection_manager.controller.send_command("TPA")
+                cmd_history.insert(tk.END, f"✓ Connection verified: TPA -> {test_response}\n")
                 cmd_history.see(tk.END)
             except Exception as e:
                 cmd_history.insert(tk.END, f"❌ Connection test failed: {str(e)}\n")
@@ -4547,25 +4547,8 @@ Repeat these steps for axes B, C, and D as needed.
                     for ax in ["A", "B", "C", "D"]:
                         self.controller.send_command(f"BA {ax}")
                     
-                    # Initialize sine amps (this might fail if already initialized)
-                    self.append_test_log("Initializing sine amps...")
-                    try:
-                        # Use per-axis commands to avoid validator issues
-                        for ax in ["A", "B", "C", "D"]:
-                            self.controller.send_command(f"BX {ax}")
-                        self.append_test_log("Sine amps initialized successfully")
-                    except Exception as e:
-                        self.append_test_log(f"Sine amp initialization failed: {e}")
-                        # Try to get more details about the error
-                        try:
-                            tc_result = self.controller.send_command("TC 1")
-                            self.append_test_log(f"Error details: {tc_result}")
-                        except:
-                            pass
-                        
-                        # If BX fails, the controller might not be ready for brushless operation
-                        # Try a different approach - just continue with servo enable
-                        self.append_test_log("Continuing without sine amp initialization...")
+                    # Initialize sine amps (BX) is not supported on DMC-41x3; skip this step
+                    self.append_test_log("Skipping sine amp initialization (BX unsupported on DMC-41x3)")
                     
                     # Set safety limits
                     self.append_test_log("Setting safety limits...")
@@ -4576,10 +4559,10 @@ Repeat these steps for axes B, C, and D as needed.
                         self.controller.send_command(f"TL{ax}=2")
                         self.controller.send_command(f"TK{ax}=4")
                     
-                    # Enable servos one by one with detailed error checking
+                    # Enable servos one by one with detailed error checking (only present axes)
                     self.append_test_log("Enabling servos...")
                     servo_enabled = 0
-                    for axis in ["A", "B", "C", "D"]:
+                    for axis in ["A", "B"]:
                         try:
                             self.append_test_log(f"Enabling servo for axis {axis}...")
                             self.controller.send_command(f"SH{axis}")
@@ -5220,7 +5203,7 @@ SAFETY:
             
         try:
             # Test basic commands
-            response = self.controller.send_command("TP A")
+            response = self.controller.send_command("TPA")
             self.append_test_log(f"Test command response: {response}")
         except Exception as e:
             self.append_test_log(f"Command test failed: {e}")
@@ -5616,7 +5599,7 @@ Subnet mask and gateway are handled by your system's network configuration.
             
             # Use a simple test command first to check if controller is responsive
             try:
-                test_response = self.controller.send_command("TP A")
+                test_response = self.controller.send_command("TPA")
                 if not test_response or test_response == '?':
                     # Controller not responsive, show basic info
                     self.show_basic_controller_info()
@@ -7393,7 +7376,7 @@ IP Address: Cannot read"""
                 
                 try:
                     # Use batch command to get all positions at once (more efficient)
-                    pos_response = self.controller.send_command("TP A,B,C,D")
+                    pos_response = self.controller.send_command("TPA;TPB;TPC;TPD")
                     if pos_response and pos_response.strip():
                         # Parse batch response (format: "posA,posB,posC,posD")
                         positions = [int(x.strip()) for x in pos_response.split(',')]

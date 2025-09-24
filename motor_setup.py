@@ -6,7 +6,6 @@ It provides step-by-step motor configuration for brushless servo motors with pro
 """
 
 import time
-import threading
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 from enum import Enum
@@ -47,6 +46,12 @@ class SetupResult:
 class MotorSetup:
     """Motor setup and tuning system for DMC-4143 + AMP-43540"""
     
+    # Default servo parameters for consistent application
+    DEFAULTS = {
+        "TL": 8.0, "KI": 0.1, "KP": 10.0, "KD": 50.0,
+        "AC": 200000, "DC": 200000
+    }
+    
     def __init__(self, controller, log_callback=None):
         """
         Initialize motor setup system
@@ -67,34 +72,78 @@ class MotorSetup:
         """Default logging function"""
         print(f"[MotorSetup] {message}")
     
+    def read_all_positions(self):
+        out = {}
+        for ax in "ABCD":
+            ok, r = self.send_command(f"TP{ax}")    # NOT "TP A" and NOT "TPA,TPB,..."
+            if not ok:
+                # fetch why and raise
+                raise RuntimeError(f"TP{ax} failed: {self._last_error_text()}")
+            out[ax] = float(str(r).strip().split(',')[0])
+        return out
+    
+    def servo_enable(self, ax: str, tl: float = 8.0):
+        ax = ax.upper()
+        # No AZ here (it requires all axes MO).
+        self.send_command(f"OE{ax}=0")
+        self.send_command(f"MO{ax}")
+        ok, _ = self.send_command(f"SH{ax}")
+        if not ok:
+            raise RuntimeError(f"SH{ax} failed: {self._last_error_text()}")
+        self.send_command(f"TL{ax}={tl}")
+        ok, moval = self.send_command(f"MG _MO{ax}")
+        if not ok or float(str(moval).strip().split(',')[0]) != 0.0:
+            raise RuntimeError(f"Axis {ax} still OFF after SH")
+    
     def log(self, message: str):
         """Log a message"""
         self.log_callback(message)
     
-    def gsend(self, command: str) -> str:
-        """Send a single Galil command and return its full reply.
-           If controller returns '?', raise with TC 1 text."""
+    def _last_error_text(self) -> str:
+        """Get the actual last error text from the controller"""
         try:
-            response = self.controller.GCommand(command)
-            response = response.strip()
-            if response == "?":
-                try:
-                    why = self.controller.GCommand("TC 1").strip()
-                except Exception:
-                    why = "unknown (TC fetch failed)"
-                raise RuntimeError(f"Galil error on '{command}': {why}")
-            return response
-        except Exception as e:
-            try:
-                why = self.controller.GCommand("TC 1").strip()
-            except Exception:
-                why = "unknown (TC fetch failed)"
-            raise RuntimeError(f"Galil error on '{command}': {why}") from e
+            code = (self.controller.send_command("TE") or "").strip()
+            text = (self.controller.send_command("TC") or "").strip()
+            return f"[TE={code}] {text}".strip()
+        except Exception:
+            return "unknown (TE/TC fetch failed)"
     
-    def setup_all_axes(self) -> dict:
+    def _ax(self, axis: str) -> str:
+        """Normalize and validate axis name"""
+        ax = (axis or "").strip().upper()
+        if ax not in ("A","B","C","D"):
+            raise ValueError(f"Invalid axis '{axis}'")
+        return ax
+    
+    def _apply_safe_servo_defaults(self, ax: str):
+        """Apply safe servo defaults to prevent heating and ensure stable operation"""
+        self.send_command(f"TL{ax}={self.DEFAULTS['TL']}")
+        self.send_command(f"KI{ax}={self.DEFAULTS['KI']}")
+        self.send_command(f"KP{ax}={self.DEFAULTS['KP']}")
+        self.send_command(f"KD{ax}={self.DEFAULTS['KD']}")
+        self.send_command(f"AC{ax}={self.DEFAULTS['AC']}")
+        self.send_command(f"DC{ax}={self.DEFAULTS['DC']}")
+    
+    def _mg_float(self, expr: str) -> Tuple[bool, float]:
+        """Debounced readback parsing helper for MG commands"""
+        ok, r = self.send_command(f"MG {expr}")
+        if not ok:
+            return False, float("nan")
+        try:
+            return True, float(str(r).strip().split(',')[0])
+        except Exception:
+            return True, float("nan")
+    
+    
+    def setup_all_axes(self, deep_relax: bool = False) -> dict:
         """
         Set up all axes (A, B, C, D) with proper brushless configuration
-        Returns status for each axis
+        
+        Args:
+            deep_relax: If True, fully de-energize motors after setup (TL=0, MO)
+            
+        Returns:
+            Status for each axis
         """
         results = {}
         
@@ -110,10 +159,7 @@ class MotorSetup:
         if not success:
             self.log(f"Warning: Could not turn off all motors: {response}")
         
-        # Enhanced error reporting
-        success, response = self.send_command("AZ2")
-        if not success:
-            self.log(f"Warning: Could not enable enhanced error reporting: {response}")
+        # Enhanced error reporting removed (AZ2 not supported on 41x3)
         
         # Set all axes to servo mode
         success, response = self.send_command("MT 1,1,1,1")
@@ -127,6 +173,7 @@ class MotorSetup:
             results[axis] = axis_result
             
             if axis_result["success"]:
+                self._relax_axis(axis, deep=deep_relax)
                 self.log(f"✓ Axis {axis} setup successful")
             else:
                 self.log(f"✗ Axis {axis} setup failed: {axis_result['error']}")
@@ -135,236 +182,182 @@ class MotorSetup:
     
     def _setup_single_axis(self, axis: str) -> dict:
         """
-        Set up a single axis with proper brushless configuration
-        
-        Args:
-            axis: Axis letter (A, B, C, D)
-            
-        Returns:
-            dict with success status and details
+        Per-axis setup using the same BZ sequence as Step 3 for consistency.
         """
+        ax = self._ax(axis)
         try:
-            # Assign brushless amp
-            success, response = self.send_command(f"BA {axis}")
-            if not success:
-                return {"success": False, "error": f"BA {axis} failed: {response}"}
-            
-            # Set brushless modulo (16000 for 64k counts/4 pole pairs)
-            success, response = self.send_command(f"BM{axis}=16000")
-            if not success:
-                return {"success": False, "error": f"BM{axis}=16000 failed: {response}"}
-            
-            # Try BZ commutation (fallback that worked for A)
-            success, response = self.send_command(f"BZ{axis}")
-            if not success:
-                return {"success": False, "error": f"BZ{axis} failed: {response}"}
-            
-            # Enable servo
-            success, response = self.send_command(f"SH{axis}")
-            if not success:
-                return {"success": False, "error": f"SH{axis} failed: {response}"}
-            
+            ok, resp = self.send_command(f"BA {ax}")
+            if not ok:
+                # Log but continue; 41x3 can legitimately return '?'
+                self.log(f"Note: BA {ax} not supported/ignored: {resp}")
+
+            # Set BM first so we can size ER against it
+            ok, resp = self.send_command(f"BM{ax}=16000")
+            if not ok:
+                return {"success": False, "error": f"BM{ax}=16000 failed: {resp}"}
+
+            # Mirror Step 3 preface
+            self.send_command(f"OE{ax}=0")
+            ok, bm = self.send_command(f"MG _BM{ax}")
+            bm_s = str(bm).strip() if ok else ""
+            bm_val = float(bm_s.split(',')[0]) if bm_s else 16000.0
+            self.send_command(f"ER{ax}={max(1000.0, bm_val)}")
+
+            # Clear any residual torque/offset before BZ
+            self.send_command(f"TK{ax}=0")
+            self.send_command(f"OF{ax}=0")
+            self.send_command(f"TL{ax}=4")  # mild holding limit before BZ
+
+            ok, resp = self.send_command("BZ<200>100")
+            if not ok:
+                return {"success": False, "error": f"Failed to set BZ hold times: {resp}"}
+
+            ok, resp = self.send_command(f"BZ{ax}=-3")
+            if not ok:
+                return {"success": False, "error": f"BZ{ax}=-3 failed: {resp}"}
+
+            ok, resp = self.send_command(f"SH{ax}")
+            if not ok:
+                return {"success": False, "error": f"SH{ax} failed: {resp}"}
+
             return {"success": True, "error": None}
-            
         except Exception as e:
             return {"success": False, "error": str(e)}
     
-    def send_command(self, command: str, timeout: float = 5.0) -> Tuple[bool, str]:
+    def send_command(self, command: str) -> Tuple[bool, str]:
         """
-        Send command to controller with error handling (bypass validation for motor setup)
-        
-        Args:
-            command: Command to send
-            timeout: Timeout in seconds
-            
-        Returns:
-            Tuple of (success, response)
+        Send a command and normalize errors. If the controller replies with '?',
+        return False with the detailed last error text from TE/TC.
         """
-        # Skip validation for motor setup commands - they are valid Galil commands
-        # but the validation system doesn't understand the proper syntax
-        
         try:
-            response = self.controller.send_command(command)
-            return True, str(response) if response is not None else ""
+            resp = self.controller.send_command(command)
+            resp_s = "" if resp is None else str(resp).strip()
+            if resp_s == "?":
+                return False, f"Galil '?' on '{command}': {self._last_error_text()}"
+            return True, resp_s
         except Exception as e:
-            error_msg = str(e)
-            if "timeout" in error_msg.lower():
+            msg = str(e)
+            if "question mark" in msg.lower() or msg.strip() == "?":
+                return False, f"Galil '?' on '{command}': {self._last_error_text()}"
+            if "timeout" in msg.lower():
                 return False, "Command timed out"
-            elif "device write error" in error_msg.lower():
+            if "device write error" in msg.lower():
                 return False, "Device write error - controller may be unresponsive"
-            elif "question mark" in error_msg.lower():
-                return False, "Controller returned error (?)"
-            else:
-                return False, f"Command failed: {error_msg}"
+            return False, f"Command failed: {msg}"
     
     def step_0_prep(self, axis: str) -> SetupResult:
-        """
-        Step 0: Preparation - Put axis in safe state and enable sine mode
-        
-        Args:
-            axis: Axis letter (A, B, C, D)
-            
-        Returns:
-            SetupResult with success status and details
-        """
-        self.log(f"Step 0: Preparing axis {axis} for setup...")
-        
+        ax = self._ax(axis)
+        self.log(f"Step 0: Preparing axis {ax} for setup...")
         try:
-            # 1. Comprehensive controller initialization for brushless operation
             self.log("Initializing controller for brushless operation...")
-            
-            # Stop all motion and turn off all motors
-            success, response = self.send_command("AB")
-            if not success:
-                self.log(f"Warning: Could not abort all motion: {response}")
-            
-            success, response = self.send_command("MO")
-            if not success:
-                self.log(f"Warning: Could not turn off all motors: {response}")
-            
-            # Enhanced error reporting
-            success, response = self.send_command("AZ2")
-            if not success:
-                self.log(f"Warning: Could not enable enhanced error reporting: {response}")
-            
-            # Set all axes to servo mode
-            success, response = self.send_command("MT 1,1,1,1")
-            if not success:
-                self.log(f"Warning: Could not set all axes to servo mode: {response}")
-            
-            # Assign brushless amps to all axes (per-axis to avoid validator issues)
-            for ax in ["A", "B", "C", "D"]:
-                success, response = self.send_command(f"BA {ax}")
-                if not success:
-                    self.log(f"Warning: Could not assign brushless amp for axis {ax}: {response}")
-            
-            # Set brushless modulo for all axes (64000/4 = 16000)
-            for ax in ["A", "B", "C", "D"]:
-                success, response = self.send_command(f"BM{ax}=16000")
-                if not success:
-                    self.log(f"Warning: Could not set BM for axis {ax}: {response}")
-            
-            # Initialize sine amps for all axes (start with 0 for auto-align)
-            # Ensure axes are in MO state before BX commands
-            for ax in ["A", "B", "C", "D"]:
-                # Put axis in MO state before BX
-                self.send_command(f"MO{ax}")
-                success, response = self.send_command(f"BX{ax}=0")
-                if not success:
-                    self.log(f"Warning: Could not initialize sine amp for axis {ax}: {response}")
-            
-            # Set safety limits (per-axis to avoid validator issues)
-            for ax in ["A", "B", "C", "D"]:
-                success, response = self.send_command(f"ER{ax}=20000")
-                if not success:
-                    self.log(f"Warning: Could not set error limit for axis {ax}: {response}")
-                
-                success, response = self.send_command(f"OE{ax}=3")
-                if not success:
-                    self.log(f"Warning: Could not set output error limit for axis {ax}: {response}")
-            
-            # Enable servos for all axes
-            for ax in ["A", "B", "C", "D"]:
-                success, response = self.send_command(f"SH{ax}")
-                if not success:
-                    self.log(f"Warning: Could not enable servo for axis {ax}: {response}")
-                else:
-                    self.log(f"✓ Axis {ax} servo enabled")
-            
-            # 2. Put specific axis in safe/off state
-            success, response = self.send_command(f"MO{axis}")
-            if not success:
-                return SetupResult(False, f"Failed to turn off motor {axis}: {response}")
-            
-            # 3. Disable servo loop to allow free manual movement
-            success, response = self.send_command(f"MO{axis}")
-            if not success:
-                self.log(f"Warning: Could not turn off motor {axis}: {response}")
-            
-            # 4. Disable following error to prevent holding torque
-            success, response = self.send_command(f"OE{axis}=0")
-            if not success:
-                self.log(f"Warning: Could not disable following error for {axis}: {response}")
-            
-            # 5. Set large error limit to prevent holding
-            success, response = self.send_command(f"ER{axis}=200000")
-            if not success:
-                self.log(f"Warning: Could not set error limit for {axis}: {response}")
-            
-            # 6. Wait for motor to fully disengage
-            time.sleep(1.0)
-            
-            # 7. Enable servo for the specific axis so it can be jogged in Step 4
-            success, response = self.send_command(f"SH{axis}")
-            if not success:
-                self.log(f"Warning: Could not enable servo for axis {axis}: {response}")
-            else:
-                self.log(f"✓ Axis {axis} servo enabled for Step 4 jog capability")
-            
-            self.log(f"✓ Axis {axis} prepared successfully")
-            return SetupResult(True, f"Axis {axis} prepared - motor off, ready for manual testing")
-            
+
+            # 0) Go safe: stop and power off all axes
+            self.send_command("AB")
+            self.send_command("MO")          # all OFF
+
+            # 1) Clear latched amp errors (valid ONLY when all axes are MO)
+            ok, _ = self.send_command("AZ")
+            if not ok:
+                self.log("Warning: AZ failed; amp errors may persist")
+
+            # 2) Servo mode (OK to fail silently on unsupported axes)
+            self.send_command("MT 1,1,1,1")
+
+            # 3) Assign brushless amps (41x3 may ignore; warn only)
+            for a in "ABCD":
+                ok, resp = self.send_command(f"BA {a}")
+                if not ok:
+                    self.log(f"Note: BA {a} not supported/ignored: {resp}")
+
+            # 4) Set BM nominally (e.g., 64000/4=16000)
+            for a in "ABCD":
+                self.send_command(f"BM{a}=16000")
+
+            # 5) Safety: large error limit; disable Off-on-Error for setup
+            for a in "ABCD":
+                self.send_command(f"ER{a}=200000")
+                self.send_command(f"OE{a}=0")
+
+            # 6) Keep other axes OFF; only enable target later when needed
+            self.send_command(f"MO{ax}")
+
+            # 7) Wait a moment for drives to relax
+            time.sleep(0.5)
+
+            # 8) Prepare target axis so we can jog in later steps if needed
+            self.send_command(f"SH{ax}")
+            self.log(f"✓ Axis {ax} servo enabled for Step 4 jog capability")
+            self.log(f"✓ Axis {ax} prepared successfully")
+            return SetupResult(True, f"Axis {ax} prepared – servo enabled for later jog")
         except Exception as e:
             return SetupResult(False, f"Step 0 failed: {str(e)}")
     
     def step_1_define_direction(self, axis: str, manual_direction: str = None) -> SetupResult:
-        """
-        Step 1: Define encoder sign (motor direction)
-        
-        Args:
-            axis: Axis letter (A, B, C, D)
-            manual_direction: "normal" or "reversed" - user's choice based on manual testing
-            
-        Returns:
-            SetupResult with success status and details
-        """
-        self.log(f"Step 1: Defining motor direction for axis {axis}...")
-        
+        ax = self._ax(axis)
+        self.log(f"Step 1: Defining motor direction for axis {ax}...")
+
         try:
-            # 1. Zero position
-            success, response = self.send_command(f"DP{axis}=0")
-            if not success:
-                return SetupResult(False, f"Failed to zero position for axis {axis}: {response}")
-            
-            self.log(f"✓ Position zeroed for axis {axis}")
-            
-            # 2. Manual direction testing required
+            # Make shaft truly free
+            self.send_command(f"ST{ax}")
+            self.send_command(f"MO{ax}")
+            # Clear holding effects (axis-suffix, no spaces)
+            self.send_command(f"TL{ax}=0")
+            self.send_command(f"TK{ax}=0")
+            self.send_command(f"OF{ax}=0")
+            self.send_command(f"KI{ax}=0")
+
+            ok, mo = self.send_command(f"MG _MO{ax}")
+            mo_val = float(str(mo).strip().split(',')[0]) if ok else 0.0
+            if mo_val != 1.0:
+                self.log(f"Warning: Axis {ax} may still be ENABLED (MG _MO returned {mo!r})")
+            else:
+                self.log(f"✓ Axis {ax} motor is OFF for manual spin (MG _MO={mo_val:.0f})")
+
+            # Zero position (axis-suffix)
+            ok, resp = self.send_command(f"DP{ax}=0")
+            if not ok:
+                return SetupResult(False, f"Failed to zero position for axis {ax}: {resp}")
+            self.log(f"✓ Position zeroed for axis {ax}")
+
             if manual_direction is None:
                 self.log("⚠️ MANUAL TESTING REQUIRED:")
-                self.log(f"  1. Manually rotate the motor shaft for axis {axis} in your desired + direction")
-                self.log(f"  2. Read the position with: TP{axis}")
-                self.log(f"  3. If position increases, use 'normal' polarity")
-                self.log(f"  4. If position decreases, use 'reversed' polarity")
-                self.log("  5. Click 'Continue' when ready to proceed")
-                
-                # Return a special result indicating manual input is needed
-                return SetupResult(False, "Manual direction testing required", 
-                                 {"requires_manual_input": True, "step": "define_direction", "axis": axis})
-            
-            # 3. Set encoder polarity based on user input
-            if manual_direction == "reversed":
-                success, response = self.send_command(f"CE{axis}=2")
+                self.log(f"  1. Manually rotate the shaft for axis {ax} in the desired + direction")
+                self.log(f"  2. Read position with: TP{ax}")
+                self.log("  3. If it increases → 'normal'; if it decreases → 'reversed'")
+                return SetupResult(False, "Manual direction testing required",
+                                   {"requires_manual_input": True, "step": "define_direction", "axis": ax})
+
+            # Validate manual_direction input
+            md = manual_direction.strip().lower()
+            if md not in ("normal", "reversed"):
+                return SetupResult(False, "manual_direction must be 'normal' or 'reversed'")
+
+            # Encoder polarity
+            if md == "reversed":
+                ok, resp = self.send_command(f"CE{ax}=2")
                 polarity = "reversed (quadrature)"
             else:
-                success, response = self.send_command(f"CE{axis}=0")
+                ok, resp = self.send_command(f"CE{ax}=0")
                 polarity = "normal"
+            if not ok:
+                return SetupResult(False, f"Failed to set encoder polarity for axis {ax}: {resp}")
+
+            # Re-enable servo for next steps and restore torque/gains
+            self.send_command(f"SH{ax}")
+            # Apply safe servo defaults
+            self._apply_safe_servo_defaults(ax)
             
-            if not success:
-                return SetupResult(False, f"Failed to set encoder polarity for axis {axis}: {response}")
-            
-            # 4. Verify position reading
-            success, response = self.send_command(f"TP{axis}")
-            if not success:
-                return SetupResult(False, f"Failed to read position for axis {axis}: {response}")
-            
-            position = response.strip()
-            self.log(f"✓ Axis {axis} direction set to {polarity}, current position: {position}")
-            
-            return SetupResult(True, f"Axis {axis} direction set to {polarity}", 
-                             {"polarity": polarity, "position": position})
-            
+            ok, pos = self.send_command(f"TP{ax}")
+            if not ok:
+                return SetupResult(False, f"Failed to read position for axis {ax}: {pos}")
+
+            position = str(pos).strip()
+            self.log(f"✓ Axis {ax} direction set to {polarity}, current position: {position}")
+            return SetupResult(True, f"Axis {ax} direction set to {polarity}",
+                               {"polarity": polarity, "position": position})
+
         except Exception as e:
-            return SetupResult(False, f"Step 1 failed: {str(e)}")
+            return SetupResult(False, f"Step 1 failed: {e}")
     
     def step_2_set_brushless_modulo(self, axis: str, encoder_counts: int, pole_pairs: int) -> SetupResult:
         """
@@ -378,34 +371,39 @@ class MotorSetup:
         Returns:
             SetupResult with success status and details
         """
-        self.log(f"Step 2: Setting brushless modulo for axis {axis}...")
+        ax = self._ax(axis)
+        self.log(f"Step 2: Setting brushless modulo for axis {ax}...")
         
         try:
-            # Calculate BM = encoder_counts / pole_pairs
-            # For 64000 counts/rev and 4 pole pairs: BM = 16000 (this is correct)
-            bm_value = encoder_counts / pole_pairs
+            if pole_pairs is None or pole_pairs <= 0:
+                return SetupResult(False, "pole_pairs must be > 0")
+            if encoder_counts is None or encoder_counts <= 0:
+                return SetupResult(False, "encoder_counts must be > 0")
+
+            # Calculate BM = encoder_counts / pole_pairs (as integer)
+            bm_value = int(round(encoder_counts / float(pole_pairs)))
             self.log(f"Calculated BM value: {bm_value} (encoder_counts={encoder_counts}, pole_pairs={pole_pairs})")
             
             # Set brushless modulo
-            success, response = self.send_command(f"BM{axis}={bm_value}")
+            success, response = self.send_command(f"BM{ax}={bm_value}")
             if not success:
-                return SetupResult(False, f"Failed to set BM for axis {axis}: {response}")
+                return SetupResult(False, f"Failed to set BM for axis {ax}: {response}")
             
             # Verify BM was set correctly
-            success, response = self.send_command(f"MG _BM{axis}")
+            success, response = self.send_command(f"MG _BM{ax}")
             if not success:
-                return SetupResult(False, f"Failed to verify BM for axis {axis}: {response}")
+                return SetupResult(False, f"Failed to verify BM for axis {ax}: {response}")
             
             actual_bm = response.strip()
-            self.log(f"✓ Axis {axis} BM set to {bm_value} (verified: {actual_bm})")
+            self.log(f"✓ Axis {ax} BM set to {bm_value} (verified: {actual_bm})")
             
-            return SetupResult(True, f"Axis {axis} BM set to {bm_value}", 
+            return SetupResult(True, f"Axis {ax} BM set to {bm_value}", 
                              {"bm_value": bm_value, "actual_bm": actual_bm})
             
         except Exception as e:
             return SetupResult(False, f"Step 2 failed: {str(e)}")
     
-    def step_3_initialize_commutation(self, axis: str, method: CommutationMethod = CommutationMethod.BX) -> SetupResult:
+    def step_3_initialize_commutation(self, axis: str, method: CommutationMethod = CommutationMethod.BZ) -> SetupResult:
         """
         Step 3: Initialize commutation using specified method
         
@@ -416,25 +414,26 @@ class MotorSetup:
         Returns:
             SetupResult with success status and details
         """
-        self.log(f"Step 3: Initializing commutation for axis {axis} using {method.value} method...")
-        
+        ax = self._ax(axis)
+        self.log(f"Step 3: Initializing commutation for axis {ax} using {method.value} method...")
         try:
-            # Set up safety parameters
-            success, response = self.send_command(f"OE{axis}=1")
-            if not success:
-                return SetupResult(False, f"Failed to enable overtravel for axis {axis}: {response}")
+            # Keep Off-on-Error disabled during init
+            self.send_command(f"OE{ax}=0")
+
+            # ER := max(_BM, some floor)
+            ok_bm, bm_val = self._mg_float(f"_BM{ax}")
+            bm_val = bm_val if ok_bm and bm_val == bm_val else 16000.0
+            er_val = max(1000.0, bm_val)
+            self.send_command(f"ER{ax}={er_val}")
             
-            # Set error limit >= BM
-            success, response = self.send_command(f"ER{axis}=_BM{axis}")
-            if not success:
-                return SetupResult(False, f"Failed to set error limit for axis {axis}: {response}")
-            
-            if method == CommutationMethod.BX:
-                return self._initialize_commutation_bx(axis)
-            elif method == CommutationMethod.BZ:
-                return self._initialize_commutation_bz(axis)
+            if method == CommutationMethod.BZ:
+                return self._initialize_commutation_bz(ax)
             elif method == CommutationMethod.BC_BI:
-                return self._initialize_commutation_bc_bi(axis)
+                return self._initialize_commutation_bc_bi(ax)
+            elif method == CommutationMethod.BX:
+                # BX unsupported on 41x3; fall back to BZ
+                self.log("BX method unsupported on this controller; using BZ instead")
+                return self._initialize_commutation_bz(ax)
             else:
                 return SetupResult(False, f"Unknown commutation method: {method}")
                 
@@ -443,22 +442,23 @@ class MotorSetup:
     
     def _initialize_commutation_bx(self, axis: str) -> SetupResult:
         """Initialize commutation using BX method (minimal motion)"""
+        ax = self._ax(axis)
         try:
-            self.log(f"Initializing BX commutation for axis {axis}...")
+            self.log(f"Initializing BX commutation for axis {ax}...")
             
             # Ensure the controller is in the right state for BX commands
             # First, make sure the axis is properly configured
-            success, response = self.send_command(f"MO{axis}")
+            success, response = self.send_command(f"MO{ax}")
             if not success:
-                self.log(f"Warning: Could not turn off motor {axis}: {response}")
+                self.log(f"Warning: Could not turn off motor {ax}: {response}")
             
             # Try different BX approaches in sequence (start with 0 for auto-align)
             bx_approaches = [
-                f"BX{axis}=0",   # Auto-align (preferred)
-                f"BX{axis}=3",   # Torque-align method
-                f"BX{axis}=2",   # Lower torque-align
-                f"BX{axis}=-3",  # Negative voltage approach
-                f"BX{axis}=-2",  # Lower negative voltage
+                f"BX{ax}=0",   # Auto-align (preferred)
+                f"BX{ax}=3",   # Torque-align method
+                f"BX{ax}=2",   # Lower torque-align
+                f"BX{ax}=-3",  # Negative voltage approach
+                f"BX{ax}=-2",  # Lower negative voltage
             ]
             
             for i, bx_cmd in enumerate(bx_approaches):
@@ -467,7 +467,7 @@ class MotorSetup:
                 
                 if success:
                     self.log(f"✓ BX initialization successful with {bx_cmd}")
-                    return SetupResult(True, f"Axis {axis} commutation initialized (BX method)")
+                    return SetupResult(True, f"Axis {ax} commutation initialized (BX method)")
                 else:
                     self.log(f"BX approach {i+1} failed: {response}")
                     if i < len(bx_approaches) - 1:
@@ -479,13 +479,13 @@ class MotorSetup:
             self.log(f"Trying alternative commutation strategy...")
             
             # Try BZ method as fallback
-            success, response = self.send_command(f"BZ{axis}=-1")
+            success, response = self.send_command(f"BZ{ax}=-1")
             if success:
                 self.log(f"✓ BZ initialization successful as fallback")
-                return SetupResult(True, f"Axis {axis} commutation initialized (BZ fallback)")
+                return SetupResult(True, f"Axis {ax} commutation initialized (BZ fallback)")
             
             # If everything fails, return failure but don't stop the setup
-            self.log(f"Warning: All commutation methods failed for axis {axis}")
+            self.log(f"Warning: All commutation methods failed for axis {ax}")
             return SetupResult(False, f"BX initialization failed with all approaches: {response}")
             
         except Exception as e:
@@ -519,335 +519,247 @@ class MotorSetup:
     
     def _initialize_commutation_bc_bi(self, axis: str) -> SetupResult:
         """Initialize commutation using BC/BI method (Hall-based)"""
+        ax = self._ax(axis)
+        if not getattr(self.motor_specs, "has_halls", False):
+            return SetupResult(False, f"BC/BI requested but motor_specs.has_halls=False")
+        
         try:
             # Use AMP-43540's dedicated Hall inputs
-            success, response = self.send_command(f"BI{axis}=-1")
+            success, response = self.send_command(f"BI{ax}=-1")
             if not success:
-                return SetupResult(False, f"Failed to set Hall inputs for axis {axis}: {response}")
+                return SetupResult(False, f"Failed to set Hall inputs for axis {ax}: {response}")
             
             # Enable hall-based calibration
-            success, response = self.send_command(f"BC{axis}")
+            success, response = self.send_command(f"BC{ax}")
             if not success:
-                return SetupResult(False, f"Failed to enable hall calibration for axis {axis}: {response}")
+                return SetupResult(False, f"Failed to enable hall calibration for axis {ax}: {response}")
             
             # Enable servo
-            success, response = self.send_command(f"SH{axis}")
+            success, response = self.send_command(f"SH{ax}")
             if not success:
-                return SetupResult(False, f"Failed to enable servo for axis {axis}: {response}")
+                return SetupResult(False, f"Failed to enable servo for axis {ax}: {response}")
             
             # Small jog to trigger hall transition
-            success, response = self.send_command(f"JG{axis}=500")
+            success, response = self.send_command(f"JG{ax}=500")
             if not success:
-                return SetupResult(False, f"Failed to set jog for axis {axis}: {response}")
+                return SetupResult(False, f"Failed to set jog for axis {ax}: {response}")
             
-            success, response = self.send_command(f"BG{axis}")
+            success, response = self.send_command(f"BG{ax}")
             if not success:
-                return SetupResult(False, f"Failed to begin jog for axis {axis}: {response}")
+                return SetupResult(False, f"Failed to begin jog for axis {ax}: {response}")
             
             # Wait a moment for hall transition
             time.sleep(0.5)
             
             # Stop motion
-            success, response = self.send_command(f"ST{axis}")
+            success, response = self.send_command(f"ST{ax}")
             if not success:
-                return SetupResult(False, f"Failed to stop motion for axis {axis}: {response}")
+                return SetupResult(False, f"Failed to stop motion for axis {ax}: {response}")
             
-            self.log(f"✓ Axis {axis} commutation initialized using BC/BI method")
-            return SetupResult(True, f"Axis {axis} commutation initialized (BC/BI method)")
+            self.log(f"✓ Axis {ax} commutation initialized using BC/BI method")
+            return SetupResult(True, f"Axis {ax} commutation initialized (BC/BI method)")
             
         except Exception as e:
             return SetupResult(False, f"BC/BI initialization failed: {str(e)}")
     
+    def _relax_axis(self, axis: str, deep: bool = False):
+        """Relax the axis to prevent heating at rest by reducing gains and bias"""
+        ax = self._ax(axis)
+        self.send_command(f"KI{ax}=0")     # disable integral at rest
+        self.send_command(f"TK{ax}=0")     # no torque bias
+        self.send_command(f"OF{ax}=0")     # no DAC offset
+        self.send_command(f"TL{ax}=2" if not deep else f"TL{ax}=0")
+        if deep:
+            self.send_command(f"MO{ax}")  # fully off if safe
+        self.log(f"✓ Axis {ax} relaxed{' (deep)' if deep else ''} to prevent heating at rest")
+
     def _automatic_index_measurement(self, axis: str) -> dict:
-        """
-        Robust Step-4 index measurement with diagnostics
-        Based on user's precise specification - never MO, proper direction, multiple attempts
-        """
-        import time
-        import math
-        
+        import re
+        ax = self._ax(axis)
+        pole_pairs = self.motor_specs.pole_pairs or 4
+
+        def cmd(s):
+            ok, r = self.send_command(s)
+            if not ok:
+                raise RuntimeError(f"Galil error on '{s}': {self._last_error_text()}")
+            return r
+
+        def mg(expr):
+            ok, val = self._mg_float(expr)
+            if not ok:
+                raise RuntimeError(f"Galil error on 'MG {expr}': {self._last_error_text()}")
+            return val
+
+        # Make sure target axis is ON and able to move
+        cmd(f"SH{ax}")
+        cmd(f"TL{ax}=8.0")
+        cmd(f"OE{ax}=0")
+
+        # Motion params
+        cmd(f"ST{ax}")
+        cmd(f"DP{ax}=0")
+        cmd(f"SP{ax}=20000")
+        cmd(f"AC{ax}=200000")
+        cmd(f"DC{ax}=200000")
+
+        # 1) Sweep to first index
+        sweep = 70000
+        cmd(f"PR{ax}={sweep}")
+        cmd(f"FI{ax}")     # correct 41x3 form
+        cmd(f"BG{ax}")
+
+        t0 = time.time()
+        while int(mg(f"_BG{ax}")) != 0:
+            if time.time() - t0 > 6.0:
+                cmd(f"ST{ax}")
+                raise RuntimeError("Index not detected within sweep distance/time")
+            time.sleep(0.05)
+
+        pos1 = float(str(cmd(f"TP{ax}")).strip())
+        if pos1 > sweep * 0.98:
+            raise RuntimeError("No Z marker detected (finished near PR target)")
+
+        # 2) Jog to next index
+        cmd(f"JG{ax}=8000")
+        cmd(f"FI{ax}")
+        cmd(f"BG{ax}")
+
+        t0 = time.time()
+        while int(mg(f"_BG{ax}")) != 0:
+            if time.time() - t0 > 6.0:
+                cmd(f"ST{ax}")
+                raise RuntimeError("Second index not detected within time limit")
+            time.sleep(0.05)
+
+        pos2 = float(str(cmd(f"TP{ax}")).strip())
+        rev_counts = pos2 - pos1
+        if rev_counts <= 0:
+            raise RuntimeError(f"Unexpected rev_counts {rev_counts}")
+
+        # Correct BM: counts per rev / pole_pairs
+        bm_new = rev_counts / float(pole_pairs)
+
+        # Ensure motion is stopped before returning (safety)
         try:
-            self.log(f"Starting robust index measurement for axis {axis}...")
-            
-            ax = axis.upper()
-            others = [a for a in "ABCD" if a != ax]
-            
-            def cmd(s): 
-                r = self.controller.GCommand(s)
-                return r
-            
-            def mg(expr): 
-                # Example: mg("_TSA") -> "15.0000\r\n"
-                return float(self.controller.GCommand(f"MG {{{expr}}}"))
-            
-            # --- prep: be in servo here, relax OE/ER, pick safe jog direction by limits
-            if int(mg(f"_MO{ax}")):                       # MO? -> SH
-                cmd(f"SH{ax}")
-            
-            # choose direction away from an active limit (TS bit3 FWD inactive, bit2 REV inactive)
-            ts = int(mg(f"_TS{ax}"))
-            dir_sign = 1
-            if (ts & 8) == 0: dir_sign = -1   # FWD limit active -> go negative
-            if (ts & 4) == 0: dir_sign =  1   # REV limit active -> go positive
-            
-            # store/relax protections
-            try:
-                prev_oe = int(mg(f"_OE{ax}"))     # if _OE* isn't supported, we'll just set/restore using OEA below
-            except:
-                prev_oe = None
-            try:
-                prev_oea = int(mg(f"_OE{ax}"))    # alias for some firmwares
-            except:
-                prev_oea = None
-            
-            # Use Off-on-Error per-axis operand/command if available on your fw; fall back to OEA
-            cmd(f"OE{ax}=0")                     # OEA=0 : do not shut down on following error during the jog
-            cmd(f"ER{ax}=200000")                 # large following error limit so we don't abort
-            
-            # motion params (safe but snappy)
-            cmd(f"SP{ax}=6000; AC{ax}=60000; DC{ax}=60000")
-            
-            # helper: arm all latches so we can detect wrong-axis wiring
-            def arm_all():
-                cmd(f"AL{ax}")
-                for o in others:
-                    cmd(f"AL{o}")
-            
-            # helper: poll for a latch on our axis, while also watching other axes (wiring diag)
-            def wait_for_latch(max_secs):
-                start = time.time()
-                wrong_axis = None
-                while True:
-                    ts_self = int(mg(f"_TS{ax}"))
-                    if ts_self & 1:   # bit0==1 => position latch occurred
-                        return None   # ok on our axis
-                    for o in others:
-                        if int(mg(f"_TS{o}")) & 1:
-                            wrong_axis = o
-                            return wrong_axis
-                    if time.time() - start > max_secs:
-                        return "timeout"
-                    time.sleep(0.01)
-            
-            # --- FIRST LATCH ---
-            arm_all()
-            cmd(f"JG{ax}={2000*dir_sign}")
-            cmd(f"BG{ax}")
-            res = wait_for_latch(8.0)
-            if res == "timeout":
-                # Try faster & longer, reverse once, then give reason
-                for attempt, (speed, secs, sign) in enumerate([(4000, 8.0, dir_sign),
-                                                               (4000, 12.0, -dir_sign),
-                                                               (8000, 16.0, dir_sign)]):
-                    cmd(f"JG{ax}={speed*sign}"); cmd(f"BG{ax}")
-                    res = wait_for_latch(secs)
-                    if res is None:
-                        break
-                if res == "timeout":
-                    # no latch anywhere → likely no Z or filtering killing it
-                    cmd(f"ST{ax}; AM{ax}")
-                    raise RuntimeError(f"No Z index detected on axis {ax}. "
-                                       f"Check Z wiring/polarity/filtering or jog distance (tried multiple revs).")
-            if isinstance(res, str) and res in others:
-                cmd(f"ST{ax}; AM{ax}")
-                raise RuntimeError(f"Z index for motor {ax} appears wired to axis {res}. "
-                                   f"Latch bit set on {res} while jogging {ax}.")
-            
-            cmd(f"ST{ax}; AM{ax}")
-            p1 = float(self.controller.GCommand(f"RL{ax}").strip())  # RLA
-            
-            # --- SECOND LATCH ---
-            arm_all()
-            cmd(f"JG{ax}={2000*dir_sign}")
-            cmd(f"BG{ax}")
-            res = wait_for_latch(8.0)
-            if res == "timeout":
-                # extend distance once more
-                cmd(f"JG{ax}={4000*dir_sign}"); cmd(f"BG{ax}")
-                res = wait_for_latch(12.0)
-                if res == "timeout":
-                    cmd(f"ST{ax}; AM{ax}")
-                    raise RuntimeError(f"Only one Z latch observed on {ax}. Jogged multiple revs without second pulse. "
-                                       f"Verify Z once-per-rev and filtering.")
-            if isinstance(res, str) and res in others:
-                cmd(f"ST{ax}; AM{ax}")
-                raise RuntimeError(f"Second Z latch showed on {res} while jogging {ax}. Wiring mix-up.")
-            
-            cmd(f"ST{ax}; AM{ax}")
-            p2 = float(self.controller.GCommand(f"RL{ax}").strip())
-            
-            # --- Compute CPR with wrap; refine BM and re-commutate ---
-            try:
-                bm_hint = float(mg(f"_BM{ax}"))  # some firmwares expose _BMA/_BMB...
-            except:
-                try:
-                    bm_hint = float(mg(f"_BM{ax}"))  # keep both attempts; fall back below if needed
-                except:
-                    bm_hint = 16000.0  # sane default for your 64k/4pp case
-            
-            # normalize delta into [0, bm_hint)
-            d = p2 - p1
-            d = d % bm_hint if bm_hint > 0 else abs(d)
-            # choose the smaller equivalent (handles occasional double-edge captures)
-            if bm_hint and d > bm_hint/2:
-                d = bm_hint - d
-            
-            cpr = max(1.0, d)               # counts per mech rev from Z→Z
-            bm_new = cpr / 4.0  # pole_pairs = 4
-            
-            # sanity: if wildly off, tell the user instead of writing garbage
-            if bm_hint and not (0.5*bm_hint <= bm_new <= 1.5*bm_hint):
-                raise RuntimeError(f"Computed BM {bm_new:.1f} is far from hint {bm_hint:.1f}. "
-                                   f"Likely Z wired wrong or noisy/filtering.")
-            
-            cmd(f"BM{ax}={bm_new:.0f}")
-            cmd(f"BZ{ax}")
-            
-            # restore protections
-            cmd(f"OE{ax}=3")   # typical default; change if your app uses a different setting
-            
-            self.log(f"Index measurement successful: P1={p1}, P2={p2}, CPR={cpr}, BM={bm_new:.0f}")
-            
-            return {
-                "success": True,
-                "encoder_counts": int(cpr),
-                "pole_pairs": 4,
-                "p1": p1,
-                "p2": p2,
-                "bm_new": bm_new
-            }
-                
-        except Exception as e:
-            self.log(f"Automatic measurement failed: {str(e)}")
-            return {"success": False, "error": str(e)}
+            self.send_command(f"ST{ax}")
+        except Exception:
+            pass
+
+        return {
+            "success": True,
+            "encoder_counts": int(round(rev_counts)),
+            "pole_pairs": pole_pairs,
+            "p1": pos1,
+            "p2": pos2,
+            "bm_new": bm_new,
+        }
     
     def step_4_improve_modulo(self, axis: str, exact_encoder_counts: int = None, pole_pairs: int = None) -> SetupResult:
-        """
-        Step 4: Improve modulo with index (if available)
-        
-        Args:
-            axis: Axis letter (A, B, C, D)
-            exact_encoder_counts: Exact encoder counts from index measurement
-            pole_pairs: Number of pole pairs in the motor
-            
-        Returns:
-            SetupResult with success status and details
-        """
-        self.log(f"Step 4: Improving modulo for axis {axis} with index data...")
-        
+        ax = self._ax(axis)
+        self.log(f"Step 4: Improving modulo for axis {ax} with index data...")
+
+        # If the preset says no index, skip immediately.
+        if not getattr(self.motor_specs, "has_index", False) and exact_encoder_counts is None:
+            self.log("No Z index in motor specs – skipping Step 4")
+            return SetupResult(True, "Step 4 skipped - no index available")
+
         try:
-            # Always try automatic measurement first
-            self.log("Attempting automatic index measurement...")
-            auto_result = self._automatic_index_measurement(axis)
-            
-            if auto_result['success']:
-                exact_encoder_counts = auto_result['encoder_counts']
-                pole_pairs = auto_result['pole_pairs']
-                self.log(f"Automatic measurement successful: {exact_encoder_counts} counts, {pole_pairs} pole pairs")
-                
-                # Calculate improved BM
-                improved_bm = exact_encoder_counts / pole_pairs
-                
-                # Use gsend for robust command sending
-                def gsend(cmd: str) -> str:
-                    try:
-                        response = self.controller.GCommand(cmd)
-                        response = response.strip()
-                        if response == "?":
-                            try:
-                                why = self.controller.GCommand("TC 1").strip()
-                            except Exception:
-                                why = "unknown (TC fetch failed)"
-                            raise RuntimeError(f"Galil error on '{cmd}': {why}")
-                        return response
-                    except Exception as e:
-                        try:
-                            why = self.controller.GCommand("TC 1").strip()
-                        except Exception:
-                            why = "unknown (TC fetch failed)"
-                        raise RuntimeError(f"Galil error on '{cmd}': {why}") from e
-                
-                # Set improved BM
-                gsend(f"BM{axis}={improved_bm}")
-                
-                # Verify improved BM
-                actual_bm = gsend(f"MG _BM{axis}")
-                self.log(f"✓ Axis {axis} BM improved to {improved_bm} (verified: {actual_bm})")
-                
-                return SetupResult(True, f"Axis {axis} BM improved to {improved_bm}", 
-                                 {"improved_bm": improved_bm, "actual_bm": actual_bm})
+            if exact_encoder_counts is not None and pole_pairs:
+                if pole_pairs <= 0 or exact_encoder_counts <= 0:
+                    return SetupResult(False, "Invalid index data: counts and pole_pairs must be > 0")
+                improved_bm = int(round(float(exact_encoder_counts) / float(pole_pairs)))
             else:
-                self.log("⚠️ No Z index available - skipping Step 4")
-                self.log("This is normal if no Z index is wired to the encoder")
-                return SetupResult(True, "Step 4 skipped - no Z index available")
-            
+                self.log("Attempting automatic index measurement...")
+                auto = self._automatic_index_measurement(ax)
+                exact_encoder_counts = abs(auto["encoder_counts"])  # be robust to direction
+                pole_pairs = auto["pole_pairs"]
+                improved_bm = int(round(exact_encoder_counts / float(pole_pairs)))
+
+            ok, _ = self.send_command(f"BM{ax}={improved_bm}")
+            if not ok:
+                return SetupResult(False, f"Failed to set BM on axis {ax}")
+
+            ok, actual_bm = self.send_command(f"MG _BM{ax}")
+            actual_bm = str(actual_bm).strip() if ok else "?"
+            self.log(f"✓ Axis {ax} BM improved to {improved_bm} (readback: {actual_bm})")
+
+            return SetupResult(True, f"Axis {ax} BM improved to {improved_bm}",
+                               {"improved_bm": improved_bm, "actual_bm": actual_bm})
+
         except Exception as e:
-            self.log(f"Step 4 failed: {str(e)}")
-            return SetupResult(False, f"Step 4 failed: {str(e)}")
+            msg = str(e)
+            # Treat "no index found" as a SKIP, not a failure
+            if "Index not detected" in msg or "No Z marker" in msg:
+                self.log("No Z index detected during sweep – skipping Step 4")
+                return SetupResult(True, "Step 4 skipped - index not detected")
+            return SetupResult(False, f"Step 4 failed: {msg}")
     
     def step_5_verify_commutation(self, axis: str) -> SetupResult:
-        """
-        Step 5: Verify commutation and basic motion
-        
-        Args:
-            axis: Axis letter (A, B, C, D)
-            
-        Returns:
-            SetupResult with success status and details
-        """
-        self.log(f"Step 5: Verifying commutation for axis {axis}...")
-        
+        ax = self._ax(axis)
+        self.log(f"Step 5: Verifying commutation for axis {ax}...")
         try:
-            # Check hall status
-            success, response = self.send_command(f"QH {axis}")
-            if not success:
-                return SetupResult(False, f"Failed to read hall status for axis {axis}: {response}")
-            
-            hall_status = response.strip()
-            if hall_status in ['0', '7']:
-                return SetupResult(False, f"Invalid hall status for axis {axis}: {hall_status}")
-            
-            # Read brushless electrical angle (optional)
-            success, response = self.send_command(f"MG _BD{axis}")
-            if success:
-                electrical_angle = response.strip()
+            hall_status = "Skipped (BZ method)"
+
+            # Optional: electrical angle
+            ok, resp = self.send_command(f"MG _BD{ax}")
+            electrical_angle = resp.strip() if ok else "Unknown"
+
+            # Ensure the axis is READY: stop, enable, torque, sane gains
+            self.send_command(f"ST{ax}")
+            self.send_command(f"OE{ax}=0")
+            self._apply_safe_servo_defaults(ax)
+
+            ok, _ = self.send_command(f"SH{ax}")
+            if not ok:
+                return SetupResult(False, f"Failed to enable servo for axis {ax}: {self._last_error_text()}")
+
+            # Poll briefly after SH - some firmwares need a tick to reflect _MO == 0
+            for _ in range(10):
+                ok_mo, mo_val = self._mg_float(f"_MO{ax}")
+                if ok_mo and mo_val == 0.0:
+                    break
+                time.sleep(0.02)
             else:
-                electrical_angle = "Unknown"
-            
-            # Test basic motion
-            success, response = self.send_command(f"SH{axis}")
-            if not success:
-                return SetupResult(False, f"Failed to enable servo for axis {axis}: {response}")
-            
-            # Small jog test
-            success, response = self.send_command(f"JG{axis}=5000")
-            if not success:
-                return SetupResult(False, f"Failed to set jog for axis {axis}: {response}")
-            
-            success, response = self.send_command(f"BG{axis}")
-            if not success:
-                return SetupResult(False, f"Failed to begin jog for axis {axis}: {response}")
-            
-            # Wait for motion
-            time.sleep(1.0)
-            
-            # Stop motion
-            success, response = self.send_command(f"ST{axis}")
-            if not success:
-                return SetupResult(False, f"Failed to stop motion for axis {axis}: {response}")
-            
-            self.log(f"✓ Axis {axis} commutation verified - Hall status: {hall_status}, Electrical angle: {electrical_angle}")
-            
-            return SetupResult(True, f"Axis {axis} commutation verified", 
-                             {"hall_status": hall_status, "electrical_angle": electrical_angle})
-            
+                return SetupResult(False, f"Axis {ax} is OFF before jog: {self._last_error_text()}")
+
+            # Use separate commands (more robust than 'JG;BG' on some firmwares)
+            ok, _ = self.send_command(f"JG{ax}=5000")
+            if not ok:
+                return SetupResult(False, f"Failed to set jog for axis {ax}: {self._last_error_text()}")
+
+            ok, _ = self.send_command(f"BG{ax}")
+            if not ok:
+                return SetupResult(False, f"Failed to start jog for axis {ax}: {self._last_error_text()}")
+
+            time.sleep(0.25)
+            self.send_command(f"ST{ax}")
+            time.sleep(0.25)
+
+            ok, _ = self.send_command(f"JG{ax}=-5000")
+            if not ok:
+                return SetupResult(False, f"Failed to set reverse jog for axis {ax}: {self._last_error_text()}")
+
+            ok, _ = self.send_command(f"BG{ax}")
+            if not ok:
+                return SetupResult(False, f"Failed to start reverse jog for axis {ax}: {self._last_error_text()}")
+
+            time.sleep(0.25)
+            self.send_command(f"ST{ax}")
+
+            self.log(f"✓ Axis {ax} commutation verified - Hall status: {hall_status}, Electrical angle: {electrical_angle}")
+            return SetupResult(True, f"Axis {ax} commutation verified",
+                               {"hall_status": hall_status, "electrical_angle": electrical_angle})
+
         except Exception as e:
-            return SetupResult(False, f"Step 5 failed: {str(e)}")
+            return SetupResult(False, f"Step 5 failed: {e}")
     
-    def step_6_save_settings(self) -> SetupResult:
+    def step_6_save_settings(self, restore_oe: bool = True) -> SetupResult:
         """
         Step 6: Save settings to controller non-volatile memory
         
+        Args:
+            restore_oe: Whether to restore Off-on-Error after saving
+            
         Returns:
             SetupResult with success status and details
         """
@@ -859,6 +771,19 @@ class MotorSetup:
             if not success:
                 return SetupResult(False, f"Failed to save settings: {response}")
             
+            # Optionally restore Off-on-Error
+            if restore_oe:
+                try:
+                    self.send_command(f"OE{self.current_axis}=1")
+                    # Verify OE restore
+                    ok, val = self.send_command(f"MG _OE{self.current_axis}")
+                    if ok and val.strip().split(',')[0] == "1":
+                        self.log("✓ Off-on-Error confirmed ON")
+                    else:
+                        self.log("Warning: Off-on-Error restore may have failed")
+                except Exception:
+                    self.log("Warning: Could not restore Off-on-Error")
+            
             self.log("✓ Settings saved to controller")
             return SetupResult(True, "Settings saved to controller non-volatile memory")
             
@@ -866,7 +791,7 @@ class MotorSetup:
             return SetupResult(False, f"Step 6 failed: {str(e)}")
     
     def run_complete_setup(self, axis: str, motor_specs: MotorSpecs, 
-                          commutation_method: CommutationMethod = CommutationMethod.BX) -> Dict[str, SetupResult]:
+                          commutation_method: CommutationMethod = CommutationMethod.BZ) -> Dict[str, SetupResult]:
         """
         Run complete motor setup process for specified axis
         
@@ -893,6 +818,11 @@ class MotorSetup:
             
             # Step 1: Define direction (requires manual input)
             results['step_1'] = self.step_1_define_direction(self.current_axis)
+            if (not results['step_1'].success
+                and isinstance(results['step_1'].data, dict)
+                and results['step_1'].data.get("requires_manual_input")):
+                self.log("Waiting for manual direction input; call continue_step_1_with_direction() to proceed.")
+                return results
             
             # Step 2: Set brushless modulo
             if motor_specs.encoder_counts_per_rev and motor_specs.pole_pairs:
@@ -922,9 +852,16 @@ class MotorSetup:
             else:
                 results['step_5'] = SetupResult(False, "Step 5 skipped - Step 3 failed")
             
+            # Relax axis after Step 5 to prevent heating at rest
+            if results['step_5'].success:
+                self._relax_axis(self.current_axis)
+            
             # Step 6: Save settings
             if results['step_5'].success:
                 results['step_6'] = self.step_6_save_settings()
+                # Relax again after saving settings
+                if results['step_6'].success:
+                    self._relax_axis(self.current_axis)
             else:
                 results['step_6'] = SetupResult(False, "Step 6 skipped - Step 5 failed")
             
@@ -936,6 +873,11 @@ class MotorSetup:
             results['error'] = SetupResult(False, f"Setup failed: {str(e)}")
         
         finally:
+            # Always relax to avoid heating at rest, even if steps failed
+            try:
+                self._relax_axis(self.current_axis)
+            except Exception:
+                pass
             self.is_running = False
         
         return results
@@ -967,33 +909,36 @@ class MotorSetup:
         Returns:
             List of CommandValidation objects
         """
+        ax = self._ax(axis)
         commands = []
         
         # Step 0: Preparation
-        commands.extend([f"MO{axis}", f"BA {axis}"])
+        commands.extend([f"MO{ax}", f"BA {ax}"])
         
         # Step 1: Define direction (placeholder - requires manual input)
-        commands.extend([f"DP{axis}=0", f"CE{axis}=0"])  # Default to normal polarity
+        commands.extend([f"DP{ax}=0", f"CE{ax}=0"])  # Default to normal polarity
         
         # Step 2: Set brushless modulo
         if motor_specs.encoder_counts_per_rev and motor_specs.pole_pairs:
-            bm_value = motor_specs.encoder_counts_per_rev / motor_specs.pole_pairs
-            commands.extend([f"BM{axis}={bm_value}", f"MG _BM{axis}"])
+            bm_value = int(round(motor_specs.encoder_counts_per_rev / float(motor_specs.pole_pairs)))
+            commands.extend([f"BM{ax}={bm_value}", f"MG _BM{ax}"])
         
-        # Step 3: Initialize commutation
-        commands.extend([f"OE{axis}=1", f"ER{axis}=_BM{axis}"])
-        
+        # Step 3: Safety clears (OE/ER/TK/OF) before commutation
+        # Note: Runtime uses ER=max(_BM,1000), validator uses ER=1000 for simplicity
+        commands.extend([f"OE{ax}=0", f"MG _BM{ax}", f"ER{ax}=1000", f"TK{ax}=0", f"OF{ax}=0"])
+
         if commutation_method == CommutationMethod.BX:
-            commands.extend([f"BX<1000>", f"BX{axis}=-3"])
+            # 41x3 doesn't support BX reliably; validate BZ instead
+            commands.extend([f"BZ<200>100", f"BZ{ax}=-3"])
         elif commutation_method == CommutationMethod.BZ:
-            commands.extend([f"BZ<200>100", f"BZ{axis}=-3"])
+            commands.extend([f"BZ<200>100", f"BZ{ax}=-3"])
         elif commutation_method == CommutationMethod.BC_BI:
-            commands.extend([f"BI{axis}=-1", f"BC{axis}", f"SH{axis}", 
-                           f"JG{axis}=500", f"BG{axis}", f"ST{axis}"])
-        
-        # Step 5: Verify commutation
-        commands.extend([f"QH {axis}", f"MG _BD{axis}", f"SH{axis}", 
-                        f"JG{axis}=5000", f"BG{axis}", f"WT 1000", f"ST{axis}"])
+            commands.extend([f"BI{ax}=-1", f"BC{ax}", f"SH{ax}",
+                             f"JG{ax}=500", f"BG{ax}", f"ST{ax}"])
+
+        # Step 5: Verify (some firmwares skip halls on BZ)
+        commands.extend([f"MG _BD{ax}", f"SH{ax}",
+                         f"JG{ax}=5000", f"BG{ax}", f"ST{ax}"])
         
         # Step 6: Save settings
         commands.append("BN")
