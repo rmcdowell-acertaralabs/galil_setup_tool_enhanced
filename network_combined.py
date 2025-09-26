@@ -465,7 +465,7 @@ def discover_controllers_network_scan() -> Dict[str, str]:
                 g = gclib.py()
                 g.GOpen(f"{ip_address}")
                 # Try a simple command to verify it's a Galil controller
-                response = g.GCommand("TP A")
+                response = g.GCommand("TPA")
                 g.GClose()
                 
                 if response is not None:
@@ -674,9 +674,18 @@ def configure_controller_network_dmc4143(controller, ip_address: str) -> Dict[st
             # Try to get current IP using different methods
             current_ip = None
             try:
-                # MG _IP not supported on DMC-4143, skip IP query
-                current_ip = "Not supported on DMC-4143"
-                results['debug_info'].append(f"Current IP (MG _IP): {current_ip}")
+                # Get IP address using the new helper method
+                if hasattr(controller, 'get_current_ip'):
+                    ip = controller.get_current_ip()
+                    if ip:
+                        current_ip = ip
+                        results['debug_info'].append(f"Current IP (from connection): {current_ip}")
+                    else:
+                        current_ip = "N/A (serial or unknown)"
+                        results['debug_info'].append(f"Current IP: {current_ip}")
+                else:
+                    current_ip = "N/A (serial or unknown)"
+                    results['debug_info'].append(f"Current IP: {current_ip}")
             except:
                 pass
             
@@ -1215,14 +1224,20 @@ def force_save_network_settings_dmc4143(controller, ip_address: str) -> Dict[str
         # Method 2: Try MG _IP command (may not work on DMC-4143)
         if not verification_success:
             try:
-                # MG _IP not supported on DMC-4143, skip IP query
-                current_ip_mg = "Not supported on DMC-4143"
-                results['debug_info'].append(f"Verification MG _IP command: '{current_ip_mg}'")
-                if current_ip_mg and not current_ip_mg.startswith('?') and current_ip_mg.strip() == ip_address:
-                    verification_success = True
-                    results['debug_info'].append("IP verification successful via MG _IP command")
+                # Get IP address using the new helper method
+                if hasattr(controller, 'get_current_ip'):
+                    current_ip_mg = controller.get_current_ip()
+                    if current_ip_mg:
+                        results['debug_info'].append(f"Verification via connection IP: '{current_ip_mg}'")
+                        if current_ip_mg.strip() == ip_address:
+                            verification_success = True
+                            results['debug_info'].append("IP verification successful via connection IP")
+                    else:
+                        results['debug_info'].append("No IP available from connection")
+                else:
+                    results['debug_info'].append("Controller does not support get_current_ip method")
             except Exception as e:
-                results['debug_info'].append(f"MG _IP verification failed: {str(e)}")
+                results['debug_info'].append(f"IP verification failed: {str(e)}")
         
         # Note: Subnet mask verification skipped - only IP address is configured on controller
         results['debug_info'].append("ℹ️  Subnet mask verification skipped - only IP address is configured on controller")
@@ -1476,8 +1491,15 @@ def get_controller_network_status(controller) -> Dict[str, any]:
     try:
         # Get IP address
         try:
-            # MG _IP not supported on DMC-4143, skip IP query
-            status['ip_address'] = "Not supported on DMC-4143"
+            # Get IP address using the new helper method
+            if hasattr(controller, 'get_current_ip'):
+                ip = controller.get_current_ip()
+                if ip:
+                    status['ip_address'] = ip
+                else:
+                    status['ip_address'] = "N/A (serial or unknown)"
+            else:
+                status['ip_address'] = "N/A (serial or unknown)"
         except:
             pass
         
@@ -2028,7 +2050,7 @@ class ControllerConnectionManager:
             while self.connection_monitoring and self.controller:
                 try:
                     # Send a simple heartbeat command
-                    response = self.controller.send_command("TP A")
+                    response = self.controller.send_command("TPA")
                     if response and response.strip() != "?":
                         self.last_heartbeat = time.time()
                         time.sleep(2)  # Check every 2 seconds
@@ -2052,7 +2074,12 @@ class ControllerConnectionManager:
         """Stop monitoring the connection health"""
         self.connection_monitoring = False
         if self.connection_thread and self.connection_thread.is_alive():
-            self.connection_thread.join(timeout=1.0)
+            # Safe thread join to prevent "cannot join current thread" error
+            try:
+                if self.connection_thread is not threading.current_thread():
+                    self.connection_thread.join(timeout=1.0)
+            except:
+                pass
     
     def _attempt_reconnect(self):
         """Attempt to reconnect to the controller"""

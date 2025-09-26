@@ -1,6 +1,7 @@
 # diag_axis.py
 from dataclasses import dataclass
 from typing import Optional, Tuple
+import re
 
 @dataclass
 class AxisInfo:
@@ -14,15 +15,23 @@ def _parse_tc_number(tc_text: str) -> Optional[int]:
     """Parse TC error code number from TC response"""
     # tc_text examples: "0" or "119 Not valid for axis configured as stepper"
     try:
-        return int(str(tc_text).strip().split()[0])
+        # Extract first numeric token from TC response
+        match = re.match(r'(\d+)', str(tc_text).strip())
+        if match:
+            return int(match.group(1))
+        return None
     except Exception:
         return None
 
 def read_motor_type(io, axis: str) -> Optional[float]:
     """Read motor type for axis - try operand first, then MT ? fallback"""
+    # Validate axis parameter
+    if not axis or not re.match(r'^[A-H]$', axis.upper()):
+        return None
+    
     # Try operand first (preferred)
     try:
-        return io.num(f"MG _MT{axis}")
+        return io.num(f"MG _MT{axis.upper()}")
     except Exception:
         pass
     # Fallback: MT ? returns a list; pick last numeric token via io.num()
@@ -49,18 +58,24 @@ def safe_enable_if_needed(io, axis: str, mode: str) -> Tuple[bool, str]:
     - Stepper: skip SH (not valid), just return enabled=True logically
     - Unknown: attempt SH once; decode TC if it fails
     """
+    # Validate axis parameter
+    if not axis or not re.match(r'^[A-H]$', axis.upper()):
+        return False, f"Invalid axis '{axis}'. Must be A-H."
+    
+    axis_upper = axis.upper()
+    
     if mode == "stepper":
         # SH not required/valid; motion commands will still work.
         return True, "Stepper: skipping SH."
     
     try:
         # Clear any latched amp faults before SH
-        io.mo(axis)
+        io.mo(axis_upper)
         io.clear_amp_latched()
-        io.sh(axis)  # may raise -> we'll annotate with TC
-        mo = io.i32(f"MG _MO{axis}")
+        io.sh(axis_upper)  # may raise -> we'll annotate with TC
+        mo = io.i32(f"MG _MO{axis_upper}")
         if mo != 0:
-            return False, f"_MO{axis}={mo} after SH (motor off)."
+            return False, f"_MO{axis_upper}={mo} after SH (motor off)."
         return True, "Servo enabled."
     except Exception:
         tc = io.tc_text()

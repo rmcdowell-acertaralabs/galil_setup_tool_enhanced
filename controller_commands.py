@@ -98,7 +98,7 @@ class ControllerCommands:
             mt_all = self.controller.send_command("MT ?").strip()
             self.log(f"MT ? (all axes): {mt_all}")
             
-            mta_single = self.controller.send_command("MTA=?").strip()
+            mta_single = self.controller.send_command("MT A=?").strip()
             self.log(f"MTA=? (axis A only): {mta_single}")
             
             if mt_all != mta_single:
@@ -119,11 +119,11 @@ class ControllerCommands:
         self.log("Testing motion commands...")
         
         motion_commands = [
-            ("PR A=100", "position relative"),
-            ("PA A=100", "position absolute"),
-            ("JG A=100", "jog"),
-            ("BG A", "begin motion"),
-            ("ST A", "stop motion")
+            ("PRA=100", "position relative"),
+            ("PAA=100", "position absolute"),
+            ("JGA=100", "jog"),
+            ("BGA", "begin motion"),
+            ("STA", "stop motion")
         ]
         
         working_commands = []
@@ -320,7 +320,7 @@ class ControllerCommands:
                 
                 # Try a small relative move (100 encoder counts for servo detection)
                 try:
-                    pr_response = self.controller.send_command(f"PR {axis}=100")
+                    pr_response = self.controller.send_command(f"PR{axis}=100")
                     if pr_response == "?":
                         self.log(f"Motor detection: Axis {axis} PR command failed - no motor: {pr_response}")
                         self.controller.send_command(f"MO {axis}")  # Disable servo

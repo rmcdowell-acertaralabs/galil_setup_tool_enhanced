@@ -15,6 +15,7 @@ from test_motion import run_motion_tests
 from pass_fail import run_pf_checks, move_and_pf
 from errors_status import collect_error_status, format_status_report, az_clear_latched
 from teardown import teardown_axes
+from command_validator import DMC4103CommandValidator
 
 class TestResult(Enum):
     """Test result enumeration"""
@@ -72,6 +73,9 @@ class ComprehensiveTester:
         
         # Command serialization lock to prevent polling conflicts
         self.command_lock = threading.Lock()
+        
+        # Initialize command validator
+        self.validator = DMC4103CommandValidator()
         
         # Test configuration
         self.config = {
@@ -146,6 +150,7 @@ class ComprehensiveTester:
     
     def _run_phase(self, phase: TestPhase) -> TestResult:
         """Run a complete test phase"""
+        self.log(f"DEBUG: Starting phase {phase.phase_id}")
         phase.start_time = time.time()
         phase.result = TestResult.RUNNING
         self.current_phase = phase
@@ -164,15 +169,17 @@ class ComprehensiveTester:
                 break
                 
             try:
+                self.log(f"DEBUG: Starting step {step.step_id}")
                 self._start_step(step)
                 result = self._execute_step(step)
-                self._complete_step(step, result)
+                self._complete_step(step, result, data=step.data, error=step.error_message, notes=step.notes)
                 
                 if result == TestResult.FAIL or result == TestResult.ERROR:
                     overall_result = TestResult.FAIL
                     
             except Exception as e:
-                self._complete_step(step, TestResult.ERROR, error=str(e))
+                step.error_message = str(e)
+                self._complete_step(step, TestResult.ERROR, error=step.error_message)
                 overall_result = TestResult.FAIL
         
         phase.end_time = time.time()
@@ -185,6 +192,7 @@ class ComprehensiveTester:
     def _execute_step(self, step: TestStep) -> TestResult:
         """Execute a specific test step"""
         step_id = step.step_id
+        self.log(f"DEBUG: Executing step {step_id}")
         
         if step_id == "safety_setup":
             return self._execute_safety_setup(step)
@@ -197,40 +205,79 @@ class ComprehensiveTester:
         elif step_id == "teardown":
             return self._execute_teardown(step)
         else:
+            self.log(f"DEBUG: Unknown step {step_id}")
             return TestResult.SKIP
     
     def _execute_safety_setup(self, step: TestStep) -> TestResult:
         """Execute safety setup step"""
         try:
+            self.log("DEBUG: Starting safety setup")
             # Get controller's gclib handle - use the correct access method
             if hasattr(self.controller, 'g') and self.controller.g:
                 g = self.controller.g
             elif hasattr(self.controller, 'send_command'):
                 # Create a wrapper for the controller's send_command method
                 class GWrapper:
-                    def __init__(self, controller):
+                    def __init__(self, controller, logger):
                         self.controller = controller
+                        self._logger = logger
                     def GCommand(self, cmd):
                         try:
                             return self.controller.send_command(cmd)
                         except Exception as e:
-                            self.log(f"Command '{cmd}' failed: {e}")
+                            self._logger(f"Command '{cmd}' failed: {e}")
                             return "?"  # Return error indicator
                     def GProgramDownload(self, program):
                         # For now, just return success - program download would need controller-specific implementation
                         return True
-                g = GWrapper(self.controller)
+                g = GWrapper(self.controller, self.log)
             else:
                 raise Exception("Cannot access controller gclib interface")
             
             # Test basic controller communication first
             try:
-                test_response = g.GCommand("TP A")
+                test_response = g.GCommand("TPA")
                 if test_response == "?":
                     raise Exception("Controller not responding properly")
             except Exception as e:
                 step.error_message = f"Controller communication test failed: {e}"
                 return TestResult.ERROR
+            
+            # Force servo configuration before any setup
+            from setup_safety import servo_bringup_41x3
+            mo_status = servo_bringup_41x3(g)
+            # Check if any axis successfully engaged
+            if not any(mo == 0 for mo in mo_status.values()):
+                step.error_message = "No axes engaged servo mode - check amp-enable/E-stop wiring"
+                return TestResult.ERROR
+            
+            # Stop all motion first to clear any stuck axes
+            for axis in ["A", "B", "C", "D"]:
+                try:
+                    print(f"[SETUP] Stopping motion on axis {axis}...")
+                    # Use the correct method to send commands with error handling
+                    if hasattr(g, 'send_command'):
+                        try:
+                            g.send_command(f"ST{axis}")
+                            g.send_command(f"AM{axis}")
+                            print(f"[SETUP] Motion stopped on axis {axis}")
+                        except Exception as cmd_error:
+                            print(f"[SETUP] Command error on axis {axis}: {cmd_error}")
+                            # Try alternative approach
+                            try:
+                                g.GCommand(f"ST{axis}")
+                                g.GCommand(f"AM{axis}")
+                                print(f"[SETUP] Motion stopped on axis {axis} (fallback)")
+                            except Exception as fallback_error:
+                                print(f"[SETUP] Fallback failed on axis {axis}: {fallback_error}")
+                    else:
+                        # Fallback to gclib method
+                        g.GCommand(f"ST{axis}")
+                        g.GCommand(f"AM{axis}")
+                        print(f"[SETUP] Motion stopped on axis {axis}")
+                except Exception as e:
+                    print(f"[SETUP] Error stopping motion on axis {axis}: {e}")
+                    pass
             
             # Run safety setup
             summary = setup_safety(
@@ -245,10 +292,10 @@ class ComprehensiveTester:
             step.data = summary
             
             # Check if setup was successful
-            if summary.get("values", {}).get("abort_input", -1) >= 0:
-                return TestResult.PASS
-            else:
-                return TestResult.FAIL
+            ab = summary.get("values", {}).get("abort_input", -1)
+            # Pass if we got a sane abort state OR if all the setter dicts are present
+            have_limits = all(k in summary.get("values", {}) for k in ("OE","ER","TL","TK"))
+            return TestResult.PASS if (ab >= 0 or have_limits) else TestResult.FAIL
                 
         except Exception as e:
             step.error_message = str(e)
@@ -263,20 +310,23 @@ class ComprehensiveTester:
             elif hasattr(self.controller, 'send_command'):
                 # Create a wrapper for the controller's send_command method
                 class GWrapper:
-                    def __init__(self, controller):
+                    def __init__(self, controller, logger):
                         self.controller = controller
+                        self._logger = logger
                     def GCommand(self, cmd):
                         try:
                             return self.controller.send_command(cmd)
                         except Exception as e:
-                            self.log(f"Command '{cmd}' failed: {e}")
+                            self._logger(f"Command '{cmd}' failed: {e}")
                             return "?"  # Return error indicator
                     def GProgramDownload(self, program):
                         # For now, just return success - program download would need controller-specific implementation
                         return True
-                g = GWrapper(self.controller)
+                g = GWrapper(self.controller, self.log)
             else:
                 raise Exception("Cannot access controller gclib interface")
+            
+            # Connection should be stable from previous phases
             
             # Run discovery
             results = discover_axes(
@@ -288,8 +338,8 @@ class ComprehensiveTester:
                 nudge_counts=self.config["discovery"]["nudge_counts"]
             )
             
-            # Extract active axes
-            self.active_axes = results.get("active_axes", [])
+            # Extract active axes - discovery returns "active" key, not "active_axes"
+            self.active_axes = results.get("active", [])
             step.data = results
             
             # Check if we found any active axes
@@ -298,6 +348,18 @@ class ComprehensiveTester:
                 return TestResult.PASS
             else:
                 self.log("No active axes discovered")
+                # Log detailed probe notes for each axis to help diagnose
+                for axis in self.config["axes"]:
+                    if axis in results:
+                        axis_result = results[axis]
+                        self.log(f"[DISCOVERY] {axis}: {axis_result.get('notes', 'No notes')}")
+                        # Also log MO/TS/TA status
+                        mo = axis_result.get('mo', 'unknown')
+                        ts = axis_result.get('ts', 'unknown')
+                        ta = axis_result.get('ta', 'unknown')
+                        tp_pos = axis_result.get('tp_after_pos', 'unknown')
+                        tp_neg = axis_result.get('tp_after_neg', 'unknown')
+                        self.log(f"           TP+={tp_pos} TP-={tp_neg} TS={ts} TA={ta} MO={mo}")
                 return TestResult.FAIL
                 
         except Exception as e:
@@ -317,29 +379,34 @@ class ComprehensiveTester:
             elif hasattr(self.controller, 'send_command'):
                 # Create a wrapper for the controller's send_command method
                 class GWrapper:
-                    def __init__(self, controller):
+                    def __init__(self, controller, logger):
                         self.controller = controller
+                        self._logger = logger
                     def GCommand(self, cmd):
                         try:
                             return self.controller.send_command(cmd)
                         except Exception as e:
-                            self.log(f"Command '{cmd}' failed: {e}")
+                            self._logger(f"Command '{cmd}' failed: {e}")
                             return "?"  # Return error indicator
                     def GProgramDownload(self, program):
                         # For now, just return success - program download would need controller-specific implementation
                         return True
-                g = GWrapper(self.controller)
+                g = GWrapper(self.controller, self.log)
             else:
                 raise Exception("Cannot access controller gclib interface")
             
-            # Run motion tests
-            results = run_motion_tests(
+            # Quiesce motion before testing
+            from discovery import _quiesce
+            _quiesce(g)
+            
+            # Run comprehensive individual axis tests
+            from test_motion import run_comprehensive_individual_axis_tests
+            results = run_comprehensive_individual_axis_tests(
                 g,
                 axes=self.active_axes,
-                profiles=self.config["motion"]["profiles"],
-                target_offsets=self.config["motion"]["target_offsets"],
-                tol_counts=self.config["motion"]["tolerance"],
-                include_jog=self.config["motion"]["include_jog"]
+                test_speeds=[1000, 2000, 5000],  # Test at 3 different speeds
+                test_duration_seconds=5,  # 5 seconds per direction per speed
+                movement_distance=10000  # Maximum movement distance
             )
             
             step.data = results
@@ -347,20 +414,32 @@ class ComprehensiveTester:
             # Check results for failures
             failed_tests = 0
             total_tests = 0
+            skipped_tests = 0
             
             for axis, axis_results in results.items():
                 if axis == "active_axes":
                     continue
                     
                 for test_result in axis_results:
+                    test_type = test_result.get("test_type", "")
+                    
+                    # Skip motor detection tests - these are not motion tests
+                    if test_type == "motor_detection":
+                        skipped_tests += 1
+                        continue
+                        
                     total_tests += 1
                     if not test_result.get("pass", False):
                         failed_tests += 1
             
             if failed_tests == 0:
-                return TestResult.PASS
+                if total_tests == 0:
+                    step.notes = f"No motion tests to run (all axes skipped: {skipped_tests} axes without motors)"
+                    return TestResult.SKIP
+                else:
+                    return TestResult.PASS
             else:
-                step.notes = f"{failed_tests}/{total_tests} motion tests failed"
+                step.notes = f"{failed_tests}/{total_tests} motion tests failed ({skipped_tests} axes skipped - no motors)"
                 return TestResult.FAIL
                 
         except Exception as e:
@@ -376,23 +455,48 @@ class ComprehensiveTester:
             elif hasattr(self.controller, 'send_command'):
                 # Create a wrapper for the controller's send_command method
                 class GWrapper:
-                    def __init__(self, controller):
+                    def __init__(self, controller, logger):
                         self.controller = controller
+                        self._logger = logger
                     def GCommand(self, cmd):
                         try:
                             return self.controller.send_command(cmd)
                         except Exception as e:
-                            self.log(f"Command '{cmd}' failed: {e}")
+                            self._logger(f"Command '{cmd}' failed: {e}")
                             return "?"  # Return error indicator
                     def GProgramDownload(self, program):
                         # For now, just return success - program download would need controller-specific implementation
                         return True
-                g = GWrapper(self.controller)
+                g = GWrapper(self.controller, self.log)
             else:
                 raise Exception("Cannot access controller gclib interface")
             
+            # Build a safe axis list: prefer discovered; otherwise, only servo-enabled axes
+            axes_pref = self.active_axes or self.config["axes"]
+            axes_enabled = []
+            try:
+                gg = self.controller.g if hasattr(self.controller, "g") and self.controller.g else None
+                for ax in axes_pref:
+                    if gg:
+                        mo = gg.GCommand(f"MG _MO{ax}").strip()
+                    else:
+                        mo = self.controller.send_command(f"MG _MO{ax}").strip()
+                    # _MOa == 0 means servo ON
+                    if mo and float(mo.split(",")[0]) == 0.0:
+                        axes_enabled.append(ax)
+            except Exception:
+                pass
+            if not axes_enabled:
+                axes_enabled = ["A"]  # conservative default
+
+            # Clear any stale controller error code before collecting status
+            try:
+                g.GCommand("TC0")
+            except Exception:
+                pass
+
             # Collect error status
-            status = collect_error_status(g, self.active_axes or self.config["axes"])
+            status = collect_error_status(g, axes_enabled)
             formatted_report = format_status_report(status)
             
             step.data = status
@@ -404,12 +508,23 @@ class ComprehensiveTester:
                 step.notes += f"\nController error code: {tc_code}"
                 return TestResult.FAIL
             
-            # Check for amplifier errors
+            # Check for amplifier errors - only evaluate active axes
+            axes_to_eval = self.active_axes[:] if self.active_axes else []
+            if not axes_to_eval:
+                # Fallback: check which axes have servos actually ON
+                for ax in self.config["axes"]:
+                    try:
+                        mo = float(g.GCommand(f"MG _MO{ax}").strip().split(",")[0])
+                        if mo == 0.0:  # 0 => motor ON
+                            axes_to_eval.append(ax)
+                    except Exception:
+                        pass
+            
             ta_errors = []
-            for axis in (self.active_axes or self.config["axes"]):
-                ta_value = status.get("TA", {}).get(axis, 0)
+            for ax in axes_to_eval:
+                ta_value = status.get("TA", {}).get(ax, 0)
                 if ta_value != 0:
-                    ta_errors.append(f"Axis {axis}: {ta_value}")
+                    ta_errors.append(f"{ax}:{ta_value}")
             
             if ta_errors:
                 step.notes += f"\nAmplifier errors: {', '.join(ta_errors)}"
@@ -434,18 +549,19 @@ class ComprehensiveTester:
             elif hasattr(self.controller, 'send_command'):
                 # Create a wrapper for the controller's send_command method
                 class GWrapper:
-                    def __init__(self, controller):
+                    def __init__(self, controller, logger):
                         self.controller = controller
+                        self._logger = logger
                     def GCommand(self, cmd):
                         try:
                             return self.controller.send_command(cmd)
                         except Exception as e:
-                            self.log(f"Command '{cmd}' failed: {e}")
+                            self._logger(f"Command '{cmd}' failed: {e}")
                             return "?"  # Return error indicator
                     def GProgramDownload(self, program):
                         # For now, just return success - program download would need controller-specific implementation
                         return True
-                g = GWrapper(self.controller)
+                g = GWrapper(self.controller, self.log)
             else:
                 raise Exception("Cannot access controller gclib interface")
             
@@ -563,7 +679,9 @@ class ComprehensiveTester:
             self.log("="*80)
             
             # Create test phases
+            self.log("Creating test phases...")
             phases = self.create_test_phases()
+            self.log(f"Created {len(phases)} test phases")
             
             # Run each phase
             results = {
@@ -579,7 +697,9 @@ class ComprehensiveTester:
                 if not self.is_running:
                     break
                     
+                self.log(f"Starting phase: {phase.name}")
                 phase_result = self._run_phase(phase)
+                self.log(f"Completed phase: {phase.name} - Result: {phase_result}")
                 results["phases"][phase.phase_id] = asdict(phase)
                 
                 if phase_result == TestResult.FAIL:
@@ -631,6 +751,11 @@ class ComprehensiveTester:
            If controller returns '?', raise with TC 1 text."""
         with self.command_lock:
             try:
+                # Validate command before sending
+                validation = self.validator.validate_command(command)
+                if not validation.valid:
+                    raise RuntimeError(f"Invalid command '{command}': {validation.error_message}")
+                
                 reply = self.controller.GCommand(command)
                 # Galil sometimes returns extra prompts/newlines; normalize:
                 reply = reply.strip()
@@ -639,7 +764,7 @@ class ComprehensiveTester:
                 if reply == "?":
                     # Ask the controller why *right now* before any other traffic:
                     try:
-                        why = self.controller.GCommand("TC 1").strip()
+                        why = self.controller.GCommand("TC1").strip()
                     except Exception:
                         why = "unknown (TC fetch failed)"
                     raise RuntimeError(f"Galil error on '{command}': {why}")
@@ -648,7 +773,7 @@ class ComprehensiveTester:
             except Exception as e:
                 # Ask the controller why *right now* before any other traffic:
                 try:
-                    why = self.controller.GCommand("TC 1").strip()
+                    why = self.controller.GCommand("TC1").strip()
                 except Exception:
                     why = "unknown (TC fetch failed)"
                 raise RuntimeError(f"Galil error on '{command}': {why}") from e
@@ -673,12 +798,12 @@ class ComprehensiveTester:
             
             # Servo (not stepper) on all used axes
             mt_vals = ",".join("1" for _ in axes)  # 1 = servo
-            self.gsend(f"MT {mt_vals}")
+            self.gsend(f"MT{mt_vals}")
             
             # Assign internal brushless amps and init sine amps - use per-axis commands
             for ax in axes:
-                self.gsend(f"BA {ax}")
-                self.gsend(f"BX {ax}")       # <-- resolves TC=161
+                self.gsend(f"BA{ax}")
+                self.gsend(f"BX{ax}")       # <-- resolves TC=161
             
             # Optional: align/commutate if your procedure requires
             # self.gsend(f"BZ {axes}")

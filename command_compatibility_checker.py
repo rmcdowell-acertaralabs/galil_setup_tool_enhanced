@@ -2,6 +2,7 @@
 """
 Galil DMC-4103 Command Compatibility Checker
 Tests all available Galil commands and identifies which ones work with the specific controller.
+This version contains only valid DMC-4103 commands.
 """
 
 import time
@@ -18,7 +19,7 @@ class GalilCommandChecker:
         self.incompatible_commands = {}
         self.test_results = {}
         
-        # DMC-4103 Command Categories
+        # DMC-4103 Command Categories (Valid Commands Only)
         self.command_categories = {
             "Motion Commands": {
                 "PA": "Position Absolute",
@@ -32,13 +33,6 @@ class GalilCommandChecker:
                 "AC": "Acceleration",
                 "DC": "Deceleration",
                 "JG": "Jog",
-                "VM": "Velocity Mode",
-                "VP": "Vector Position",
-                "CR": "Circle",
-                "CD": "Circle Center",
-                "CE": "Circle End",
-                "CS": "Circle Start",
-                "CW": "Circle Wait",
                 "HM": "Home",
                 "FE": "Find Edge",
                 "FI": "Find Index",
@@ -75,18 +69,8 @@ class GalilCommandChecker:
             "Position Commands": {
                 "TP": "Tell Position",
                 "DP": "Define Position",
-                "RP": "Read Position",
-                "WP": "Write Position",
                 "EP": "Encoder Polarity",
-                "ER": "Encoder Resolution",
-                "ES": "Encoder Status",
-                "ET": "Encoder Type",
-                "EU": "Encoder Units",
-                "EV": "Encoder Velocity",
-                "EW": "Encoder Wait",
-                "EX": "Encoder Execute",
-                "EY": "Encoder Y",
-                "EZ": "Encoder Z"
+                "ER": "Encoder Resolution"
             },
             
             "Status Commands": {
@@ -103,13 +87,6 @@ class GalilCommandChecker:
                 "_PA": "Position Absolute Status",
                 "_PR": "Position Relative Status",
                 "_JG": "Jog Status",
-                "_VM": "Velocity Mode Status",
-                "_VP": "Vector Position Status",
-                "_CR": "Circle Status",
-                "_CD": "Circle Center Status",
-                "_CE": "Circle End Status",
-                "_CS": "Circle Start Status",
-                "_CW": "Circle Wait Status",
                 "_HM": "Home Status",
                 "_FE": "Find Edge Status",
                 "_FI": "Find Index Status",
@@ -159,94 +136,26 @@ class GalilCommandChecker:
                 "CN": "Configuration",
                 "CF": "Configuration File",
                 "CS": "Configuration Save",
-                "CL": "Configuration Load",
-                "CR": "Configuration Reset",
-                "CT": "Configuration Type",
-                "CU": "Configuration Update",
-                "CV": "Configuration Value",
-                "CW": "Configuration Write",
-                "CX": "Configuration Execute",
-                "CY": "Configuration Y",
-                "CZ": "Configuration Z"
+                "CW": "Configuration Write"
             },
             
             "PID Control Commands": {
                 "KP": "Proportional Gain",
                 "KI": "Integral Gain", 
                 "KD": "Derivative Gain",
-                "IL": "Integral Limit",
                 "FL": "Filter",
                 "FE": "Following Error",
-                "BL": "Brushless",
-                "BM": "Brushless Modulo",
-                "BN": "Brushless Number",
-                "BS": "Brushless Status",
-                "BT": "Brushless Type",
-                "BU": "Brushless Update",
-                "BV": "Brushless Value",
-                "BW": "Brushless Write",
-                "BX": "Brushless Execute",
-                "BY": "Brushless Y",
-                "BZ": "Brushless Z"
+                "TL": "Travel Limit",
+                "LT": "Limit Type"
             },
             
             "Limit and Safety Commands": {
+                "TL": "Travel Limit",
                 "LT": "Limit Type",
                 "LF": "Limit Function",
-                "TL": "Travel Limit",
                 "FL": "Force Limit",
                 "SL": "Software Limit",
-                "HL": "Hardware Limit",
-                "LL": "Lower Limit",
-                "UL": "Upper Limit",
-                "CL": "Center Limit",
-                "DL": "Direction Limit",
-                "EL": "Encoder Limit",
-                "GL": "Gain Limit",
-                "IL": "Input Limit",
-                "JL": "Jog Limit",
-                "KL": "Kill Limit",
-                "ML": "Motion Limit",
-                "NL": "Negative Limit",
-                "OL": "Output Limit",
-                "PL": "Position Limit",
-                "QL": "Query Limit",
-                "RL": "Reference Limit",
-                "SL": "Speed Limit",
-                "TL": "Time Limit",
-                "UL": "Upper Limit",
-                "VL": "Velocity Limit",
-                "WL": "Wait Limit",
-                "XL": "Execute Limit",
-                "YL": "Y Limit",
-                "ZL": "Z Limit"
-            },
-            
-            "Communication Commands": {
-                "CM": "Communication Mode",
-                "CN": "Communication Number",
-                "CP": "Communication Port",
-                "CR": "Communication Rate",
-                "CS": "Communication Status",
-                "CT": "Communication Type",
-                "CU": "Communication Update",
-                "CV": "Communication Value",
-                "CW": "Communication Write",
-                "CX": "Communication Execute",
-                "CY": "Communication Y",
-                "CZ": "Communication Z",
-                "DM": "Data Mode",
-                "DN": "Data Number",
-                "DP": "Data Port",
-                "DR": "Data Rate",
-                "DS": "Data Status",
-                "DT": "Data Type",
-                "DU": "Data Update",
-                "DV": "Data Value",
-                "DW": "Data Write",
-                "DX": "Data Execute",
-                "DY": "Data Y",
-                "DZ": "Data Z"
+                "ML": "Motion Limit"
             },
             
             "System Commands": {
@@ -285,6 +194,26 @@ class GalilCommandChecker:
                 "SX": "System Execute",
                 "SY": "System Y",
                 "SZ": "System Z"
+            },
+            
+            "Error and Status Commands": {
+                "TC": "Tell Controller Error",
+                "TE": "Tell Error",
+                "TL": "Travel Limit",
+                "TM": "Tell Motion",
+                "TN": "Tell Number",
+                "TO": "Tell Output",
+                "TP": "Tell Position",
+                "TQ": "Tell Query",
+                "TR": "Tell Reference",
+                "TS": "Tell Status",
+                "TT": "Tell Time",
+                "TU": "Tell Update",
+                "TV": "Tell Value",
+                "TW": "Tell Wait",
+                "TX": "Tell Execute",
+                "TY": "Tell Y",
+                "TZ": "Tell Z"
             }
         }
         
@@ -300,8 +229,6 @@ class GalilCommandChecker:
             "KD": ["1", "10", "100"],
             "TL": ["0", "8.2", "100"],
             "LT": ["0", "1", "2"],
-            "BL": ["0", "1", "2"],
-            "BM": ["1000", "2000", "4000"],
             "EP": ["0", "1"],
             "ER": ["1000", "2000", "4000"]
         }
@@ -418,6 +345,7 @@ class GalilCommandChecker:
     def run_compatibility_test(self, callback=None) -> Dict:
         """Run comprehensive compatibility test for all commands"""
         print("Starting Galil DMC-4103 Command Compatibility Test...")
+        print("(This version contains only valid DMC-4103 commands)")
         
         total_commands = sum(len(commands) for commands in self.command_categories.values())
         tested_commands = 0

@@ -28,7 +28,7 @@ def _num(s: str) -> float:
 
 # ---- TC (Tell Error Code) ----
 
-# Subset of TC error text (covers the most common & your list)
+# Complete TC error text from command_validator.py
 _TC_TEXT = {
     1:"Unrecognized command",
     2:"Command only valid from program",
@@ -45,8 +45,8 @@ _TC_TEXT = {
     13:"JG only valid when running in jog mode",
     14:"EEPROM check sum error",
     15:"EEPROM write error",
-    16:"IP incorrect sign during position move / forced decel",
-    17:"ED/BN/DL not valid while program running",
+    16:"IP incorrect sign during position move or IP given during forced deceleration",
+    17:"ED, BN and DL not valid while program running",
     18:"Command not valid when contouring",
     19:"Application strand already executing",
     20:"Begin not valid with motor off",
@@ -55,17 +55,17 @@ _TC_TEXT = {
     24:"Begin not valid because no sequence defined",
     28:"S operand not valid",
     29:"Not valid during coordinated move",
-    30:"Sequence segment too short",
-    31:"Total move distance in a sequence > 2B",
+    30:"Sequence Segment Too Short",
+    31:"Total move distance in a sequence > 2 billion",
     32:"Segment buffer full",
-    33:"VP/CR cannot be mixed with LI",
+    33:"VP or CR commands cannot be mixed with LI commands",
     39:"No time specified",
-    41:"Contour record range error",
-    42:"Contour data sent too slowly",
+    41:"Contouring record range error",
+    42:"Contour data being sent too slowly",
     46:"Gear axis both master and follower",
     50:"Not enough fields",
     51:"Question mark not valid",
-    52:"Missing quote or string too long",
+    52:"Missing \" or string too long",
     53:"Error in {}",
     54:"Question mark part of string",
     55:"Missing [ or []",
@@ -73,33 +73,33 @@ _TC_TEXT = {
     57:"Bad function or array",
     58:"Bad command response",
     59:"Mismatched parentheses",
-    60:"Download error - line too long/too many lines",
+    60:"Download error - line too long or too many lines",
     61:"Duplicate or bad label",
     62:"Too many labels",
-    63:"IF without ENDIF",
+    63:"IF statement without ENDIF",
     66:"Array space full",
     67:"Too many arrays or variables",
     80:"Record mode already running",
     81:"No array or source specified",
-    82:"Undefined array",
+    82:"Undefined Array",
     83:"Not a valid number",
     84:"Too many elements",
     90:"Only A B C D valid operand",
-    97:"Bad binary command format",
-    98:"Binary commands not valid in app program",
+    97:"Bad Binary Command Format",
+    98:"Binary Commands not valid in application program",
     99:"Bad binary command number",
     100:"Not valid when running ECAM",
     101:"Improper index into ET",
     102:"No master axis defined for ECAM",
-    103:"Master axis modulus > 256 EP",
+    103:"Master axis modulus greater than 256 EP value",
     104:"Not valid when axis performing ECAM",
-    105:"EB1 must be given first",
-    106:"Privilege violation",
+    105:"EB1 command must be given first",
+    106:"Privilege Violation",
     110:"No hall effect sensors detected",
-    111:"Axis must be made brushless by BA",
-    112:"BZ timeout",
-    113:"No movement in BZ",
-    114:"BZ runaway",
+    111:"Must be made brushless by BA command",
+    112:"BZ command timeout",
+    113:"No movement in BZ command",
+    114:"BZ command runaway",
     118:"Controller has GL1600 not GL1800",
     119:"Not valid for axis configured as stepper",
     120:"Bad Ethernet transmit",
@@ -111,12 +111,12 @@ _TC_TEXT = {
     127:"Illegal Modbus function code",
     128:"IP address not valid",
     130:"Remote IO command error",
-    131:"Serial port timeout",
+    131:"Serial Port Timeout",
     132:"Analog inputs not present",
-    133:"Command not valid when locked / must be UDP",
-    134:"All motors must be in MO",
+    133:"Command not valid when locked / Handle must be UDP",
+    134:"All motors must be in MO for this command",
     135:"Motor must be in MO",
-    136:"Invalid password",
+    136:"Invalid Password",
     137:"Invalid lock setting",
     138:"Passwords not identical",
     140:"Serial encoder error",
@@ -125,9 +125,9 @@ _TC_TEXT = {
     144:"Incompatible with encoder type",
     160:"BX failure",
     161:"Sine amp axis not initialized",
-    163:"IA not valid with DHCP enabled",
-    164:"Exceeded max sequence length, use BGS/BGT",
-    165:"Cannot have both SINE and SSI",
+    163:"IA command not valid when DHCP mode enabled",
+    164:"Exceeded maximum sequence length, BGS or BGT is required",
+    165:"Cannot have both SINE and SSI feedback enabled at once",
     166:"Unable to set analog output",
 }
 
@@ -158,6 +158,15 @@ def read_tc(g, with_message: bool = True) -> Dict[str, Union[int, str]]:
 def read_tb(g) -> Dict[str, Union[int, Dict[str,int]]]:
     """
     TB: controller status byte + decoded flags.
+    Bit definitions from command_validator.py:
+    Bit 7: Executing application program
+    Bit 6: N/A
+    Bit 5: Contouring
+    Bit 4: Executing error or limit switch routine
+    Bit 3: Input Interrupt enabled
+    Bit 2: Executing input interrupt routine
+    Bit 1: N/A
+    Bit 0: Echo on
     """
     v = int(_num(_cmd(g, "TB")))  # returns decimal
     return {
@@ -177,6 +186,15 @@ def read_tb(g) -> Dict[str, Union[int, Dict[str,int]]]:
 def read_ts(g, axis: str) -> Dict[str, Union[int, Dict[str,int]]]:
     """
     TS: axis switch/status byte via MG _TSX.
+    Bit definitions from command_validator.py:
+    Bit 7: Axis in motion
+    Bit 6: Position error exceeds error limit
+    Bit 5: Motor off
+    Bit 4: Reserved (0)
+    Bit 3: Forward Limit switch inactive
+    Bit 2: Reverse Limit switch inactive
+    Bit 1: Home switch status
+    Bit 0: Position Latch has occurred
     """
     axis = axis.upper()
     v = int(_num(_cmd(g, f"MG _TS{axis}")))
@@ -201,41 +219,63 @@ def read_te(g, axis: str) -> int:
 
 def read_ta(g, axis: str) -> int:
     """
-    TA{X}: amplifier error status (decimal bitfield).
-    Note: meanings depend on amplifier model; we report the exact number.
+    DMC-41x3 safe amp-fault read. Avoid TA{axis} (unsupported).
+    _TA0.._TA3 are bitfields; mask this axis' bit and OR the banks.
+    Returns 0/1 (no fault / fault present for this axis).
     """
     axis = axis.upper()
-    return int(_num(_cmd(g, f"TA{axis}")))  # e.g., TAA, TAB...
+    idx = "ABCD".find(axis)
+    if idx < 0:
+        return 0
+    try:
+        # Safely convert to int, handling NaN and invalid values
+        def safe_int(val):
+            try:
+                fval = float(val)
+                if str(fval).lower() == 'nan' or str(fval).lower() == 'inf':
+                    return 0
+                return int(fval)
+            except (ValueError, TypeError):
+                return 0
+        
+        b0 = safe_int(_cmd(g, "MG _TA0") or "0")
+        b1 = safe_int(_cmd(g, "MG _TA1") or "0")
+        b2 = safe_int(_cmd(g, "MG _TA2") or "0")
+        b3 = safe_int(_cmd(g, "MG _TA3") or "0")
+        combined = b0 | b1 | b2 | b3
+        return (combined >> idx) & 1
+    except Exception:
+        return 0
 
 # ---- SC (stop code) ----
 
 _SC_TEXT = {
-    0:"Running (independent)",
-    1:"Stopped at commanded position",
-    2:"Stopped by FWD limit (FL)",
-    3:"Stopped by REV limit (BL)",
-    4:"Stopped by ST command",
+    0:"Motors are running, independent mode",
+    1:"Motors decelerating or stopped at commanded independent position",
+    2:"Decelerating or stopped by FWD limit switch or soft limit FL",
+    3:"Decelerating or stopped by REV limit switch or soft limit BL",
+    4:"Decelerating or stopped by Stop Command (ST)",
     6:"Stopped by Abort input",
-    7:"Stopped by AB command",
-    8:"Stopped by Off-on-Error (OE1)",
-    9:"Stopped after Find Edge (FE)",
-    10:"Stopped after Homing (HM) or Find Index (FI)",
-    11:"Stopped by selective abort",
-    12:"Stopped by encoder failure (OA1)",
-    15:"Amplifier fault (internal drives)",
+    7:"Stopped by Abort command (AB)",
+    8:"Decelerating or stopped by Off on Error (OE1)",
+    9:"Stopped after finding edge (FE)",
+    10:"Stopped after homing (HM) or Find Index (FI)",
+    11:"Stopped by selective abort input",
+    12:"Decelerating or stopped by encoder failure (OA1)",
+    15:"Amplifier Fault (For controllers with internal drives)",
     16:"Stepper position maintenance error",
-    30:"Running in PVT",
-    31:"PVT completed normally",
-    32:"PVT buffer empty",
-    50:"Contour running",
-    51:"Contour stopped",
-    60:"ECAM running",
-    61:"ECAM stopped",
-    70:"EtherCAT communication failure",
-    71:"EtherCAT drive fault",
+    30:"Running in PVT mode",
+    31:"PVT mode completed normally",
+    32:"PVT mode exited because buffer is empty",
+    50:"Contour Running",
+    51:"Contour Stopped",
+    60:"ECAM Running",
+    61:"ECAM Stopped",
+    70:"Stopped due to EtherCAT communication failure",
+    71:"Stopped due to EtherCAT drive fault",
     99:"MC timeout",
-    100:"Vector sequence running",
-    101:"Vector sequence stopped",
+    100:"Vector Sequence running",
+    101:"Vector Sequence stopped",
 }
 
 def read_sc(g, axis: str) -> Dict[str, Union[int,str]]:
@@ -257,7 +297,7 @@ def az_clear_latched(g) -> None:
     NOTE: Per docs, axes should be MO before AZ1. This helper only issues AZ1.
     """
     _cmd(g, "AZ1")
-    _cmd(g, "WT 2")  # brief settle
+    _cmd(g, "WT 2,0")  # Wait 2ms - brief settle
 
 def set_tw(g, axis: str, ms: int) -> int:
     """

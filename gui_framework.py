@@ -11,6 +11,7 @@ import threading
 import time
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple, Any
+from command_validator import DMC4103CommandValidator, CommandValidation
 
 class GUIFramework:
     """Class containing all GUI framework functions"""
@@ -45,6 +46,9 @@ class GUIFramework:
         # Auto-update state
         self.auto_update_running = False
         self.auto_update_thread = None
+        
+        # Command validator
+        self.command_validator = DMC4103CommandValidator()
         
     def _default_log(self, message: str):
         """Default logging function if no callback provided"""
@@ -1141,11 +1145,41 @@ class GUIFramework:
         main_app.motor_tuning_command_entry.pack(side='left', padx=(10, 10))
         main_app.motor_tuning_command_entry.bind('<Return>', lambda e: main_app.send_motor_tuning_command())
         
+        # Add real-time command validation
+        def validate_motor_tuning_command(*args):
+            command = main_app.motor_tuning_command_entry.get().strip()
+            if command:
+                validation = self.validate_command(command)
+                self.show_command_validation_feedback(validation, main_app.motor_tuning_command_entry)
+            else:
+                self.clear_command_validation_feedback(main_app.motor_tuning_command_entry)
+        
+        main_app.motor_tuning_command_entry.bind('<KeyRelease>', validate_motor_tuning_command)
+        main_app.motor_tuning_command_entry.bind('<FocusOut>', validate_motor_tuning_command)
+        
         main_app.send_motor_tuning_command_btn = tk.Button(cmd_input_frame, text="Send", 
                                             font=("Arial", 10, "bold"),
                                             bg=self.colors['accent_blue'], fg='white',
                                             command=main_app.send_motor_tuning_command)
-        main_app.send_motor_tuning_command_btn.pack(side='left', padx=(0, 10))
+        main_app.send_motor_tuning_command_btn.pack(side='left', padx=(0, 5))
+        
+        # Add help button for command validation
+        def show_motor_tuning_help():
+            command = main_app.motor_tuning_command_entry.get().strip()
+            if command:
+                help_text = self.get_command_help(command)
+                if help_text:
+                    messagebox.showinfo("Command Help", help_text)
+                else:
+                    messagebox.showinfo("Command Help", f"No help available for command: {command}")
+            else:
+                messagebox.showinfo("Command Help", "Enter a command to see help information")
+        
+        help_btn = tk.Button(cmd_input_frame, text="?", 
+                           font=("Arial", 10, "bold"),
+                           bg=self.colors['accent_green'], fg='white',
+                           command=show_motor_tuning_help)
+        help_btn.pack(side='left', padx=(0, 10))
         
         main_app.clear_motor_tuning_commands_btn = tk.Button(cmd_input_frame, text="Clear", 
                                               font=("Arial", 10, "bold"),
@@ -1931,12 +1965,42 @@ class GUIFramework:
         main_app.command_entry.pack(side='left', padx=(10, 10))
         main_app.command_entry.insert(0, "TP")
         
+        # Add real-time command validation
+        def validate_test_command(*args):
+            command = main_app.command_entry.get().strip()
+            if command:
+                validation = self.validate_command(command)
+                self.show_command_validation_feedback(validation, main_app.command_entry)
+            else:
+                self.clear_command_validation_feedback(main_app.command_entry)
+        
+        main_app.command_entry.bind('<KeyRelease>', validate_test_command)
+        main_app.command_entry.bind('<FocusOut>', validate_test_command)
+        
         # Send command button
         send_btn = tk.Button(command_input_frame, text="Send Command", 
                             font=("Arial", 10, "bold"),
                             bg=self.colors['accent_blue'], fg='white',
                             command=main_app.send_test_command)
-        send_btn.pack(side='left')
+        send_btn.pack(side='left', padx=(0, 5))
+        
+        # Add help button for command validation
+        def show_test_command_help():
+            command = main_app.command_entry.get().strip()
+            if command:
+                help_text = self.get_command_help(command)
+                if help_text:
+                    messagebox.showinfo("Command Help", help_text)
+                else:
+                    messagebox.showinfo("Command Help", f"No help available for command: {command}")
+            else:
+                messagebox.showinfo("Command Help", "Enter a command to see help information")
+        
+        help_btn = tk.Button(command_input_frame, text="?", 
+                           font=("Arial", 10, "bold"),
+                           bg=self.colors['accent_green'], fg='white',
+                           command=show_test_command_help)
+        help_btn.pack(side='left')
         
         # Controller testing page complete
         # Update scroll region
@@ -2068,3 +2132,36 @@ class GUIFramework:
                 print(f"DEBUG: Persistent log text widget not available: {message}")
         except Exception as e:
             print(f"DEBUG: Error logging message '{message}': {e}")
+    
+    def validate_command(self, command: str) -> CommandValidation:
+        """Validate a command using the DMC4103CommandValidator"""
+        return self.command_validator.validate_command(command)
+    
+    def get_command_help(self, command: str) -> str:
+        """Get help text for a command"""
+        return self.command_validator.get_command_help(command)
+    
+    def validate_motor_setup_sequence(self, commands: List[str]) -> List[CommandValidation]:
+        """Validate a sequence of motor setup commands"""
+        return self.command_validator.validate_motor_setup_sequence(commands)
+    
+    def show_command_validation_feedback(self, validation: CommandValidation, entry_widget=None):
+        """Show validation feedback in the UI"""
+        if validation.is_valid:
+            # Command is valid - show success feedback
+            if entry_widget:
+                entry_widget.configure(bg='lightgreen')
+            if validation.warning_message:
+                self.log_message(f"Command valid with warning: {validation.warning_message}")
+        else:
+            # Command is invalid - show error feedback
+            if entry_widget:
+                entry_widget.configure(bg='lightcoral')
+            self.log_message(f"Command validation error: {validation.error_message}")
+            if validation.suggestion:
+                self.log_message(f"Suggestion: {validation.suggestion}")
+    
+    def clear_command_validation_feedback(self, entry_widget):
+        """Clear validation feedback styling from entry widget"""
+        if entry_widget:
+            entry_widget.configure(bg='white')

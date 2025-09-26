@@ -31,6 +31,9 @@ from typing import Dict, List, Optional, Tuple, Any, Callable
 from dataclasses import dataclass, asdict
 from enum import Enum
 
+# Import command validation
+from command_validator import DMC4103CommandValidator, CommandValidation
+
 # Configure logging - Use WARNING level to reduce noise
 logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
@@ -100,6 +103,9 @@ class GalilDiagnostics:
         self.stop_requested = False
         self.detected_axes = []  # List of axes with detected motors
         
+        # Initialize command validator
+        self.command_validator = DMC4103CommandValidator()
+        
         # Test parameters (adjustable based on safe_mode)
         self.test_params = {
             'low_speed': 10000 if safe_mode else 20000,
@@ -123,6 +129,30 @@ class GalilDiagnostics:
         """Detect which axes have motors connected - DISABLED for safety"""
         # Motor detection disabled to prevent controller issues
         return []
+    
+    def validate_test_commands(self, commands: List[str]) -> List[CommandValidation]:
+        """
+        Validate a list of commands before adding them to test steps.
+        
+        Args:
+            commands: List of commands to validate
+            
+        Returns:
+            List of CommandValidation results
+        """
+        return [self.command_validator.validate_command(cmd) for cmd in commands]
+    
+    def get_command_help(self, command: str) -> str:
+        """
+        Get help information for a command.
+        
+        Args:
+            command: Command to get help for
+            
+        Returns:
+            Help string for the command
+        """
+        return self.command_validator.get_command_help(command)
     
     def _initialize_test_categories(self) -> List[TestCategory]:
         """Initialize all test categories with proper DMC-4103 commands"""
@@ -305,10 +335,20 @@ class GalilDiagnostics:
         
         try:
             responses = []
+            validation_errors = []
             
             for i, command in enumerate(step.commands):
                 if self.stop_requested:
                     break
+                
+                # Validate command before execution
+                validation = self.command_validator.validate_command(command)
+                if not validation.valid:
+                    validation_errors.append(f"'{command}': {validation.error_message}")
+                    step.result = TestResult.FAIL
+                    step.actual_response = f"Validation failed: {validation.error_message}"
+                    step.notes = f"Command validation error: {validation.error_message}"
+                    return
                 
                 # Add delay between commands to prevent controller overload
                 if i > 0:
@@ -331,8 +371,11 @@ class GalilDiagnostics:
             step.actual_response = "; ".join(responses)
             step.execution_time = time.time() - step_start_time
             
-            # Basic pass/fail logic (can be enhanced with specific criteria)
-            if step.actual_response and not step.actual_response.startswith('?'):
+            # Enhanced pass/fail logic with validation feedback
+            if validation_errors:
+                step.result = TestResult.FAIL
+                step.notes = f"Validation errors: {'; '.join(validation_errors)}"
+            elif step.actual_response and not step.actual_response.startswith('?'):
                 step.result = TestResult.PASS
             else:
                 step.result = TestResult.FAIL
@@ -348,8 +391,18 @@ class GalilDiagnostics:
         return any(cmd in command.upper() for cmd in motion_commands)
     
     def _send_command(self, command: str) -> str:
-        """Send command to controller with ultra-conservative error handling and rate limiting"""
+        """Send command to controller with validation and ultra-conservative error handling"""
         try:
+            # Validate command before sending
+            validation = self.command_validator.validate_command(command)
+            if not validation.valid:
+                logger.error(f"Invalid command '{command}': {validation.error_message}")
+                return f"?Validation error: {validation.error_message}"
+            
+            # Log warnings if any
+            if validation.warning_message:
+                logger.warning(f"Command warning '{command}': {validation.warning_message}")
+            
             # Ultra-conservative delay before each command
             time.sleep(2.0)  # Increased from 0.5s to 2.0s
             

@@ -2,17 +2,19 @@
 
 ## Table of Contents
 1. [Overview](#overview)
-2. [Features](#features)
-3. [Installation](#installation)
-4. [Usage Guide](#usage-guide)
-5. [Network Configuration](#network-configuration)
-6. [Motor Setup & Control](#motor-setup--control)
-7. [Brushless Motor Configuration](#brushless-motor-configuration)
-8. [Diagnostics & Monitoring](#diagnostics--monitoring)
-9. [File Structure](#file-structure)
-10. [Troubleshooting](#troubleshooting)
-11. [Changelog](#changelog)
-12. [Technical Details](#technical-details)
+2. [Quick Start](#quick-start)
+3. [Features](#features)
+4. [Installation](#installation)
+5. [Usage Guide](#usage-guide)
+6. [Network Configuration](#network-configuration)
+7. [Motor Setup & Control](#motor-setup--control)
+8. [Brushless Motor Configuration](#brushless-motor-configuration)
+9. [Diagnostics & Monitoring](#diagnostics--monitoring)
+10. [Visual Testing Interface](#visual-testing-interface)
+11. [Command Reference Protection](#command-reference-protection)
+12. [Troubleshooting](#troubleshooting)
+13. [Changelog](#changelog)
+14. [Technical Details](#technical-details)
 
 ---
 
@@ -29,6 +31,29 @@ The Galil Setup Tool is a comprehensive GUI application for configuring, testing
 - **Brushless Motor Setup**: Complete brushless motor configuration process
 - **Auto-Connection**: Automatic controller detection and connection
 - **Configuration Management**: Save/load settings with external config file support
+
+---
+
+## Quick Start
+
+### Installation
+
+**Option 1: Python Installation**
+```bash
+git clone https://github.com/rmcdowell-acertaralabs/galil-setup-tool.git
+cd galil-setup-tool
+pip install -r requirements.txt
+python main.py
+```
+
+**Option 2: Executable Installation**
+1. Download the latest release from [Releases](https://github.com/rmcdowell-acertaralabs/galil-setup-tool/releases)
+2. Extract and run `Galil_Setup_Tool.exe`
+
+### System Requirements
+- **OS**: Windows 10/11 (64-bit)
+- **Python**: 3.7 or higher (for Python installation)
+- **Network**: Ethernet connection for controller communication
 
 ---
 
@@ -524,63 +549,184 @@ except Exception as servo_error:
 
 ---
 
-## File Structure
+## Visual Testing Interface
 
-### Current Structure
-```
-galil-setup-tool/
-├── main.py                 # Main GUI application
-├── galil_combined.py       # Combined Galil controller interface and functions
-├── network_combined.py     # Combined network configuration and utilities
-├── config.json            # Default configuration
-├── requirements.txt       # Python dependencies
-├── README.md             # Project documentation
-├── CHANGELOG.md           # Version history
-├── LICENSE                # Project license
-└── assets/                # Static assets
-    └── config.json        # Asset configuration
+### Overview
+The Visual Motor Testing Interface provides a comprehensive, real-time testing experience with progress bars, step-by-step monitoring, and detailed visual feedback. This replaces the previous text-only testing with an interactive, engaging interface.
+
+### Features
+
+#### Visual Progress Tracking
+- **Overall Progress Bar**: Shows total test completion percentage
+- **Individual Step Progress**: Each test phase has its own progress bar
+- **Real-time Updates**: Progress updates as tests run
+- **ETA Calculation**: Estimated time remaining for test completion
+
+#### Step-by-Step Monitoring
+- **5 Test Phases**: Setup, Discovery, Motion Testing, Status Check, Teardown
+- **Visual Status Icons**: ⏳ Pending, 🔄 Running, ✅ Passed, ❌ Failed, ⏭️ Skipped
+- **Detailed Descriptions**: Each step shows what it's doing
+- **Error Reporting**: Clear error messages for failed steps
+
+#### Interactive Controls
+- **Start Test Button**: Begin the comprehensive testing process
+- **Stop Test Button**: Safely stop testing at any time
+- **Reset Button**: Reset all progress and start fresh
+- **Real-time Details**: Live log of what's happening
+
+### Test Phases
+
+#### 1. Setup and Safety 🔧
+- Initialize controller safety systems
+- Configure OE, ER, TL, TK parameters
+- Clear latched amplifier errors
+- Enable enhanced error reporting
+
+#### 2. Axis Discovery 🔍
+- Test each axis (A, B, C, D) for presence
+- Perform small nudge movements
+- Verify encoder feedback
+- Check amplifier status
+
+#### 3. Motion Testing 🎯
+- Test motion with multiple speed profiles
+- Verify positioning accuracy
+- Test acceleration/deceleration
+- Optional jog testing
+
+#### 4. Error Status Check ⚠️
+- Verify controller status
+- Check for amplifier errors
+- Validate system health
+- Generate status report
+
+#### 5. Teardown 🛡️
+- Return axes to safe positions
+- Power down motors
+- Clean up resources
+
+### How to Use
+
+#### Starting a Test
+1. Navigate to **"Visual Testing"** in the sidebar
+2. Ensure controller is connected
+3. Click **"🚀 Start Test"** button
+4. Watch real-time progress and details
+
+#### During Testing
+- **Progress bars** show completion percentage
+- **Status icons** indicate current state
+- **Details log** shows what's happening
+- **ETA** estimates time remaining
+
+#### Stopping a Test
+- Click **"⏹ Stop Test"** to safely stop
+- Test will complete current step and stop
+- Results are preserved for review
+
+#### Resetting
+- Click **"🔄 Reset"** to clear all progress
+- Returns to initial state
+- Ready for new test
+
+### Benefits
+
+#### For Users
+- **Visual Feedback**: See exactly what's happening during testing
+- **Progress Tracking**: Know how long tests will take
+- **Real-Time Monitoring**: Immediate feedback on test status
+- **Professional Interface**: Engaging, modern testing experience
+
+#### For Testing
+- **Same Comprehensive Coverage**: All motor systems tested
+- **Enhanced Monitoring**: Real-time progress and status updates
+- **Better Error Visibility**: Clear indication of issues as they happen
+- **Improved User Experience**: Engaging visual interface
+
+---
+
+## Command Reference Protection
+
+The `command_validator.py` file contains the complete DMC-4103 command reference (lines 1-10715) and should be protected from accidental modification.
+
+### Protection Methods
+
+#### 1. Automatic Protection Script
+Use the `protect_command_ref.py` script to check and restore protected lines:
+
+```bash
+# Check if protected lines were modified
+python protect_command_ref.py check
+
+# Restore protected lines from Git if they were modified
+python protect_command_ref.py restore
 ```
 
-### File Consolidation Benefits
-- **Reduced File Count**: 50% fewer files to manage
-- **Improved Organization**: Related functionality grouped together
-- **Simplified Imports**: Fewer import statements needed
-- **Better Maintainability**: Related code co-located
+#### 2. Manual Protection
+Before making changes to `command_validator.py`:
 
-### Configuration Files
+1. **Check current status:**
+   ```bash
+   git status command_validator.py
+   ```
 
-#### config.json
-```json
-{
-    "ip_address": "10.1.0.21",
-    "jog_speed": 5000,
-    "axis_presets": {
-        "A": {
-            "jog_speed": 128000,
-            "kp": 10.0,
-            "ki": 0.1,
-            "kd": 50.0,
-            "sp": 1024000,
-            "ac": 2560000,
-            "dc": 2560000,
-            "tl": 8.2,
-            "clicks_per_turn": 64000,
-            "turns_per_mm": 0.2
-        }
-    }
-}
+2. **If you accidentally modified lines 1-10715:**
+   ```bash
+   git checkout HEAD -- command_validator.py
+   ```
+
+3. **Then make your changes only to lines after 10715**
+
+### What's Protected
+
+- **Lines 1-10715**: Complete DMC-4103 command reference
+- **Contains**: All command syntax, examples, and documentation
+- **Purpose**: Authoritative reference for all Galil commands
+
+### What You Can Modify
+
+- **Lines after 10715**: Your custom validation logic
+- **Add new functions**: For command validation
+- **Extend functionality**: While preserving the reference
+
+### Best Practices
+
+1. **Always check before committing:**
+   ```bash
+   python protect_command_ref.py check
+   ```
+
+2. **If you need to modify the reference:**
+   - Create a backup first
+   - Document why the change is necessary
+   - Consider if it should be in a separate file
+
+3. **Use the reference as your source of truth:**
+   - All command syntax should match the reference
+   - When in doubt, check lines 1-10715
+
+### Emergency Recovery
+
+If you accidentally modified protected lines:
+
+```bash
+# Restore the entire file from Git
+git checkout HEAD -- command_validator.py
+
+# Or restore just the protected lines
+python protect_command_ref.py restore
 ```
 
-#### External Config File
-The tool can read motor settings from `C:\AMS\config.txt`:
+### Integration with Git
+
+You can add this to your Git workflow:
+
+```bash
+# Add to .git/hooks/pre-commit (optional)
+python protect_command_ref.py check
 ```
-motor_speed = [1024000, 1024000, 1024000, 1024000]
-motor_accel = [2560000, 2560000, 2560000, 2560000]
-motor_decel = [2560000, 2560000, 2560000, 2560000]
-jog_speed = [128000, 128000, 128000, 128000]
-motor_clicksPerTurn = [64000, 64000, 64000, 64000]
-motor_turnsPerMM = [0.2, 0.2, 0.2, 0.2]
-```
+
+This ensures the command reference is never accidentally committed with modifications.
 
 ---
 
@@ -675,54 +821,40 @@ Then power cycle the controller.
 
 ## Changelog
 
-### [1.1.0] - Latest Version
+### [2.2] - Latest Improvements (December 2024)
+- **Enhanced Command Validation**: Improved command validator with comprehensive DMC-4103 command support
+- **Motor Setup Optimization**: Streamlined motor setup process with better error handling
+- **Main Application Updates**: Latest bug fixes and performance improvements in core functionality
+- **Code Quality**: Improved code organization and maintainability
 
-#### Added
-- **Enhanced Diagnostic Reporting**: Comprehensive performance analysis and recommendations
-- **Report Management**: Save, load, and compare diagnostic reports
-- **Data Export**: CSV export for external analysis
-- **GDK Integration**: Direct launch of Galil Development Kit
-- **Real-time Encoder Display**: Live position updates for all axes
-- **Brushless Motor Configuration**: Complete 4-step setup process
-- **Compact Layout**: Scrollable interface with collapsible sections
-- **Auto-Servo Management**: Continuous servo status monitoring
+### [2.1] - Encoder & Visual Testing Enhancements
+- **Always-Visible Encoders**: Encoder displays now always visible with no toggle required
+- **Auto-Start Encoder Updates**: Encoder polling automatically starts in both controller testing and overlay views
+- **Move Button Fixes**: Resolved move button functionality issues with improved error handling
+- **Enhanced Visual Testing**: Comprehensive motor testing with real-time progress bars and status monitoring
+- **Thread-Safe Controller Access**: Improved thread safety for encoder updates and motion commands
+- **Resilient Update Loops**: Encoder loops continue running even when controller is disconnected
+- **Improved Cleanup**: Proper cleanup stops both encoder loops and prevents memory leaks
 
-#### Fixed
-- **Jerky Motor Movement**: Enhanced servo enablement and continuous monitoring
-- **Encoder Updates**: Real-time position updates with automatic start
-- **Error Handling**: Robust widget destruction handling and thread management
-- **Tkinter Crashes**: Proper widget existence checks and thread cleanup
-- **Motion Status Parsing**: Fixed float parsing errors in motion monitoring
-- **Position Reference**: Implemented proper axis homing for absolute positioning
-- **Motor Detection**: Improved detection logic for motors with limited movement
+### [2.0] - Enhanced DMC-4103 Support
+- **Manual Command Interface**: Added direct command input box for sending DMC-4103 commands
+- **Enhanced Motor Detection**: Improved motor detection algorithm with better error handling
+- **Command Reference**: Added comprehensive DMC-4103 command documentation
+- **Network Configuration**: Simplified to focus on IP address setting and burning
+- **Mouse Wheel Support**: Added scroll wheel navigation for all pages
+- **Improved Diagnostics**: Enhanced motor detection with proper timing and verification
+- **Quick Command Buttons**: Pre-configured buttons for common DMC-4103 commands
 
-#### Changed
-- **Code Architecture**: Consolidated multiple modules into combined files
-- **Motion Control**: Improved move_to_position and jog_distance functions
-- **Diagnostics**: Enhanced automatic diagnostics with position accuracy testing
-- **Configuration**: Updated default settings and external config file support
-- **Documentation**: Comprehensive documentation with installation and usage guides
-
-### [1.0.0] - Initial Release
-
-#### Added
-- **Comprehensive GUI Application**: Complete rewrite with modern Tkinter interface
-- **Network Configuration**: Full IP, subnet mask, gateway, and hostname configuration
-- **Motor Control**: Jogging, absolute/relative positioning, speed control
-- **PID Tuning**: Real-time servo loop tuning with live feedback
-- **Diagnostics System**: Comprehensive motor testing and position accuracy verification
-- **Real-time Monitoring**: Live encoder position display for all 4 axes
-- **Auto-Connection**: Automatic controller detection and connection
-- **Motor Detection**: Intelligent detection of connected motors with movement testing
-- **Position Accuracy**: High-precision positioning with automatic corrections
-- **Configuration Management**: Save/load settings with external config file support
-
-#### Technical Improvements
-- **Motion Monitoring**: Real-time position tracking with progress reporting
-- **Error Recovery**: Graceful handling of connection and motion errors
-- **Performance**: Optimized motion completion detection and position corrections
-- **Reliability**: Robust error handling and recovery mechanisms
-- **User Experience**: Intuitive GUI with clear status indicators and logging
+### Key Improvements
+- **Fixed Encoder Visibility Issues**: Encoders now display continuously without manual toggle
+- **Resolved Move Button Problems**: Motion commands now work reliably with proper error handling
+- **Enhanced Visual Testing Framework**: Real motor testing with progress tracking and status monitoring
+- **Improved Thread Safety**: Better handling of concurrent encoder polling and motion commands
+- **Robust Error Recovery**: System continues functioning even when controller disconnects
+- Fixed motor detection issues with proper motor type setting and timing
+- Enhanced error handling and logging for better troubleshooting
+- Improved user interface with better layout and navigation
+- Added real-time command response display with timestamps
 
 ---
 
@@ -774,8 +906,8 @@ The tool uses standard Galil commands:
 - Use test buttons to verify functionality
 
 ### Version Information
-- **Version**: 1.1.0
-- **Build Date**: August 2025
+- **Version**: 2.2
+- **Build Date**: December 2024
 - **Python Version**: 3.8+
 - **Compatibility**: Windows 10/11 (64-bit)
 

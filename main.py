@@ -12,6 +12,14 @@ import socket
 import re
 from typing import Dict, List, Optional, Tuple, Any
 
+def safe_join(t, timeout=None):
+    """Thread join guard to kill the 'cannot join current thread' error"""
+    if not t: return
+    if t is threading.current_thread():  # never join yourself
+        return
+    try: t.join(timeout=timeout)
+    except: pass
+
 # Import our custom modules
 from network_combined import (
     discover_galil_controllers, ping_controller, validate_ip_address,
@@ -28,6 +36,53 @@ from controller_commands import ControllerCommands
 from gui_framework import GUIFramework
 from utils import LoggingUtils, estimate_bm_from_movement, calculate_motion_parameters, validate_motion_parameters
 from comprehensive_testing import ComprehensiveTester
+
+def _parse_first_number(s: str) -> Optional[int]:
+    """Helper to parse first number from Galil response"""
+    s = (s or "").strip()
+    try:
+        # Galil can return floats; keep counts as int
+        return int(float(s.split(',')[0]))
+    except Exception:
+        return None
+
+class EncoderPanelUpdater:
+    def __init__(self, root, controller, set_field):
+        """
+        set_field(axis, text) -> writes to UI entries
+        """
+        self.root = root
+        self.controller = controller
+        self.set_field = set_field
+        self._after_id = None
+        self._period_ms = 100  # 10 Hz is plenty
+
+    def start(self):
+        if self._after_id is None:
+            self._tick()
+
+    def stop(self):
+        if self._after_id is not None:
+            self.root.after_cancel(self._after_id)
+            self._after_id = None
+
+    def _tick(self):
+        # read A..D robustly; if any read fails, leave prior text alone
+        if not self.controller:
+            # Controller not available, stop the loop
+            self._after_id = None
+            return
+            
+        for ax in ("A", "B", "C", "D"):
+            try:
+                # use direct TP{ax} command for DMC-4143 compatibility
+                val = _parse_first_number(self.controller.send_command(f"TP{ax}"))
+                if val is not None:
+                    self.set_field(ax, str(val))
+            except Exception:
+                # don't crash the loop
+                pass
+        self._after_id = self.root.after(self._period_ms, self._tick)
 
 class GalilSetupApp:
     def __init__(self, root):
@@ -55,6 +110,9 @@ class GalilSetupApp:
         
         # Initialize comprehensive tester
         self.comprehensive_tester = None
+        
+        # Initialize encoder updater
+        self._enc_updater = None
         
         # Initialize managers
         self.gui_framework = None  # Will be initialized after colors are set
@@ -1772,7 +1830,7 @@ class GalilSetupApp:
             motion_commands_supported = False
             try:
                 # Test basic motion commands
-                test_pr = self.controller.send_command(f"PR {axis}=100")
+                test_pr = self.controller.send_command(f"PR{axis}=100")
                 test_bg = self.controller.send_command(f"BG {axis}")
                 test_st = self.controller.send_command(f"ST {axis}")
                 
@@ -2002,7 +2060,7 @@ class GalilSetupApp:
                     
                     # First movement
                     self.log_message( "âœ“ Latch: 1\n")
-                    self.controller.send_command(f"PR {axis}=5000")
+                    self.controller.send_command(f"PR{axis}=5000")
                     self.controller.send_command(f"BG{axis}")
                     time.sleep(2.0)
                     self.controller.send_command(f"ST {axis}")
@@ -2014,7 +2072,7 @@ class GalilSetupApp:
                     
                     # Second movement
                     self.log_message( "âœ“ Latch: 2\n")
-                    self.controller.send_command(f"PR {axis}=10000")
+                    self.controller.send_command(f"PR{axis}=10000")
                     self.controller.send_command(f"BG{axis}")
                     time.sleep(2.0)
                     self.controller.send_command(f"ST {axis}")
@@ -2223,49 +2281,49 @@ class GalilSetupApp:
             self.append_test_log("=== TESTING AXIS A SETUP ===")
             
             # Turn off motor
-            self.controller.send_command("MOA")
+            self.controller.send_command("MO A")
             self.append_test_log("MOA (motor off): OK")
             
             # Set motor type to brushless servo
-            self.controller.send_command("MTA=1")
+            self.controller.send_command("MT A=1")
             self.append_test_log("MTA=1 (motor type): OK")
             
             # Set brushless modulo
-            self.controller.send_command("BMA=5000")
+            self.controller.send_command("BM A=5000")
             self.append_test_log("BMA=5000 (brushless modulo): OK")
             
             # Enable servo
-            self.controller.send_command("SHA")
+            self.controller.send_command("SH A")
             self.append_test_log("SHA (servo here): OK")
             
             # Set motion parameters
-            self.controller.send_command("SPA=5000")
+            self.controller.send_command("SP A=5000")
             self.append_test_log("SPA=5000 (speed): OK")
             
-            self.controller.send_command("ACA=2500")
+            self.controller.send_command("AC A=2500")
             self.append_test_log("ACA=2500 (acceleration): OK")
             
-            self.controller.send_command("DCA=2500")
+            self.controller.send_command("DC A=2500")
             self.append_test_log("DCA=2500 (deceleration): OK")
             
             # Set position to zero
-            self.controller.send_command("DPA=0")
+            self.controller.send_command("DP A=0")
             self.append_test_log("DPA=0 (define position): OK")
             
             # Test relative move
-            self.controller.send_command("PRA=1000")
+            self.controller.send_command("PR A=1000")
             self.append_test_log("PRA=1000 (position relative): OK")
             
             # Begin motion
-            self.controller.send_command("BGA")
+            self.controller.send_command("BG A")
             self.append_test_log("BGA (begin motion): OK")
             
             # Wait for motion complete
-            self.controller.send_command("AMA")
+            self.controller.send_command("AM A")
             self.append_test_log("AMA (after motion): OK")
             
             # Check final position
-            tp_response = self.controller.send_command("TPA")
+            tp_response = self.controller.send_command("TP A")
             self.append_test_log(f"TPA (final position): {tp_response}")
             
             self.append_test_log("=== DIAGNOSTIC COMPLETE ===")
@@ -2390,6 +2448,33 @@ class GalilSetupApp:
             self.log_message( "Check your controller model and firmware version.\n\n")
             messagebox.showerror("Save Error", error_msg)
             
+    def _set_encoder_entry_text(self, axis, text):
+        """Set encoder entry text for the robust updater"""
+        if hasattr(self, 'encoder_labels') and self.encoder_labels and axis in self.encoder_labels:
+            try:
+                self.encoder_labels[axis].config(text=text, fg='black')
+            except tk.TclError:
+                # Widget was destroyed, ignore
+                pass
+
+    def _ensure_encoder_update_running(self):
+        """Ensure encoder update is running with robust updater"""
+        # Only start encoder updates if we have a valid controller
+        if self.controller is None:
+            return
+            
+        try:
+            if not hasattr(self, "_enc_updater") or self._enc_updater is None:
+                self._enc_updater = EncoderPanelUpdater(self.root, self.controller, self._set_encoder_entry_text)
+            
+            # Only start if not already running
+            if self._enc_updater and self._enc_updater._after_id is None:
+                self._enc_updater.start()
+        except Exception as e:
+            # Log the error but don't crash
+            print(f"Warning: Could not start encoder updates: {e}")
+            pass
+
     def update_encoder_positions(self):
         """Update the encoder position display for all axes with real-time data"""
         # Check if encoder labels exist (widgets might be destroyed)
@@ -2421,7 +2506,7 @@ class GalilSetupApp:
                     try:
                         # Use TP command to get real encoder position (TP = Tell Position)
                         # This is the standard Galil command for getting axis position
-                        position_response = self.controller.send_command(f"TP {axis}")
+                        position_response = self.controller.send_command(f"TP{axis}")
                         
                         
                         # Handle different response formats
@@ -2580,7 +2665,7 @@ class GalilSetupApp:
             
             # Test controller serial number
             try:
-                serial_response = self.controller.send_command("SN")
+                serial_response = self.controller.send_command("MG _BN")
                 self.log_message( f"Controller Serial: {serial_response.strip()}\n")
             except Exception as e:
                 self.log_message( f"Serial test failed: {str(e)}\n")
@@ -2785,7 +2870,7 @@ class GalilSetupApp:
         """Stop live diagnostic updates"""
         self.live_update_running = False
         if self.live_update_thread:
-            self.live_update_thread.join(timeout=1)
+            safe_join(self.live_update_thread, timeout=1)
             
     def live_diagnostic_loop(self):
         """Live diagnostic update loop"""
@@ -2841,8 +2926,13 @@ class GalilSetupApp:
         self.encoder_start_btn.configure("Stop Encoder Display", bg=self.colors['error_red'])
         
         self.encoder_update_running = True
-        self.encoder_update_thread = threading.Thread(target=self.encoder_update_loop, daemon=True)
-        self.encoder_update_thread.start()
+        t = getattr(self, "encoder_update_thread", None)
+        if t is None or not isinstance(t, threading.Thread) or not t.is_alive():
+            try:
+                self.encoder_update_thread = threading.Thread(target=self.encoder_update_loop, daemon=True)
+                self.encoder_update_thread.start()
+            except Exception:
+                pass
         
     def stop_encoder_display(self):
         """Stop encoder position display"""
@@ -2850,8 +2940,19 @@ class GalilSetupApp:
         self.encoder_update_running = False
         self.encoder_start_btn.configure(" Display", bg=self.colors['success_green'])
         
-        if self.encoder_update_thread:
-            self.encoder_update_thread.join(timeout=1)
+        def safe_join_local(t, timeout=None):
+            """Safe thread join that prevents joining current thread"""
+            if not t: 
+                return
+            if threading.current_thread() is t:  # never join yourself
+                return
+            try:
+                safe_join(t, timeout=timeout)
+            except Exception:
+                pass
+        
+        t = getattr(self, "encoder_update_thread", None)
+        safe_join(t, timeout=0.5)
             
     def encoder_update_loop(self):
         """Legacy encoder position update loop - now disabled to prevent conflicts"""
@@ -3461,7 +3562,7 @@ class GalilSetupApp:
                     self.controller.send_command(f"SP {axis}=5000")
                     self.controller.send_command(f"AC {axis}=5000")
                     self.controller.send_command(f"DC {axis}=5000")
-                    self.controller.send_command(f"PR {axis}=500")
+                    self.controller.send_command(f"PR{axis}=500")
                     self.controller.send_command(f"BG{axis}")
                     time.sleep(0.5)
                     self.controller.send_command(f"ST {axis}")
@@ -3535,12 +3636,12 @@ class GalilSetupApp:
             self.log("Setting up axis B for brushless operation...")
             
             # Stop any motion on B
-            success, response = self.send_command("ABB")
+            success, response = self.send_command("AB B")
             if not success:
                 self.log(f"Warning: Could not abort motion on B: {response}")
             
             # Turn off motor B
-            success, response = self.send_command("MOB")
+            success, response = self.send_command("MO B")
             if not success:
                 self.log(f"Warning: Could not turn off motor B: {response}")
             
@@ -3557,7 +3658,7 @@ class GalilSetupApp:
                 return False
             
             # Set brushless modulo for B
-            success, response = self.send_command("BMB=16000")
+            success, response = self.send_command("BM B=16000")
             if not success:
                 self.log(f"Failed to set BM for B: {response}")
                 return False
@@ -3569,7 +3670,7 @@ class GalilSetupApp:
                 return False
             
             # Enable servo for B
-            success, response = self.send_command("SHB")
+            success, response = self.send_command("SH B")
             if not success:
                 self.log(f"Failed to enable servo for B: {response}")
                 return False
@@ -3598,7 +3699,7 @@ class GalilSetupApp:
             
             # Test motion on axis B
             try:
-                start_pos_b = float(tester.gsend("TPB"))
+                start_pos_b = float(tester.gsend("TP B"))
                 self.log(f"Axis B starting position: {start_pos_b}")
                 
                 # Move axis B
@@ -3664,7 +3765,7 @@ class GalilSetupApp:
             # Test motion on axis B
             self.log("Testing motion on axis B...")
             try:
-                start_pos_b = float(tester.gsend("TPB"))
+                start_pos_b = float(tester.gsend("TP B"))
                 self.log(f"Axis B starting position: {start_pos_b}")
                 
                 # Move axis B
@@ -3710,7 +3811,7 @@ class GalilSetupApp:
             # Stop existing encoder update loop if running
             self.test_encoder_update_running = False
             if hasattr(self, 'test_encoder_update_thread') and self.test_encoder_update_thread.is_alive():
-                self.test_encoder_update_thread.join(timeout=1.0)
+                safe_join(self.test_encoder_update_thread, timeout=1.0)
             
             # Start new encoder update loop with longer intervals to avoid overwhelming controller
             self.test_encoder_update_running = True
@@ -3987,7 +4088,7 @@ class GalilSetupApp:
             
             # Check connection before starting
             try:
-                test_response = self.connection_manager.controller.send_command("TPA")
+                test_response = self.connection_manager.controller.send_command("TP A")
                 cmd_history.insert(tk.END, f"✓ Connection verified: TPA -> {test_response}\n")
                 cmd_history.see(tk.END)
             except Exception as e:
@@ -5203,7 +5304,7 @@ SAFETY:
             
         try:
             # Test basic commands
-            response = self.controller.send_command("TPA")
+            response = self.controller.send_command("TP A")
             self.append_test_log(f"Test command response: {response}")
         except Exception as e:
             self.append_test_log(f"Command test failed: {e}")
@@ -5457,10 +5558,13 @@ SAFETY:
         # Get current settings using DMC-4103 query commands
         try:
             if self.controller:
-                # Query current IP address (returns comma-separated format)
-                # MG _IP not supported on DMC-4143, skip IP query
-                ip_response = "Not supported on DMC-4143"
-                current_ip = ip_response.replace(',', '.') if ip_response and ip_response != '?' else "Unknown"
+                # Get IP address using the new helper method
+                ip = self.controller.get_current_ip()
+                if ip:
+                    current_ip = ip
+                else:
+                    # connected via serial or we couldn't parse; make that clear
+                    current_ip = "N/A (serial or unknown)"
                 
             else:
                 current_ip = "Unknown"
@@ -5599,7 +5703,7 @@ Subnet mask and gateway are handled by your system's network configuration.
             
             # Use a simple test command first to check if controller is responsive
             try:
-                test_response = self.controller.send_command("TPA")
+                test_response = self.controller.send_command("TP A")
                 if not test_response or test_response == '?':
                     # Controller not responsive, show basic info
                     self.show_basic_controller_info()
@@ -5612,10 +5716,13 @@ Subnet mask and gateway are handled by your system's network configuration.
             # Get controller IP address with robust fallbacks
             current_ip = "Unknown"
             try:
-                # MG _IP not supported on DMC-4143, skip IP query
-                ip_resp = "Not supported on DMC-4143"
-                if ip_resp and ip_resp.strip() != '?' and 'timeout' not in str(ip_resp).lower():
-                    current_ip = ip_resp.replace(',', '.').strip()
+                # Get IP address using the new helper method
+                ip = self.controller.get_current_ip()
+                if ip:
+                    current_ip = ip
+                else:
+                    # connected via serial or we couldn't parse; make that clear
+                    current_ip = "N/A (serial or unknown)"
             except Exception:
                 pass
             if current_ip in (None, "", "?", "Unknown"):
@@ -6533,7 +6640,7 @@ IP Address: Cannot read"""
                 self.append_test_log(f"Warning: Could not enable servo for axis {axis}: {e}")
             
             # Move negative
-            self.controller.send_command(f"PR {axis}=-{distance}")
+            self.controller.send_command(f"PR{axis}=-{distance}")
             self.controller.send_command(f"BG {axis}")
             
             self.append_test_log(f"Axis {axis} moving negative {distance} counts")
@@ -6559,7 +6666,7 @@ IP Address: Cannot read"""
                 self.append_test_log(f"Warning: Could not enable servo for axis {axis}: {e}")
             
             # Move positive
-            self.controller.send_command(f"PR {axis}={distance}")
+            self.controller.send_command(f"PR{axis}={distance}")
             self.controller.send_command(f"BG {axis}")
             
             self.append_test_log(f"Axis {axis} moving positive {distance} counts")
@@ -7200,13 +7307,24 @@ IP Address: Cannot read"""
             if hasattr(self, 'test_encoder_update_running'):
                 self.test_encoder_update_running = False
             if hasattr(self, 'test_encoder_update_thread') and self.test_encoder_update_thread.is_alive():
-                self.test_encoder_update_thread.join(timeout=1.0)
+                safe_join(self.test_encoder_update_thread, timeout=1.0)
             
             # Stop auto encoder update loop
             if hasattr(self, 'encoder_update_running'):
                 self.encoder_update_running = False
-            if hasattr(self, 'encoder_update_thread') and self.encoder_update_thread.is_alive():
-                self.encoder_update_thread.join(timeout=1.0)
+            def safe_join(t, timeout=None):
+                """Safe thread join that prevents joining current thread"""
+                if not t: 
+                    return
+                if threading.current_thread() is t:  # never join yourself
+                    return
+                try:
+                    safe_join(t, timeout=timeout)
+                except Exception:
+                    pass
+            
+            t = getattr(self, 'encoder_update_thread', None)
+            safe_join(t, timeout=0.5)
             
             # Stop GUI-based encoder update
             self.stop_encoder_auto_update()
@@ -7308,7 +7426,7 @@ IP Address: Cannot read"""
         """Check if motion commands are supported for the given axis"""
         try:
             # Test basic motion commands
-            test_pr = self.controller.send_command(f"PR {axis}=100")
+            test_pr = self.controller.send_command(f"PR{axis}=100")
             test_bg = self.controller.send_command(f"BG {axis}")
             test_st = self.controller.send_command(f"ST {axis}")
             
@@ -7376,7 +7494,7 @@ IP Address: Cannot read"""
                 
                 try:
                     # Use batch command to get all positions at once (more efficient)
-                    pos_response = self.controller.send_command("TPA;TPB;TPC;TPD")
+                    pos_response = self.controller.send_command("TP A;TP B;TP C;TP D")
                     if pos_response and pos_response.strip():
                         # Parse batch response (format: "posA,posB,posC,posD")
                         positions = [int(x.strip()) for x in pos_response.split(',')]
@@ -7429,9 +7547,22 @@ IP Address: Cannot read"""
                 time.sleep(0.2)  # Short wait before retry
                 
     def _ensure_encoder_update_running(self):
-        """Ensure encoder update is running, raise exception if not"""
-        if not self.test_encoder_update_running:
-            raise RuntimeError("Encoder update not running")
+        """Ensure encoder update is running with robust updater"""
+        # Only start encoder updates if we have a valid controller
+        if self.controller is None:
+            return
+            
+        try:
+            if not hasattr(self, "_enc_updater") or self._enc_updater is None:
+                self._enc_updater = EncoderPanelUpdater(self.root, self.controller, self._set_encoder_entry_text)
+            
+            # Only start if not already running
+            if self._enc_updater and self._enc_updater._after_id is None:
+                self._enc_updater.start()
+        except Exception as e:
+            # Log the error but don't crash
+            print(f"Warning: Could not start encoder updates: {e}")
+            pass
             
     def _validate_encoder_widgets(self):
         """Validate that encoder widgets exist and are accessible"""
@@ -7638,31 +7769,29 @@ IP Address: Cannot read"""
         connected = []
         for axis in axes:
             try:
-                # Test if axis can be enabled (SH command succeeds)
-                # This is the most reliable test for connected motors
-                self.controller.send_command(f"SH {axis}")
-                # If SH succeeds, check if servo actually enabled
-                servo_status = self.controller.send_command(f"MG _MO{axis}").strip()
-                if servo_status == "0.0000":  # Servo enabled (0 = enabled, 1 = disabled)
+                # Use the robust enable_servo_or_explain function
+                from discovery import enable_servo_or_explain
+                ok, note = enable_servo_or_explain(self.controller, axis, autoscan=True)   # first successful run will "learn"
+                if ok:
                     connected.append(axis)
-                    self.append_test_log(f"Axis {axis}: Connected (servo enabled successfully)")
+                    self.append_test_log(f"Axis {axis}: Connected ({note})")
                 else:
-                    self.append_test_log(f"Axis {axis}: Not connected (servo status: {servo_status})")
+                    self.append_test_log(f"Axis {axis}: Not connected - {note}")
                 # Turn off servo after test
                 self.controller.send_command(f"MO {axis}")
             except Exception as e:
-                self.append_test_log(f"Axis {axis}: Not connected (SH command failed: {e})")
+                self.append_test_log(f"Axis {axis}: Not connected (enable failed: {e})")
                 continue
         return connected
 
     def _is_axis_connected(self, axis):
         try:
-            # Test if SH command succeeds (most reliable test)
-            self.controller.send_command(f"SH {axis}")
-            servo_status = self.controller.send_command(f"MG _MO{axis}").strip()
+            # Use the robust enable_servo_or_explain function
+            from discovery import enable_servo_or_explain
+            ok, note = enable_servo_or_explain(self.controller, axis, autoscan=True)   # first successful run will "learn"
             # Turn off after test
             self.controller.send_command(f"MO {axis}")
-            return servo_status == "0.0000"  # 0 = enabled, 1 = disabled
+            return ok
         except Exception:
             return False
 
@@ -8086,12 +8215,10 @@ IP Address: Cannot read"""
                 
     def _auto_start_encoder_updates(self):
         """Auto-start encoder updates when controller connects or page is shown"""
-        if self.controller and not self.test_encoder_update_running:
+        if self.controller:
             try:
-                # Start encoder updates automatically
-                self.test_encoder_update_running = True
-                self.test_encoder_update_thread = threading.Thread(target=self.test_encoder_update_loop, daemon=True)
-                self.test_encoder_update_thread.start()
+                # Use the robust encoder updater
+                self._ensure_encoder_update_running()
                 
                 # Log the auto-start
                 if hasattr(self, 'append_test_log'):
@@ -8115,9 +8242,9 @@ IP Address: Cannot read"""
         # Set default motion parameters for smooth movement
         try:
             # Set conservative motion parameters
-            self.controller.send_command(f"SP {axis}=5000")   # Speed: 5000 counts/sec
-            self.controller.send_command(f"AC {axis}=2500")   # Acceleration: 2500 counts/sec²
-            self.controller.send_command(f"DC {axis}=2500")   # Deceleration: 2500 counts/sec²
+            self.controller.send_command(f"SP{axis}=5000")   # Speed: 5000 counts/sec
+            self.controller.send_command(f"AC{axis}=2500")   # Acceleration: 2500 counts/sec²
+            self.controller.send_command(f"DC{axis}=2500")   # Deceleration: 2500 counts/sec²
             self.append_test_log(f"Default motion parameters set for axis {axis}")
         except Exception as e:
             self.append_test_log(f"Warning: Could not set motion parameters for axis {axis}: {e}")
@@ -8180,12 +8307,12 @@ IP Address: Cannot read"""
             # Stop auto-connect thread
             self.auto_connect_running = False
             if hasattr(self, 'auto_connect_thread') and self.auto_connect_thread.is_alive():
-                self.auto_connect_thread.join(timeout=1.0)
+                safe_join(self.auto_connect_thread, timeout=1.0)
             
             # Stop encoder update thread
             self.test_encoder_update_running = False
             if hasattr(self, 'test_encoder_update_thread') and self.test_encoder_update_thread.is_alive():
-                self.test_encoder_update_thread.join(timeout=2.0)  # Give more time for thread to stop
+                safe_join(self.test_encoder_update_thread, timeout=2.0)  # Give more time for thread to stop
             
             # Stop any ongoing motion
             if self.controller:
@@ -8523,6 +8650,19 @@ IP Address: Cannot read"""
         if not self.controller:
             messagebox.showerror("Error", "No controller connected")
             return
+        
+        # Validate command before sending
+        if hasattr(self, 'gui_framework') and self.gui_framework:
+            validation = self.gui_framework.validate_command(command)
+            if not validation.is_valid:
+                error_msg = f"Command validation failed: {validation.error_message}"
+                if validation.suggestion:
+                    error_msg += f"\nSuggestion: {validation.suggestion}"
+                messagebox.showerror("Command Validation Error", error_msg)
+                return
+            elif validation.warning_message:
+                # Show warning but allow command to proceed
+                self.append_test_log(f"Command warning: {validation.warning_message}")
         
         try:
             # Send command to controller

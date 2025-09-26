@@ -6,12 +6,21 @@ import json
 import os
 import re
 from typing import Dict, List, Optional, Tuple
+from command_validator import DMC4103CommandValidator, CommandValidation
 
 logger = logging.getLogger(__name__)
 
 # Constants
 SERVO_BITS = {"A": 1, "B": 2, "C": 4, "D": 8}
 VALID_AXES = ["A", "B", "C", "D"]
+
+def mg_float(controller, expr: str, default: float = float("nan")) -> float:
+    """Helper function for consistent MG parsing with float conversion"""
+    s = controller.send_command(f"MG {expr}") or ""
+    try:
+        return float(s.strip().split(",")[0])
+    except Exception:
+        return default
 
 # ============================================================================
 # GALIL CONTROLLER INTERFACE CLASS
@@ -20,11 +29,17 @@ VALID_AXES = ["A", "B", "C", "D"]
 class GalilController:
     def __init__(self):
         self.g = None
+        self.connection_addr = None
+        self.last_open_str = None
+        self.last_ip = None
+        self.command_validator = DMC4103CommandValidator()
 
     def connect(self, address):
         try:
             # Creating gclib instance
             self.g = gclib.py()
+            # Store connection address
+            self.connection_addr = address
             # Attempting connection
             
             # For COM ports, add some troubleshooting info
@@ -63,7 +78,15 @@ class GalilController:
                 try:
                     # Trying connection
                     self.g.GOpen(open_str)
-                    # Connection successful
+                    # Connection successful - capture IP immediately
+                    self.last_ip = self._extract_ip(address)
+                    try:
+                        info = self.g.GInfo() or ""
+                        self.last_ip = self._extract_ip(info) or self.last_ip
+                    except Exception:
+                        pass
+                    # Optional debug:
+                    print(f"[GalilController] Connected. Resolved IP: {self.last_ip or 'N/A'}")
                     break
                 except Exception as e:
                     last_error = e
@@ -99,6 +122,9 @@ class GalilController:
             # Test the connection with a simple command that works on DMC-4103
             test_response = self.g.GCommand("TP A")
             # Connection test successful
+            
+            # Store connection info for IP tracking
+            self.last_open_str = open_str
         except Exception as e:
             # Connection failed
             
@@ -133,6 +159,18 @@ class GalilController:
         if command.startswith(".") and ("frame" in command or "canvas" in command or "label" in command):
             raise ValueError(f"Invalid command contains widget reference: {command}")
         
+        # Validate command using DMC-4103 command validator
+        validation = self.command_validator.validate_command(command)
+        if not validation.valid:
+            error_msg = f"Invalid command '{command}': {validation.error_message}"
+            if validation.warning_message:
+                error_msg += f" (Warning: {validation.warning_message})"
+            raise ValueError(error_msg)
+        
+        # Log warning if present but command is valid
+        if validation.warning_message:
+            logger.warning(f"Command '{command}' warning: {validation.warning_message}")
+        
         try:
             # Send command and return response
             response = self.g.GCommand(command)
@@ -146,10 +184,46 @@ class GalilController:
                 self.g = None
             raise
 
+    def validate_command(self, command: str) -> CommandValidation:
+        """
+        Validate a command without sending it to the controller.
+        Returns CommandValidation object with validation results.
+        """
+        return self.command_validator.validate_command(command)
+    
     def disconnect(self):
         if self.g:
             self.g.GClose()
             self.g = None
+
+    @staticmethod
+    def _extract_ip(s: str) -> Optional[str]:
+        m = re.search(r'(?<!\d)(?:\d{1,3}\.){3}\d{1,3}(?!\d)', s or "")
+        if not m:
+            return None
+        ip = m.group(0)
+        try:
+            return ip if all(0 <= int(p) <= 255 for p in ip.split(".")) else None
+        except Exception:
+            return None
+
+    def get_current_ip(self) -> Optional[str]:
+        """Best-effort: return the controller IP if we connected over Ethernet."""
+        if not self.g:
+            return None
+        # 1) what we connected to
+        if self.last_ip:
+            return self.last_ip
+        # 2) ask gclib for connection info
+        try:
+            info = self.g.GInfo() or ""
+            ip = self._extract_ip(info)
+            if ip:
+                self.last_ip = ip
+                return ip
+        except Exception:
+            pass
+        return None
 
 # ============================================================================
 # MOTOR SETUP FUNCTIONS
@@ -176,21 +250,21 @@ def tune_axis(controller, axis, kp, ki, kd):
 
     try:
         # Stop axis
-        controller.send_command(f"ST {axis}")
+        controller.send_command(f"ST{axis}")
 
         # Set PID
-        controller.send_command(f"KP {axis}={kp}")
-        controller.send_command(f"KI {axis}={ki}")
-        controller.send_command(f"KD {axis}={kd}")
+        controller.send_command(f"KP{axis}={kp}")
+        controller.send_command(f"KI{axis}={ki}")
+        controller.send_command(f"KD{axis}={kd}")
 
         # Servo on - use axis letter (no space)
-        controller.send_command(f"SH {axis}")
+        controller.send_command(f"SH{axis}")
 
         # Wait a moment for servo to stabilize
         time.sleep(0.1)
 
         # Stop any existing motion
-        controller.send_command(f"ST {axis}")
+        controller.send_command(f"ST{axis}")
 
         logger.info(f"[TUNE] Axis {axis} tune sequence complete")
     except Exception as e:
@@ -207,19 +281,19 @@ def configure_axis(controller, axis, preset):
         raise ValueError(f"Invalid axis '{axis}'. Must be one of {list(SERVO_BITS.keys())}")
     try:
         if "kp" in preset:
-            controller.send_command(f"KP {axis}={float(preset['kp'])}")
+            controller.send_command(f"KP{axis}={float(preset['kp'])}")
         if "ki" in preset:
-            controller.send_command(f"KI {axis}={float(preset['ki'])}")
+            controller.send_command(f"KI{axis}={float(preset['ki'])}")
         if "kd" in preset:
-            controller.send_command(f"KD {axis}={float(preset['kd'])}")
+            controller.send_command(f"KD{axis}={float(preset['kd'])}")
         if "sp" in preset:
-            controller.send_command(f"SP {axis}={int(float(preset['sp']))}")
+            controller.send_command(f"SP{axis}={int(float(preset['sp']))}")
         if "ac" in preset:
-            controller.send_command(f"AC {axis}={int(float(preset['ac']))}")
+            controller.send_command(f"AC{axis}={int(float(preset['ac']))}")
         if "dc" in preset:
-            controller.send_command(f"DC {axis}={int(float(preset['dc']))}")
+            controller.send_command(f"DC{axis}={int(float(preset['dc']))}")
         if "tl" in preset:
-            controller.send_command(f"TL {axis}={float(preset['tl'])}")
+            controller.send_command(f"TL{axis}={float(preset['tl'])}")
 
         logger.info(f"[CONFIG] Axis {axis} configured with preset {preset}")
     except Exception as e:
@@ -236,21 +310,27 @@ def jog_distance(controller, axis, distance_mm, turns_per_mm, clicks_per_turn, s
     """
     try:
         # Stop any existing motion
-        controller.send_command(f"ST {axis}")
+        controller.send_command(f"ST{axis}")
         time.sleep(0.1)  # Wait for stop to take effect
         
         # Ensure servo is on
-        controller.send_command(f"SH {axis}")
+        controller.send_command(f"SH{axis}")
         time.sleep(0.1)  # Wait for servo to stabilize
         
         # Check servo status
-        servo_status = controller.send_command(f"MG _MO{axis}").strip()
-        if servo_status == "0":
+        try:
+            servo_status = float(controller.send_command(f"MG _MO{axis}").strip().split(',')[0])
+        except Exception:
+            servo_status = 1.0
+        if servo_status == 0.0:
             # Try to enable servo again
-            controller.send_command(f"SH {axis}")
+            controller.send_command(f"SH{axis}")
             time.sleep(0.2)
-            servo_status = controller.send_command(f"MG _MO{axis}").strip()
-            if servo_status == "0":
+            try:
+                servo_status = float(controller.send_command(f"MG _MO{axis}").strip().split(',')[0])
+            except Exception:
+                servo_status = 1.0
+            if servo_status == 0.0:
                 raise RuntimeError(f"Could not enable servo for axis {axis}")
         
         # Use provided acceleration/deceleration or calculate based on speed
@@ -260,31 +340,31 @@ def jog_distance(controller, axis, distance_mm, turns_per_mm, clicks_per_turn, s
             decel = speed * 4  # 4x speed for deceleration
         
         # Apply speed/accel/decel parameters with more conservative fallbacks
-        sp_response = controller.send_command(f"SP {axis}={speed}")
+        sp_response = controller.send_command(f"SP{axis}={speed}")
         if sp_response.strip() == "?":
             # Try more conservative values
             for fallback_speed in [1000, 500, 100]:
-                sp_response = controller.send_command(f"SP {axis}={fallback_speed}")
+                sp_response = controller.send_command(f"SP{axis}={fallback_speed}")
                 if sp_response.strip() != "?":
                     break
             if sp_response.strip() == "?":
                 raise RuntimeError(f"Could not set speed for axis {axis}")
         
-        ac_response = controller.send_command(f"AC {axis}={accel}")
+        ac_response = controller.send_command(f"AC{axis}={accel}")
         if ac_response.strip() == "?":
             # Try more conservative acceleration values
             for fallback_accel in [1000, 500, 100]:
-                ac_response = controller.send_command(f"AC {axis}={fallback_accel}")
+                ac_response = controller.send_command(f"AC{axis}={fallback_accel}")
                 if ac_response.strip() != "?":
                     break
             if ac_response.strip() == "?":
                 raise RuntimeError(f"Could not set acceleration for axis {axis}")
         
-        dc_response = controller.send_command(f"DC {axis}={decel}")
+        dc_response = controller.send_command(f"DC{axis}={decel}")
         if dc_response.strip() == "?":
             # Try more conservative deceleration values
             for fallback_decel in [2000, 1000, 200]:
-                dc_response = controller.send_command(f"DC {axis}={fallback_decel}")
+                dc_response = controller.send_command(f"DC{axis}={fallback_decel}")
                 if dc_response.strip() != "?":
                     break
             if dc_response.strip() == "?":
@@ -295,10 +375,10 @@ def jog_distance(controller, axis, distance_mm, turns_per_mm, clicks_per_turn, s
         counts = int(round(turns * clicks_per_turn))
 
         # Use PR for relative distance move (not JG)
-        response = controller.send_command(f"PR {axis}={counts}")
+        response = controller.send_command(f"PR{axis}={counts}")
         if response.strip() == "?":
             raise RuntimeError(f"Invalid relative move for axis {axis}")
-        response = controller.send_command(f"BG {axis}")
+        response = controller.send_command(f"BG{axis}")
         if response.strip() == "?":
             raise RuntimeError(f"Invalid begin command for axis {axis}")
         
@@ -311,24 +391,30 @@ def move_to_position(controller, axis, position_counts, speed=5000, accel=None, 
     """
     try:
         # Stop any existing motion
-        controller.send_command(f"ST {axis}")
+        controller.send_command(f"ST{axis}")
         time.sleep(0.1)  # Wait for stop to take effect
         
         # Ensure servo is on and stays on
-        controller.send_command(f"SH {axis}")
+        controller.send_command(f"SH{axis}")
         time.sleep(0.2)  # Wait longer for servo to stabilize
         
         # Verify servo is enabled
-        servo_status = controller.send_command(f"MG _MO{axis}").strip()
-        if servo_status == "0":
+        try:
+            servo_status = float(controller.send_command(f"MG _MO{axis}").strip().split(',')[0])
+        except Exception:
+            servo_status = 1.0
+        if servo_status == 0.0:
             # Try to enable servo again with more attempts
             for attempt in range(3):
-                controller.send_command(f"SH {axis}")
+                controller.send_command(f"SH{axis}")
                 time.sleep(0.3)
-                servo_status = controller.send_command(f"MG _MO{axis}").strip()
-                if servo_status != "0":
+                try:
+                    servo_status = float(controller.send_command(f"MG _MO{axis}").strip().split(',')[0])
+                except Exception:
+                    servo_status = 1.0
+                if servo_status != 0.0:
                     break
-            if servo_status == "0":
+            if servo_status == 0.0:
                 raise RuntimeError(f"Could not enable servo for axis {axis}")
         
         # Use provided acceleration/deceleration or calculate based on speed
@@ -338,31 +424,31 @@ def move_to_position(controller, axis, position_counts, speed=5000, accel=None, 
             decel = speed * 4  # 4x speed for deceleration
         
         # Apply speed/accel/decel parameters with more conservative fallbacks
-        sp_response = controller.send_command(f"SP {axis}={speed}")
+        sp_response = controller.send_command(f"SP{axis}={speed}")
         if sp_response.strip() == "?":
             # Try more conservative values
             for fallback_speed in [1000, 500, 100]:
-                sp_response = controller.send_command(f"SP {axis}={fallback_speed}")
+                sp_response = controller.send_command(f"SP{axis}={fallback_speed}")
                 if sp_response.strip() != "?":
                     break
             if sp_response.strip() == "?":
                 raise RuntimeError(f"Could not set speed for axis {axis}")
         
-        ac_response = controller.send_command(f"AC {axis}={accel}")
+        ac_response = controller.send_command(f"AC{axis}={accel}")
         if ac_response.strip() == "?":
             # Try more conservative acceleration values
             for fallback_accel in [1000, 500, 100]:
-                ac_response = controller.send_command(f"AC {axis}={fallback_accel}")
+                ac_response = controller.send_command(f"AC{axis}={fallback_accel}")
                 if ac_response.strip() != "?":
                     break
             if ac_response.strip() == "?":
                 raise RuntimeError(f"Could not set acceleration for axis {axis}")
         
-        dc_response = controller.send_command(f"DC {axis}={decel}")
+        dc_response = controller.send_command(f"DC{axis}={decel}")
         if dc_response.strip() == "?":
             # Try more conservative deceleration values
             for fallback_decel in [2000, 1000, 200]:
-                dc_response = controller.send_command(f"DC {axis}={fallback_decel}")
+                dc_response = controller.send_command(f"DC{axis}={fallback_decel}")
                 if dc_response.strip() != "?":
                     break
             if dc_response.strip() == "?":
@@ -370,25 +456,27 @@ def move_to_position(controller, axis, position_counts, speed=5000, accel=None, 
         
         # Get current position first
         try:
-            current_pos = int(controller.send_command(f"TP {axis}").strip())
+            current_pos = int(controller.send_command(f"TP{axis}").strip())
         except:
             current_pos = 0
         
         # Use absolute positioning (PA) for precise position control
-        pa_response = controller.send_command(f"PA {axis}={position_counts}")
+        pa_response = controller.send_command(f"PA{axis}={position_counts}")
         if pa_response.strip() == "?":
             raise RuntimeError(f"Invalid position command for axis {axis}")
         
-        bg_response = controller.send_command(f"BG {axis}")
+        bg_response = controller.send_command(f"BG{axis}")
         if bg_response.strip() == "?":
             raise RuntimeError(f"Invalid begin command for axis {axis}")
         
         # Wait for motion to complete and ensure servo stays on
         time.sleep(0.1)
-        servo_status = controller.send_command(f"MG _MO{axis}").strip()
-        if servo_status == "0":
-            # Re-enable servo if it got disabled
-            controller.send_command(f"SH {axis}")
+        try:
+            servo_status = float(controller.send_command(f"MG _MO{axis}").strip().split(',')[0])
+            if servo_status != 0.0:
+                controller.send_command(f"SH{axis}")
+        except Exception:
+            pass
             
     except Exception as e:
         raise RuntimeError(f"Move to position error on axis {axis}: {e}")
@@ -403,7 +491,7 @@ def is_axis_available(controller, axis):
     """
     try:
         # Try to read position - this should work if axis is configured
-        response = controller.send_command(f"TP {axis}")
+        response = controller.send_command(f"TP{axis}")
         if response.strip() == "?":
             return False
         return True
@@ -415,7 +503,18 @@ def try_command(controller, label, command, fallback=None):
     Attempts to run a command; returns "Label: value" or None on unsupported/error responses.
     """
     try:
-        resp = controller.send_command(command).strip()
+        # Special case for GInfo() - use gclib method directly
+        if command == "GInfo":
+            if hasattr(controller, 'g') and controller.g:
+                s = controller.g.GInfo() or ""
+                ip = controller._extract_ip(s)
+                return f"{label}: {ip}" if ip else f"{label}: {s.strip()}"
+            else:
+                # Fallback to ID command if gclib connection not available
+                resp = controller.send_command("ID").strip()
+        else:
+            resp = controller.send_command(command).strip()
+            
         if resp in ("?", "ERROR", "error", "Unsupported", ""):
             if fallback:
                 return try_command(controller, label, fallback)
@@ -434,10 +533,10 @@ def get_controller_info(controller):
         ("Serial",              "MG _BN",  None),
         ("All Positions",       "TP",      None),
         ("Torque Command",      "MG _TC",  None),
-        ("Error Code",          "MG _TE",  None),
+        ("Error Code",          "TE",      None),
         ("Limit Switch Status", "MG _LF",  None),
         ("Motion Status",       "MG _BG",  None),
-        ("IP Address",          "Not supported",  None),
+        ("IP Address",          "GInfo",  None),
     ]
 
     out = []
@@ -455,7 +554,7 @@ def get_diagnostics(controller):
     for axis in ("A", "B", "C", "D"):
         # 1) Position on this axis
         try:
-            pos = controller.send_command(f"TP {axis}").strip()
+            pos = controller.send_command(f"TP{axis}").strip()
             lines.append(f"Position {axis}: {pos}")
         except Exception as e:
             lines.append(f"Position {axis}: error {e}")
@@ -543,8 +642,8 @@ def apply_axis_settings_from_config(
         raise ValueError(f"Invalid axis {axis}")
 
     try:
-        controller.send_command(f"ST {axis}")
-        controller.send_command(f"SH {axis}")
+        controller.send_command(f"ST{axis}")
+        controller.send_command(f"SH{axis}")
 
         # Fetch values with safe fallbacks
         speed_val = int(settings.get("motor_speed", [0] * 4)[axis_index]) if settings.get("motor_speed") else None
@@ -552,17 +651,17 @@ def apply_axis_settings_from_config(
         decel_val = int(settings.get("motor_decel", [0] * 4)[axis_index]) if settings.get("motor_decel") else None
 
         if speed_val is not None:
-            resp = controller.send_command(f"SP {axis}={speed_val}")
+            resp = controller.send_command(f"SP{axis}={speed_val}")
             if resp.strip() == "?":
                 raise RuntimeError(f"Controller rejected SP for axis {axis} with value {speed_val}")
 
         if accel_val is not None:
-            resp = controller.send_command(f"AC {axis}={accel_val}")
+            resp = controller.send_command(f"AC{axis}={accel_val}")
             if resp.strip() == "?":
                 raise RuntimeError(f"Controller rejected AC for axis {axis} with value {accel_val}")
 
         if decel_val is not None:
-            resp = controller.send_command(f"DC {axis}={decel_val}")
+            resp = controller.send_command(f"DC{axis}={decel_val}")
             if resp.strip() == "?":
                 raise RuntimeError(f"Controller rejected DC for axis {axis} with value {decel_val}")
     except Exception as e:
@@ -617,7 +716,7 @@ def diagnose_firmware_issue(com_port: str) -> Dict[str, any]:
         # Test 2: Try to get any response from controller
         print(f"Testing controller responsiveness...")
         test_commands = [
-            "TP A",      # Tell Position
+            "TPA",       # Tell Position
             "ID",        # Firmware version and Controller ID
             "ID",        # Controller ID
             "MG _BN",    # Serial number
@@ -740,7 +839,7 @@ class EncoderOverlay:
         # Only try to read position if we're actually connected
         try:
             # TP <axis> needs a space
-            pos_str = self.controller.send_command(f"TP {self.axis}")
+            pos_str = self.controller.send_command(f"TP{self.axis}")
             pos = int(pos_str.strip())
             angle = (pos % self.clicks_per_turn) / self.clicks_per_turn * 2 * math.pi
 

@@ -93,6 +93,96 @@ class GalilIO:
     def ts(self, axis: str) -> int:         
         return self.i32(f"MG _TS{self.norm_axis(axis)}")
 
+    # ---- additional motion commands ----
+    def st(self) -> None:         
+        self.cmd("ST")
+    
+    def dp(self, axis: str, v: int) -> None: 
+        self.cmd(f"DP{self.norm_axis(axis)}={int(v)}")
+    
+    def jg(self, axis: str, v: int) -> None: 
+        self.cmd(f"JG{self.norm_axis(axis)}={int(v)}")
+    
+    def fi(self, axis: str) -> None: 
+        self.cmd(f"FI{self.norm_axis(axis)}")
+
+    # ---- brushless motor commands ----
+    def ba(self, axis: str) -> None: 
+        self.cmd(f"BA{self.norm_axis(axis)}")
+    
+    def bm(self, axis: str, v: int) -> None: 
+        self.cmd(f"BM{self.norm_axis(axis)}={int(v)}")
+    
+    def bx(self, axis: str, v: int) -> None: 
+        self.cmd(f"BX{self.norm_axis(axis)}={int(v)}")
+    
+    def bz(self, axis: str, v: int) -> None: 
+        self.cmd(f"BZ{self.norm_axis(axis)}={int(v)}")
+    
+    def bc(self, axis: str) -> None: 
+        self.cmd(f"BC{self.norm_axis(axis)}")
+    
+    def bi(self, axis: str, v: int) -> None: 
+        self.cmd(f"BI{self.norm_axis(axis)}={int(v)}")
+
+    # ---- encoder and latch commands ----
+    def ce(self, axis: str, v: int) -> None: 
+        self.cmd(f"CE{self.norm_axis(axis)}={int(v)}")
+    
+    def al(self, axis: str) -> None: 
+        self.cmd(f"AL{self.norm_axis(axis)}")
+    
+    def rl(self, axis: str) -> None: 
+        self.cmd(f"RL{self.norm_axis(axis)}")
+
+    # ---- safety and limit commands ----
+    def oe(self, axis: str, v: int) -> None: 
+        self.cmd(f"OE{self.norm_axis(axis)}={int(v)}")
+    
+    def er(self, axis: str, v: int) -> None: 
+        self.cmd(f"ER{self.norm_axis(axis)}={int(v)}")
+    
+    def fl(self, axis: str, v: int) -> None: 
+        self.cmd(f"FL{self.norm_axis(axis)}={int(v)}")
+    
+    def bl(self, axis: str, v: int) -> None: 
+        self.cmd(f"BL{self.norm_axis(axis)}={int(v)}")
+    
+    def sl(self, axis: str, v: int) -> None: 
+        self.cmd(f"SL{self.norm_axis(axis)}={int(v)}")
+
+    # ---- servo tuning commands ----
+    def tl(self, axis: str, v: float) -> None: 
+        self.cmd(f"TL{self.norm_axis(axis)}={float(v)}")
+    
+    def tk(self, axis: str, v: float) -> None: 
+        self.cmd(f"TK{self.norm_axis(axis)}={float(v)}")
+    
+    def of(self, axis: str, v: float) -> None: 
+        self.cmd(f"OF{self.norm_axis(axis)}={float(v)}")
+    
+    def kp(self, axis: str, v: float) -> None: 
+        self.cmd(f"KP{self.norm_axis(axis)}={float(v)}")
+    
+    def ki(self, axis: str, v: float) -> None: 
+        self.cmd(f"KI{self.norm_axis(axis)}={float(v)}")
+    
+    def kd(self, axis: str, v: float) -> None: 
+        self.cmd(f"KD{self.norm_axis(axis)}={float(v)}")
+
+    # ---- system commands ----
+    def rs(self) -> None:         
+        self.cmd("RS")
+    
+    def ab(self) -> None:         
+        self.cmd("AB")
+    
+    def te(self) -> int:         
+        return self.i32("TE")
+    
+    def mt(self, values: str) -> None:         
+        self.cmd(f"MT {values}")
+
     # amplifier status (banks only on 41x3)
     def ta_or(self) -> int:
         return (self.i32("MG _TA0") |
@@ -109,7 +199,7 @@ class GalilIO:
     # latched amp clear (per manual: best when MO)
     def clear_amp_latched(self) -> None:
         self.cmd("AZ1")
-        self.cmd("WT 2")
+        self.cmd("WT 2,0")  # Wait 2ms
 
 def safe_enable(io: GalilIO, axis: str) -> None:
     """Safely enable servo with proper error handling"""

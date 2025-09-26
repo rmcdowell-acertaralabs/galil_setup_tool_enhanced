@@ -25,30 +25,67 @@ def teardown_axes(
 ) -> None:
     """
     Tear-down sequence per axis:
-      1) PA X=0   (command absolute zero)
-      2) BGX      (begin)
-      3) AMX      (wait for profile complete)
-      4) MOX      (optional: motor off)
+      1) Check servo status first
+      2) PA X=0   (command absolute zero) - only for servo-enabled axes
+      3) BGX      (begin) - only for servo-enabled axes
+      4) AMX      (wait for profile complete) - only for servo-enabled axes
+      5) MOX      (optional: motor off) - for all axes
 
     Notes:
       - Assumes absolute 0 is a safe park point for each axis.
-      - No extra commands are issued beyond the four specified.
+      - Skips motion commands for axes with servos not enabled.
     """
     ax_list = _norm_axes(axes)
+    servo_enabled_axes = []
 
-    # 1) Set absolute targets to 0 for all axes
+    # Stop any existing motion first
     for a in ax_list:
-        _cmd(g, f"PA {a}=0")
-
-    # 2) Begin each axis motion
+        try:
+            _cmd(g, f"ST{a}")
+            _cmd(g, f"AM{a}")
+        except:
+            pass
+    
+    # Check servo status for each axis
     for a in ax_list:
-        _cmd(g, f"BG{a}")
+        try:
+            mo_status = _cmd(g, f"MG _MO{a}")
+            # Clean up response - remove carriage returns, newlines, and colons
+            mo_status = mo_status.replace('\r', '').replace('\n', '').replace(':', '') if mo_status else "1"
+            mo_value = float(mo_status.split(",")[0]) if mo_status else 1.0
+            if mo_value == 0.0:
+                servo_enabled_axes.append(a)
+                print(f"[TEARDOWN] {a}: Servo enabled, will perform motion teardown")
+            else:
+                print(f"[TEARDOWN] {a}: Servo not enabled (MO={mo_value}), skipping motion commands")
+        except Exception as e:
+            print(f"[TEARDOWN] {a}: Cannot check servo status: {e}, skipping motion commands")
 
-    # 3) Wait for each axis to complete its profile
-    for a in ax_list:
-        _cmd(g, f"AM{a}")
+    # 1) Set absolute targets to 0 for servo-enabled axes only
+    for a in servo_enabled_axes:
+        try:
+            _cmd(g, f"PA{a}=0")
+        except Exception as e:
+            print(f"[TEARDOWN] {a}: PA command failed: {e}")
 
-    # 4) Optionally turn motors off per axis
+    # 2) Begin each servo-enabled axis motion
+    for a in servo_enabled_axes:
+        try:
+            _cmd(g, f"BG{a}")
+        except Exception as e:
+            print(f"[TEARDOWN] {a}: BG command failed: {e}")
+
+    # 3) Wait for each servo-enabled axis to complete its profile
+    for a in servo_enabled_axes:
+        try:
+            _cmd(g, f"AM{a}")
+        except Exception as e:
+            print(f"[TEARDOWN] {a}: AM command failed: {e}")
+
+    # 4) Turn motors off for all axes (this works even if servo not enabled)
     if power_off:
         for a in ax_list:
-            _cmd(g, f"MO{a}")
+            try:
+                _cmd(g, f"MO{a}")
+            except Exception as e:
+                print(f"[TEARDOWN] {a}: MO command failed: {e}")

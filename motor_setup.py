@@ -75,7 +75,7 @@ class MotorSetup:
     def read_all_positions(self):
         out = {}
         for ax in "ABCD":
-            ok, r = self.send_command(f"TP{ax}")    # NOT "TP A" and NOT "TPA,TPB,..."
+            ok, r = self.send_command(f"TP{ax}")    # Use concatenated syntax "TPA"
             if not ok:
                 # fetch why and raise
                 raise RuntimeError(f"TP{ax} failed: {self._last_error_text()}")
