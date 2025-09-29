@@ -4,6 +4,12 @@ import os
 import math
 from tkinter import messagebox
 from typing import List, Dict, Any
+from command_validator import (
+    LoggingUtils,
+    estimate_bm_from_movement,
+    calculate_motion_parameters,
+    validate_motion_parameters,
+)
 
 def install_gclib_dll():
     """Install gclib.dll to System32 directory."""
@@ -108,80 +114,12 @@ def validate_axis(axis):
     if axis.upper() not in valid_axes:
         raise ValueError(f"Invalid axis '{axis}'. Must be one of {valid_axes}")
     return axis.upper()
+ 
+ # ============================================================================
+ # LOGGING AND UTILITY FUNCTIONS
+ # ============================================================================
 
-# ============================================================================
-# LOGGING AND UTILITY FUNCTIONS
-# ============================================================================
-
-class LoggingUtils:
-    """Utility functions for logging and data processing"""
-    
-    def __init__(self, log_callback=None):
-        self.log_callback = log_callback or self._default_log
-        
-    def _default_log(self, message: str):
-        """Default logging function if no callback provided"""
-        print(message)
-    
-    def log(self, message: str):
-        """Log a message using the callback"""
-        self.log_callback(message)
-    
-    def log_info(self, message: str):
-        """Log an info message"""
-        self.log(f"INFO: {message}")
-    
-    def log_success(self, message: str):
-        """Log a success message"""
-        self.log(f"SUCCESS: {message}")
-    
-    def log_error(self, message: str):
-        """Log an error message"""
-        self.log(f"ERROR: {message}")
-    
-    def append_test_log(self, line: str):
-        """Append a line to the test log"""
-        self.log(line)
-
-def estimate_bm_from_movement(positions: List[float], total_movement: float) -> float:
-    """Estimate BM (backlash compensation) from movement data"""
-    if not positions or len(positions) < 2:
-        return 0.0
-    
-    # Calculate the difference between first and last positions
-    position_diff = abs(positions[-1] - positions[0])
-    
-    # Estimate BM as a percentage of total movement
-    # This is a heuristic - actual BM calculation would be more complex
-    if total_movement > 0:
-        bm_estimate = (position_diff / total_movement) * 100.0
-        # Cap the estimate at reasonable values
-        return min(max(bm_estimate, 0.0), 50.0)
-    
-    return 0.0
-
-def calculate_motion_parameters(speed: float, acceleration: float, deceleration: float) -> Dict[str, float]:
-    """Calculate motion parameters for Galil controller"""
-    return {
-        'speed': max(1.0, speed),
-        'acceleration': max(1.0, acceleration),
-        'deceleration': max(1.0, deceleration),
-        'jerk': max(1.0, acceleration * 0.1)  # Jerk is typically 10% of acceleration
-    }
-
-def validate_motion_parameters(params: Dict[str, float]) -> bool:
-    """Validate motion parameters"""
-    required_keys = ['speed', 'acceleration', 'deceleration']
-    
-    for key in required_keys:
-        if key not in params:
-            return False
-        if not isinstance(params[key], (int, float)):
-            return False
-        if params[key] <= 0:
-            return False
-    
-    return True
+ 
 
 def format_position_value(position: float, precision: int = 2) -> str:
     """Format position value for display"""

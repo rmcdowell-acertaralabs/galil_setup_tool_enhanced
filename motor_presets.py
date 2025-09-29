@@ -58,12 +58,12 @@ class MotorPresetManager:
             verification_commands=[
                 "TPA",           # Read position
                 "MG _BMA",       # Verify BM setting
-                "QH A",          # Check hall status
+                "QH",            # Check hall status
                 "MG _BDA",       # Read electrical angle
                 "JGA=5000",      # Test motion
                 "BGA",           # Begin motion
                 "WT 500",        # Wait
-                "STA",           # Stop motion
+                "ST",            # Stop motion
                 "BN"             # Save settings
             ],
             notes="Based on successful GDK setup. Use BX method for minimal motion initialization."
@@ -96,12 +96,12 @@ class MotorPresetManager:
             verification_commands=[
                 "TPA",           # Read position
                 "MG _BMA",       # Verify BM setting
-                "QH A",          # Check hall status
+                "QH",            # Check hall status
                 "MG _BDA",       # Read electrical angle
                 "JGA=5000",      # Test motion
                 "BGA",           # Begin motion
                 "WT 500",        # Wait
-                "STA",           # Stop motion
+                "ST",            # Stop motion
                 "BN"             # Save settings
             ],
             notes="Use this if standard BX method fails. Higher voltage and longer hold time."
@@ -134,12 +134,12 @@ class MotorPresetManager:
             verification_commands=[
                 "TPA",           # Read position
                 "MG _BMA",       # Verify BM setting
-                "QH A",          # Check hall status
+                "QH",            # Check hall status
                 "MG _BDA",       # Read electrical angle
                 "JGA=5000",      # Test motion
                 "BGA",           # Begin motion
                 "WT 500",        # Wait
-                "STA",           # Stop motion
+                "ST",            # Stop motion
                 "BN"             # Save settings
             ],
             notes="Fallback method if BX fails. More motion but more reliable."
@@ -172,12 +172,12 @@ class MotorPresetManager:
             verification_commands=[
                 "TPA",           # Read position
                 "MG _BMA",       # Verify BM setting
-                "QH A",          # Check hall status
+                "QH",            # Check hall status
                 "MG _BDA",       # Read electrical angle
                 "JGA=5000",      # Test motion
                 "BGA",           # Begin motion
                 "WT 500",        # Wait
-                "STA",           # Stop motion
+                "ST",            # Stop motion
                 "BN"             # Save settings
             ],
             notes="Template for custom motor configurations. Adjust BM calculation as needed."

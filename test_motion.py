@@ -63,7 +63,7 @@ def _move_and_verify(g, axis: str, target: int, tol_counts: int) -> Dict[str, Un
         pass
     
     # Announce from controller
-    _cmd(g, f'MG "AX {axis} -> {target} BEGIN"')
+    print(f"AX {axis} -> {target} BEGIN")
 
     # Absolute target and run
     _cmd(g, f"PA{axis}={int(target)}")
@@ -76,8 +76,8 @@ def _move_and_verify(g, axis: str, target: int, tol_counts: int) -> Dict[str, Un
 
     # Controller-side message including @ABS usage (as requested)
     # Example: MG "ERR:", @ABS[TPA-1000]
-    _cmd(g, f'MG "AX {axis} DONE TPL=",TP{axis}')
-    _cmd(g, f"MG \"AX {axis} ERR=\", @ABS[TP{axis}-{int(target)}]")
+    print(f"AX {axis} DONE TPL={tp}")
+    print(f"AX {axis} ERR={abs(tp - int(target))}")
 
     # Host-side result
     return {
@@ -98,7 +98,7 @@ def optional_jog(g, axis: str, jg_speed: int = 5000, dwell_ms: int = 500) -> Non
     _cmd(g, f"WT {int(dwell_ms)}")
     _cmd(g, f"ST{axis}")
     _cmd(g, f"AM{axis}")
-    _cmd(g, f'MG "AX {axis} JOG COMPLETE TPL=",TP{axis}')
+    print(f"AX {axis} JOG COMPLETE TPL={_tp(g, axis)}")
 
 def run_comprehensive_individual_axis_tests(
     g,
@@ -119,11 +119,11 @@ def run_comprehensive_individual_axis_tests(
     ax_list = _norm_axes(axes)
     summary: Dict[str, List[Dict[str, Union[float, int, bool, str]]]] = {}
     
-    _cmd(g, f'MG "=== COMPREHENSIVE INDIVIDUAL AXIS TESTING ==="')
-    _cmd(g, f'MG "Testing {len(ax_list)} axes: {", ".join(ax_list)}"')
+    print("=== COMPREHENSIVE INDIVIDUAL AXIS TESTING ===")
+    print(f"Testing {len(ax_list)} axes: {', '.join(ax_list)}")
     
     for axis in ax_list:
-        _cmd(g, f'MG "--- Testing Axis {axis} ---"')
+        print(f"--- Testing Axis {axis} ---")
         results: List[Dict[str, Union[float, int, bool, str]]] = []
         
         # Check if motor is connected (servo enabled)
@@ -131,7 +131,7 @@ def run_comprehensive_individual_axis_tests(
             mo_status = _cmd(g, f"MG _MO{axis}")
             mo_value = float(mo_status.split(",")[0]) if mo_status else 1.0
             if mo_value != 0.0:
-                _cmd(g, f'MG "Axis {axis}: No motor connected (MO={mo_value})"')
+                print(f"Axis {axis}: No motor connected (MO={mo_value})")
                 results.append({
                     "axis": axis,
                     "test_type": "motor_detection",
@@ -141,9 +141,9 @@ def run_comprehensive_individual_axis_tests(
                 summary[axis] = results
                 continue
             else:
-                _cmd(g, f'MG "Axis {axis}: Motor detected (MO=0)"')
+                print(f"Axis {axis}: Motor detected (MO=0)")
         except Exception as e:
-            _cmd(g, f'MG "Axis {axis}: Cannot check motor status: {e}"')
+            print(f"Axis {axis}: Cannot check motor status: {e}")
             results.append({
                 "axis": axis,
                 "test_type": "motor_detection", 
@@ -154,14 +154,14 @@ def run_comprehensive_individual_axis_tests(
             continue
         
         # Motor detected - run comprehensive tests
-        _cmd(g, f'MG "Axis {axis}: Starting comprehensive movement tests"')
+        print(f"Axis {axis}: Starting comprehensive movement tests")
         
         # Get starting position
         try:
             start_pos = _tp(g, axis)
-            _cmd(g, f'MG "Axis {axis}: Starting position = {start_pos}"')
+            print(f"Axis {axis}: Starting position = {start_pos}")
         except Exception as e:
-            _cmd(g, f'MG "Axis {axis}: Cannot read position: {e}"')
+            print(f"Axis {axis}: Cannot read position: {e}")
             results.append({
                 "axis": axis,
                 "test_type": "position_read",
@@ -173,14 +173,14 @@ def run_comprehensive_individual_axis_tests(
         
         # Test each speed in both directions
         for speed in test_speeds:
-            _cmd(g, f'MG "Axis {axis}: Testing speed {speed} counts/sec"')
+            print(f"Axis {axis}: Testing speed {speed} counts/sec")
             
             # Test positive direction
             try:
-                _cmd(g, f'MG "Axis {axis}: Positive direction at {speed} counts/sec for {test_duration_seconds}s"')
+                print(f"Axis {axis}: Positive direction at {speed} counts/sec for {test_duration_seconds}s")
                 _test_directional_movement(g, axis, speed, test_duration_seconds, movement_distance, "positive", results)
             except Exception as e:
-                _cmd(g, f'MG "Axis {axis}: Positive direction test failed: {e}"')
+                print(f"Axis {axis}: Positive direction test failed: {e}")
                 results.append({
                     "axis": axis,
                     "test_type": f"positive_{speed}",
@@ -190,10 +190,10 @@ def run_comprehensive_individual_axis_tests(
             
             # Test negative direction  
             try:
-                _cmd(g, f'MG "Axis {axis}: Negative direction at {speed} counts/sec for {test_duration_seconds}s"')
+                print(f"Axis {axis}: Negative direction at {speed} counts/sec for {test_duration_seconds}s")
                 _test_directional_movement(g, axis, -speed, test_duration_seconds, movement_distance, "negative", results)
             except Exception as e:
-                _cmd(g, f'MG "Axis {axis}: Negative direction test failed: {e}"')
+                print(f"Axis {axis}: Negative direction test failed: {e}")
                 results.append({
                     "axis": axis,
                     "test_type": f"negative_{speed}",
@@ -203,15 +203,15 @@ def run_comprehensive_individual_axis_tests(
         
         # Return to starting position
         try:
-            _cmd(g, f'MG "Axis {axis}: Returning to starting position"')
+            print(f"Axis {axis}: Returning to starting position")
             _return_to_start_position(g, axis, start_pos)
         except Exception as e:
-            _cmd(g, f'MG "Axis {axis}: Warning - could not return to start position: {e}"')
+            print(f"Axis {axis}: Warning - could not return to start position: {e}")
         
-        _cmd(g, f'MG "Axis {axis}: Testing complete"')
+        print(f"Axis {axis}: Testing complete")
         summary[axis] = results
     
-    _cmd(g, f'MG "=== COMPREHENSIVE TESTING COMPLETE ==="')
+    print("=== COMPREHENSIVE TESTING COMPLETE ===")
     return summary
 
 def _test_directional_movement(g, axis: str, speed: int, duration_seconds: int, max_distance: int, direction: str, results: List[Dict]) -> None:
@@ -227,7 +227,7 @@ def _test_directional_movement(g, axis: str, speed: int, duration_seconds: int, 
         target_distance = min(abs(speed) * duration_seconds, max_distance)
         target_pos = current_pos + (target_distance if speed > 0 else -target_distance)
         
-        _cmd(g, f'MG "Axis {axis}: Moving from {current_pos} to {target_pos} ({direction})"')
+        print(f"Axis {axis}: Moving from {current_pos} to {target_pos} ({direction})")
         
         # Execute movement
         _cmd(g, f"PA{axis}={int(target_pos)}")
@@ -240,7 +240,7 @@ def _test_directional_movement(g, axis: str, speed: int, duration_seconds: int, 
                 # Check if motion is still active
                 bg_status = _cmd(g, f"MG _BG{axis}")
                 if bg_status and "0" in bg_status:
-                    _cmd(g, f'MG "Axis {axis}: Motion completed early at {time.time() - start_time:.1f}s"')
+                    print(f"Axis {axis}: Motion completed early at {time.time() - start_time:.1f}s")
                     break
             except:
                 pass
@@ -258,7 +258,7 @@ def _test_directional_movement(g, axis: str, speed: int, duration_seconds: int, 
         # Determine if test passed (moved at least 50% of expected distance)
         test_passed = distance_moved >= (expected_distance * 0.5)
         
-        _cmd(g, f'MG "Axis {axis}: {direction} test - moved {distance_moved:.0f} counts (expected ~{expected_distance:.0f})"')
+        print(f"Axis {axis}: {direction} test - moved {distance_moved:.0f} counts (expected ~{expected_distance:.0f})")
         
         results.append({
             "axis": axis,
@@ -274,7 +274,7 @@ def _test_directional_movement(g, axis: str, speed: int, duration_seconds: int, 
         })
         
     except Exception as e:
-        _cmd(g, f'MG "Axis {axis}: {direction} movement test error: {e}"')
+        print(f"Axis {axis}: {direction} movement test error: {e}")
         results.append({
             "axis": axis,
             "test_type": f"{direction}_{abs(speed)}",
@@ -292,7 +292,7 @@ def _return_to_start_position(g, axis: str, start_pos: float) -> None:
         _cmd(g, f"BG{axis}")
         _cmd(g, f"AM{axis}")
     except Exception as e:
-        _cmd(g, f'MG "Warning: Could not return axis {axis} to start position: {e}"')
+        print(f"Warning: Could not return axis {axis} to start position: {e}")
 
 def run_motion_tests(
     g,
@@ -328,7 +328,7 @@ def run_motion_tests(
             mo_value = float(mo_status.split(",")[0]) if mo_status else 1.0
             if mo_value != 0.0:
                 # Servo not enabled, skip motion testing for this axis
-                _cmd(g, f'MG "== AX {axis} SKIPPED - Servo not enabled (MO={mo_value})"')
+                print(f"== AX {axis} SKIPPED - Servo not enabled (MO={mo_value})")
                 results.append({
                     "axis": axis,
                     "target": 0,
@@ -341,7 +341,7 @@ def run_motion_tests(
                 continue
         except Exception as e:
             # If we can't check servo status, skip this axis
-            _cmd(g, f'MG "== AX {axis} SKIPPED - Cannot check servo status: {e}"')
+            print(f"== AX {axis} SKIPPED - Cannot check servo status: {e}")
             results.append({
                 "axis": axis,
                 "target": 0,
@@ -355,7 +355,7 @@ def run_motion_tests(
 
         # Base position (no DP used in this section)
         base = _tp(g, axis)
-        _cmd(g, f'MG "== AX {axis} START base=",TP{axis}')
+        print(f"== AX {axis} START base={base}")
 
         for i, prof in enumerate(profiles, start=1):
             sp = int(prof.get("sp", 128000))
@@ -363,7 +363,7 @@ def run_motion_tests(
             dc = int(prof.get("dc", 2560000))
 
             # Announce profile
-            _cmd(g, f'MG "AX {axis} PROFILE {i} SP={sp} AC={ac} DC={dc}"')
+            print(f"AX {axis} PROFILE {i} SP={sp} AC={ac} DC={dc}")
 
             # Apply profile
             _set_profile(g, axis, sp=sp, ac=ac, dc=dc)
@@ -373,7 +373,7 @@ def run_motion_tests(
                 target = int(round(base + off))
                 res = _move_and_verify(g, axis, target, tol_counts)
                 # Host-side, also log pass/fail quickly
-                _cmd(g, f'MG "AX {axis} @ {target} {"PASS" if res["pass"] else "FAIL"}"')
+                print(f"AX {axis} @ {target} {'PASS' if res['pass'] else 'FAIL'}")
                 results.append(res)
 
             # Optional jog exercise between profiles
@@ -381,7 +381,7 @@ def run_motion_tests(
                 optional_jog(g, axis, jg_speed=jog_speed, dwell_ms=jog_dwell_ms)
 
         # Finish axis
-        _cmd(g, f'MG "== AX {axis} COMPLETE"')
+        print(f"== AX {axis} COMPLETE")
         summary[axis] = results
 
     return summary

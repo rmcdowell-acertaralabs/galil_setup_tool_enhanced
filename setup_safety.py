@@ -17,9 +17,20 @@ def _gcmd(g, cmd: str) -> str:
     """Send a command and return the controller's response (stripped)."""
     try:
         resp = g.GCommand(cmd)
-        return resp.strip() if isinstance(resp, str) else ""
+        s = resp.strip() if isinstance(resp, str) else ""
+        if s == "?":
+            # Check for controller error using TC 1
+            try:
+                why = (g.GCommand("TC 1") or "").strip()
+                raise RuntimeError(f"Controller rejected: {cmd}  (TC1={why})")
+            except Exception:
+                raise RuntimeError(f"Controller rejected: {cmd}  (TC1=unknown)")
+        return s
     except Exception as e:
-        # If command fails, return empty string instead of crashing
+        # Re-raise RuntimeError (from ? response) but catch other exceptions
+        if isinstance(e, RuntimeError):
+            raise
+        # If command fails due to connection/other issues, return empty string
         print(f"Warning: Command '{cmd}' failed: {e}")
         return ""
 
@@ -163,25 +174,6 @@ def check_abort_input(g) -> int:
     except Exception:
         return -1
 
-def _cmd(g, cmd: str) -> str:
-    """Send command and surface exact ? errors with TC1"""
-    s = (g.GCommand(cmd) or "").strip()
-    if s == "?":
-        why = (g.GCommand("TC 1") or "").strip()
-        raise RuntimeError(f"Controller rejected: {cmd}  (TC1={why})")
-    return s
-
-def _safe(g, cmd):
-    """Send command and surface exact ? errors with TC1"""
-    s = g.GCommand(cmd) or ""
-    if s.strip() == "?":
-        # show which exact command failed; TC1 explains why
-        try:
-            why = (g.GCommand("TC 1") or "").strip()
-        except Exception:
-            why = "unknown"
-        raise RuntimeError(f"Controller rejected: {cmd}  (TC1={why})")
-    return s
 
 def servo_bringup_41x3(g):
     """Force SERVO motors, sane CN/OE, and verify SH per-axis (no brace syntax)."""
@@ -227,13 +219,13 @@ def enforce_servo_only(g):
     """
     try:
         # Servo-only on all axes (no step/dir ever) - this is critical
-        _cmd(g, "MT 0,0,0,0")   # all axes = servo, never stepper
+        _gcmd(g, "MT 0,0,0,0")   # all axes = servo, never stepper
         # Reasonable tolerant defaults
-        g.GCommand("OE 0")          # don't trip out on minor errors during setup
-        g.GCommand("ER=200000,200000,200000,200000")
-        g.GCommand("TL=100,100,100,100")
+        _gcmd(g, "OE 0")          # don't trip out on minor errors during setup
+        _gcmd(g, "ER=200000,200000,200000,200000")
+        _gcmd(g, "TL=100,100,100,100")
         # Clean slate
-        g.GCommand("AB; ST; AMA; AMB; AMC; AMD; TC 0")
+        _gcmd(g, "AB; ST; AMA; AMB; AMC; AMD; TC 0")
     except Exception:
         pass
 

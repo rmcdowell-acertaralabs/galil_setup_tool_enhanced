@@ -495,24 +495,25 @@ class MotorSetup:
     def _initialize_commutation_bz(self, axis: str) -> SetupResult:
         """Initialize commutation using BZ method (drive to electrical zero)"""
         try:
+            ax = self._ax(axis)
             # Set hold times: p=100ms (stage 1), o=200ms (stage 2)
             success, response = self.send_command(f"BZ<200>100")
             if not success:
                 return SetupResult(False, f"Failed to set BZ hold times: {response}")
             
             # Drive with ~3V, end with SH
-            success, response = self.send_command(f"BZ{axis}=-3")
+            success, response = self.send_command(f"BZ{ax}=-3")
             if not success:
                 return SetupResult(False, f"BZ initialization failed: {response}")
             
             # Enable servo after successful BZ commutation
-            success, response = self.send_command(f"SH{axis}")
+            success, response = self.send_command(f"SH{ax}")
             if not success:
-                self.log(f"Warning: Could not enable servo for axis {axis}: {response}")
+                self.log(f"Warning: Could not enable servo for axis {ax}: {response}")
                 # Continue anyway - might already be enabled
             
-            self.log(f"✓ Axis {axis} commutation initialized using BZ method")
-            return SetupResult(True, f"Axis {axis} commutation initialized (BZ method)")
+            self.log(f"✓ Axis {ax} commutation initialized using BZ method")
+            return SetupResult(True, f"Axis {ax} commutation initialized (BZ method)")
             
         except Exception as e:
             return SetupResult(False, f"BZ initialization failed: {str(e)}")

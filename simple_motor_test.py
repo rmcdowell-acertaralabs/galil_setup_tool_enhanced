@@ -171,10 +171,10 @@ class SimpleMotorTester:
                     results[axis] = TestResult.FAIL
                     self.log(f"Axis {axis}: Motion test failed - Error: {err} counts")
                 
-                # Return to initial position
+                # Return to initial position and wait for completion
                 self.io.pa(axis, initial_pos)
                 self.io.bg(axis)
-                time.sleep(1.0)
+                self.io.am(axis)
                 
             except Exception as e:
                 results[axis] = TestResult.ERROR

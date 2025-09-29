@@ -11,7 +11,7 @@ def build_pf_snippet(axis: Axis, target: int, tol: int) -> str:
     """
     Return a DMC code block that:
       - echoes the current position
-      - computes |TPX - target|
+      - computes |_TPX - target|
       - prints PASS/FAIL with error using only MG, IF/ELSE/ENDIF, @ABS[]
     Intended to run *after* the axis has reached the commanded absolute target.
     """
@@ -19,11 +19,11 @@ def build_pf_snippet(axis: Axis, target: int, tol: int) -> str:
     t = int(target)
     tol = int(tol)
     return (
-        f'MG "PF AX {a} TGT={t} TPL=",TP{a}\n'
-        f'IF (@ABS[TP{a}-{t}] <= {tol})\n'
-        f' MG "PF AX {a} PASS ERR=",@ABS[TP{a}-{t}]\n'
+        f'MG "PF AX {a} TGT={t} TPL=",_TP{a}\n'
+        f'IF (@ABS[_TP{a}-{t}] <= {tol})\n'
+        f' MG "PF AX {a} PASS ERR=",@ABS[_TP{a}-{t}]\n'
         f'ELSE\n'
-        f' MG "PF AX {a} FAIL ERR=",@ABS[TP{a}-{t}]\n'
+        f' MG "PF AX {a} FAIL ERR=",@ABS[_TP{a}-{t}]\n'
         f'ENDIF\n'
     )
 
@@ -54,7 +54,7 @@ def run_pf_checks(
     g.GProgramDownload(prog)
     g.GCommand(f"XQ {label},{thread}")
     # Note: MG lines are sent as unsolicited messages by the controller.
-    # If you want to also collect host-side results, you can re-query TPA etc. after moves.
+    # If you want to also collect host-side results, you can re-query _TPA etc. after moves.
 
 # ---- Optional convenience: integrate after a host-driven PA/BG/AM move ----
 

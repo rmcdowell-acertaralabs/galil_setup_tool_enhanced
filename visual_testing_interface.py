@@ -10,6 +10,16 @@ from dataclasses import dataclass
 from enum import Enum
 from simple_motor_test import TestResult
 
+# Import command validation utilities from command_validator.py
+from command_validator import (
+    DMC4103CommandValidator, 
+    CommandValidation, 
+    LoggingUtils,
+    estimate_bm_from_movement,
+    calculate_motion_parameters,
+    validate_motion_parameters
+)
+
 class TestStatus(Enum):
     """Test status enumeration"""
     PENDING = "pending"
@@ -50,6 +60,10 @@ class VisualTestingInterface:
         self.current_step = None
         self.test_steps = []
         self.overall_progress = 0.0
+        
+        # Initialize command validator and logging utilities
+        self.command_validator = DMC4103CommandValidator()
+        self.logging_utils = LoggingUtils(log_callback=self.add_detail)
         
         # UI components
         self.main_frame = None
@@ -227,6 +241,7 @@ class VisualTestingInterface:
         """Initialize the test steps"""
         self.test_steps = [
             VisualTestStep("setup", "Setup and Safety", "Initialize controller safety systems"),
+            VisualTestStep("command_validation", "Command Validation", "Validate motor setup commands"),
             VisualTestStep("discovery", "Axis Discovery", "Discover which axes are present"),
             VisualTestStep("motion", "Motion Testing", "Test motion with multiple profiles"),
             VisualTestStep("status", "Error Status Check", "Verify controller status"),
@@ -454,6 +469,7 @@ class VisualTestingInterface:
         phases = [
             ("communication", "Controller Communication", "Testing basic controller communication"),
             ("controller_config", "Controller Configuration", "Configuring controller for servo operation"),
+            ("command_validation", "Command Validation", "Validating motor setup commands"),
             ("axis_presence", "Axis Discovery", "Discovering which axes are present"),
             ("servo_enable", "Servo Enable", "Testing servo enable functionality"),
             ("basic_motion", "Basic Motion", "Testing basic motion functionality")
@@ -482,6 +498,21 @@ class VisualTestingInterface:
                     # Configure controller for servo operation
                     config_success = tester.configure_controller_for_servo_operation()
                     phase_result = TestResult.PASS if config_success else TestResult.FAIL
+                elif phase_id == "command_validation":
+                    # Validate common motor setup commands
+                    common_commands = [
+                        "MO A,B,C,D",  # Motor off
+                        "SH A,B,C,D",  # Servo here (enable)
+                        "AC A=1000,B=1000,C=1000,D=1000",  # Acceleration
+                        "DC A=1000,B=1000,C=1000,D=1000",  # Deceleration
+                        "SP A=5000,B=5000,C=5000,D=5000",  # Speed
+                        "PA A=1000,B=1000,C=1000,D=1000",  # Position absolute
+                        "BG A,B,C,D",  # Begin motion
+                        "AM A,B,C,D"   # After motion
+                    ]
+                    validation_results = self.validate_motor_setup_commands(common_commands)
+                    valid_count = sum(1 for result in validation_results if result.valid)
+                    phase_result = TestResult.PASS if valid_count == len(common_commands) else TestResult.FAIL
                 elif phase_id == "axis_presence":
                     axis_results = tester.test_axis_presence()
                     phase_result = TestResult.PASS if any(r == TestResult.PASS for r in axis_results.values()) else TestResult.FAIL
@@ -613,6 +644,63 @@ class VisualTestingInterface:
         
         self.add_detail("Test completed.")
     
+    def validate_test_command(self, command: str) -> CommandValidation:
+        """Validate a command using the DMC4103 command validator"""
+        try:
+            validation_result = self.command_validator.validate_command(command)
+            if not validation_result.valid:
+                self.logging_utils.log_error(f"Invalid command '{command}': {validation_result.error_message}")
+            elif validation_result.warning_message:
+                self.logging_utils.log_info(f"Command warning for '{command}': {validation_result.warning_message}")
+            return validation_result
+        except Exception as e:
+            self.logging_utils.log_error(f"Command validation error for '{command}': {str(e)}")
+            return CommandValidation(valid=False, command=command, description="", error_message=str(e))
+    
+    def validate_motor_setup_commands(self, commands: List[str]) -> List[CommandValidation]:
+        """Validate a sequence of motor setup commands"""
+        self.logging_utils.log_info(f"Validating {len(commands)} motor setup commands...")
+        try:
+            validation_results = self.command_validator.validate_motor_setup_sequence(commands)
+            
+            # Log validation results
+            valid_count = sum(1 for result in validation_results if result.valid)
+            self.logging_utils.log_info(f"Command validation complete: {valid_count}/{len(commands)} commands valid")
+            
+            for result in validation_results:
+                if not result.valid:
+                    self.logging_utils.log_error(f"Invalid command: {result.command} - {result.error_message}")
+                elif result.warning_message:
+                    self.logging_utils.log_info(f"Command warning: {result.command} - {result.warning_message}")
+            
+            return validation_results
+        except Exception as e:
+            self.logging_utils.log_error(f"Command sequence validation error: {str(e)}")
+            return []
+    
+    def calculate_motion_params(self, speed: float, acceleration: float, deceleration: float) -> Dict[str, float]:
+        """Calculate motion parameters using utility functions"""
+        try:
+            params = calculate_motion_parameters(speed, acceleration, deceleration)
+            if validate_motion_parameters(params):
+                self.logging_utils.log_success(f"Motion parameters calculated: Speed={params['speed']}, Accel={params['acceleration']}, Decel={params['deceleration']}")
+            else:
+                self.logging_utils.log_error("Invalid motion parameters calculated")
+            return params
+        except Exception as e:
+            self.logging_utils.log_error(f"Motion parameter calculation error: {str(e)}")
+            return {'speed': 1.0, 'acceleration': 1.0, 'deceleration': 1.0}
+    
+    def estimate_backlash_compensation(self, positions: List[float], total_movement: float) -> float:
+        """Estimate backlash compensation using utility functions"""
+        try:
+            bm_estimate = estimate_bm_from_movement(positions, total_movement)
+            self.logging_utils.log_info(f"Estimated backlash compensation (BM): {bm_estimate:.2f}%")
+            return bm_estimate
+        except Exception as e:
+            self.logging_utils.log_error(f"Backlash compensation estimation error: {str(e)}")
+            return 0.0
+
     def _progress_callback(self, event_type, step_id=None, step_name=None, progress=0, result=None, error=None, notes=None):
         """Handle progress callbacks from comprehensive testing"""
         if event_type == "step_start":

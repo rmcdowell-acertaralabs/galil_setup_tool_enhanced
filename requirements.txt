@@ -1,14 +1,15 @@
 # Galil Setup Tool Requirements
 # Python 3.7+ required
+# Last updated: September 2025
 
 # Core dependencies
 # Note: gclib is provided as gclib.py in the repository
 # tkinter is included with Python installation
 
 # External dependencies
-pyserial>=3.5      # For serial port communication
-psutil>=5.8.0      # For process management (GDK launch feature)
+pyserial>=3.5      # For serial port communication (latest: 5.4)
+psutil>=5.8.0      # For process management (GDK launch feature, latest: 6.0)
 
 # Development/Build dependencies (optional)
-# pyinstaller>=4.0  # For building executables
+pyinstaller>=4.0   # For building executables (recommended: 5.0+)
 # pytest>=6.0      # For testing (optional)

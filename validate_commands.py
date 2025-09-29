@@ -13,86 +13,101 @@ from typing import Dict, List, Set, Tuple
 def load_command_reference() -> Dict[str, Dict]:
     """Load the command reference from command_validator.py"""
     try:
-        # Read the command reference directly from the file
-        with open('command_validator.py', 'r', encoding='utf-8') as f:
-            content = f.read()
+        # Import the DMC4103CommandValidator to get the authoritative command reference
+        from command_validator import DMC4103CommandValidator
         
-        # Extract the command reference dictionary
-        # Look for the _load_command_reference method
-        import re
+        # Create an instance to access the command reference
+        validator = DMC4103CommandValidator()
+        base_commands = validator.valid_commands
         
-        # Find the command reference dictionary in the file
-        pattern = r'def _load_command_reference\(self\) -> Dict\[str, Dict\]:\s*return \{(.*?)\}'
-        match = re.search(pattern, content, re.DOTALL)
+        # Add additional commands found in the codebase that aren't in the base reference
+        additional_commands = {
+            "ID": {"description": "Identify", "parameters": []},
+            "_SS": {"description": "System Status", "parameters": []},
+            "IP": {"description": "Instantaneous Position", "parameters": ["axis", "value"]},
+            "TV": {"description": "Tell Velocity", "parameters": ["axis"]},
+            "TPA": {"description": "Tell Position A", "parameters": []},
+            "TB": {"description": "Tell Bit", "parameters": []},
+        }
         
-        if match:
-            # This is a simplified approach - we'll manually define the known commands
-            return {
-                # Motion commands
-                "ST": {"description": "Stop Motion", "parameters": ["axis"]},
-                "AM": {"description": "After Motion", "parameters": ["axis"]},
-                "BG": {"description": "Begin Motion", "parameters": ["axis"]},
-                "SH": {"description": "Servo Here (Enable)", "parameters": ["axis"]},
-                "MO": {"description": "Motor Off", "parameters": ["axis"]},
-                "TP": {"description": "Tell Position", "parameters": ["axis"]},
-                "PA": {"description": "Position Absolute", "parameters": ["axis", "value"]},
-                "PR": {"description": "Position Relative", "parameters": ["axis", "value"]},
-                "JG": {"description": "Jog", "parameters": ["axis", "value"]},
-                "SP": {"description": "Speed", "parameters": ["axis", "value"]},
-                "AC": {"description": "Acceleration", "parameters": ["axis", "value"]},
-                "DC": {"description": "Deceleration", "parameters": ["axis", "value"]},
-                "DP": {"description": "Define Position", "parameters": ["axis", "value"]},
-                "FI": {"description": "Find Index", "parameters": ["axis"]},
-                
-                # Status and error commands
-                "MG": {"description": "Message", "parameters": ["message"]},
-                "TC": {"description": "Tell Error Code", "parameters": []},
-                "TE": {"description": "Tell Error", "parameters": ["axis"]},
-                "TS": {"description": "Tell Status", "parameters": ["axis"]},
-                "TA": {"description": "Tell Amplifier", "parameters": ["axis"]},
-                "TV": {"description": "Tell Velocity", "parameters": ["axis"]},
-                "TB": {"description": "Tell Bit", "parameters": []},
-                
-                # System commands
-                "ID": {"description": "Identify", "parameters": []},
-                "MT": {"description": "Motor Type", "parameters": ["list"]},
-                "BN": {"description": "Burn", "parameters": []},
-                "IP": {"description": "Instantaneous Position", "parameters": ["axis", "value"]},
-                "_SS": {"description": "System Status", "parameters": []},
-                
-                # Safety and limits
-                "OE": {"description": "Off on Error", "parameters": ["axis", "value"]},
-                "ER": {"description": "Error Limit", "parameters": ["axis", "value"]},
-                "TL": {"description": "Torque Limit", "parameters": ["axis", "value"]},
-                "TK": {"description": "Peak Torque Limit", "parameters": ["axis", "value"]},
-                
-                # Control commands
-                "AB": {"description": "Abort", "parameters": []},
-                "AZ": {"description": "Abort on Zero", "parameters": []},
-                "SB": {"description": "Set Bit", "parameters": ["bit"]},
-                "CB": {"description": "Clear Bit", "parameters": ["bit"]},
-                "WT": {"description": "Wait", "parameters": ["time"]},
-                
-                # Format commands
-                "PF": {"description": "Position Format", "parameters": ["format"]},
-                "CF": {"description": "Communication Format", "parameters": ["format"]},
-                "CW": {"description": "Communication Write", "parameters": ["format"]},
-                
-                # Brushless motor commands
-                "BA": {"description": "Brushless Amplifier", "parameters": ["axis"]},
-                "BM": {"description": "Brushless Modulo", "parameters": ["axis", "value"]},
-                "BX": {"description": "Brushless eXchange", "parameters": ["axis", "value"]},
-                "BZ": {"description": "Brushless Zero", "parameters": ["axis", "value"]},
-                "BC": {"description": "Brushless Calibrate", "parameters": ["axis"]},
-                "BI": {"description": "Brushless Input", "parameters": ["axis", "value"]},
-            }
-        else:
-            print("Could not find command reference in file")
-            return {}
+        # Merge the base commands with additional commands
+        all_commands = {**base_commands, **additional_commands}
+        return all_commands
             
     except Exception as e:
         print(f"Error loading command reference: {e}")
-        return {}
+        # Fallback to manual definition if import fails
+        return {
+            # Motion / servo
+            "MO": {"description": "Motor Off", "parameters": ["axis"]},
+            "SH": {"description": "Servo Here (Enable)", "parameters": ["axis"]},
+            "ST": {"description": "Stop Motion", "parameters": []},
+            "BG": {"description": "Begin Motion", "parameters": ["axis"]},
+            "AM": {"description": "After Motion", "parameters": ["axis"]},
+
+            # Positioning
+            "TP": {"description": "Tell Position", "parameters": ["axis"]},
+            "DP": {"description": "Define Position", "parameters": ["axis", "value"]},
+            "PA": {"description": "Position Absolute", "parameters": ["axis", "value"]},
+            "PR": {"description": "Position Relative", "parameters": ["axis", "value"]},
+            "JG": {"description": "Jog", "parameters": ["axis", "value"]},
+            "FI": {"description": "Find Index", "parameters": ["axis"]},
+
+            # Brushless
+            "BA": {"description": "Brushless Amplifier", "parameters": ["axis"]},
+            "BM": {"description": "Brushless Modulo", "parameters": ["axis", "value"]},
+            "BX": {"description": "Brushless eXchange", "parameters": ["axis", "value"]},
+            "BZ": {"description": "Brushless Zero", "parameters": ["axis", "value"]},
+            "BC": {"description": "Brushless Calibrate", "parameters": ["axis"]},
+            "BI": {"description": "Brushless Input", "parameters": ["axis", "value"]},
+            "QH": {"description": "Query Hall", "parameters": []},
+
+            # Encoder / latch
+            "CE": {"description": "Count Enable", "parameters": ["axis", "value"]},
+            "AL": {"description": "After Latch", "parameters": ["axis"]},
+            "RL": {"description": "Read Latch", "parameters": ["axis"]},
+
+            # Safety / limits
+            "OE": {"description": "Off on Error", "parameters": ["axis", "value"]},
+            "ER": {"description": "Error Limit", "parameters": ["axis", "value"]},
+            "FL": {"description": "Forward Software Limit", "parameters": ["axis", "value"]},
+            "BL": {"description": "Backward Software Limit", "parameters": ["axis", "value"]},
+            "SL": {"description": "Software Limit", "parameters": ["axis", "value"]},
+
+            # Tuning / servo parameters (axis=value)
+            "TL": {"description": "Torque Limit", "parameters": ["axis", "value"]},
+            "TK": {"description": "Torque Bias", "parameters": ["axis", "value"]},
+            "OF": {"description": "DAC Offset", "parameters": ["axis", "value"]},
+            "KP": {"description": "Proportional Gain", "parameters": ["axis", "value"]},
+            "KI": {"description": "Integral Gain", "parameters": ["axis", "value"]},
+            "KD": {"description": "Derivative Gain", "parameters": ["axis", "value"]},
+            "AC": {"description": "Acceleration", "parameters": ["axis", "value"]},
+            "DC": {"description": "Deceleration", "parameters": ["axis", "value"]},
+            "SP": {"description": "Speed", "parameters": ["axis", "value"]},
+
+            # Digital I/O
+            "SB": {"description": "Set Bit", "parameters": ["bit_number"]},
+            "CB": {"description": "Clear Bit", "parameters": ["bit_number"]},
+
+            # System / diagnostics / misc
+            "BN": {"description": "Burn (save parameters)", "parameters": []},
+            "RS": {"description": "Reset", "parameters": []},
+            "AB": {"description": "Abort", "parameters": []},
+            "AZ": {"description": "Amplifier Fault Reset", "parameters": []},
+            "MG": {"description": "Message", "parameters": ["variable"]},
+            "WT": {"description": "Wait", "parameters": ["time"]},
+            "MT": {"description": "Motor Type", "parameters": ["list"]},
+            "TE": {"description": "Tell Error Code", "parameters": []},
+            "TC": {"description": "Tell Error Text", "parameters": ["optional_mode"]},
+            
+            # Additional system commands found in codebase
+            "ID": {"description": "Identify", "parameters": []},
+            "_SS": {"description": "System Status", "parameters": []},
+            "IP": {"description": "Instantaneous Position", "parameters": ["axis", "value"]},
+            "TV": {"description": "Tell Velocity", "parameters": ["axis"]},
+            "TPA": {"description": "Tell Position A", "parameters": []},
+            "TB": {"description": "Tell Bit", "parameters": []},
+        }
 
 def find_commands_in_file(filepath: str) -> List[Tuple[str, int, str]]:
     """Find all Galil commands in a file"""

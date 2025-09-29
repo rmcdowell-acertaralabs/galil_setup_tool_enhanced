@@ -3,12 +3,22 @@
 
 from diag_axis import AxisInfo, read_motor_type, classify_mode, safe_enable_if_needed
 from motion_generic import move_absolute_and_check
+from command_validator import DMC4103CommandValidator
+
+_validator = DMC4103CommandValidator()
+
+def _v_or_raise(cmd: str) -> None:
+    v = _validator.validate_command(cmd)
+    if not v.valid:
+        raise ValueError(f"Invalid command '{cmd}': {v.error_message or 'rejected by validator'}")
 
 def phase_axis_discovery(io, axes="ABCD"):
     """Discover which axes are present"""
     found = []
     for a in axes:
         try:
+            # Validate TP before issuing
+            _v_or_raise(f"TP{a}")
             p = io.tp(a)   # if TP works, the axis exists in the controller map
             print(f"[DISC] Axis {a}: Present - Position: {p}")
             found.append(a)
@@ -56,14 +66,31 @@ def phase_motion(io, infos, distance=100, profiles=None, tol=5):
 def phase_teardown(io, active_axes):
     """Return axes to safe positions and power down"""
     print("[TEARDOWN] Returning axes to safe positions...")
-    for a in active_axes: 
+    for a in active_axes:
+        # Validate PA/BG/AM/MO sequence
+        try:
+            _v_or_raise(f"PA{a}=0")
+        except Exception as e:
+            print(f"[TEARDOWN] Validation warning for PA on {a}: {e}")
         io.pa(a, 0)
-    for a in active_axes: 
+    for a in active_axes:
+        try:
+            _v_or_raise(f"BG{a}")
+        except Exception as e:
+            print(f"[TEARDOWN] Validation warning for BG on {a}: {e}")
         io.bg(a)
-    for a in active_axes: 
+    for a in active_axes:
+        try:
+            _v_or_raise(f"AM{a}")
+        except Exception as e:
+            print(f"[TEARDOWN] Validation warning for AM on {a}: {e}")
         io.am(a)
     for a in active_axes:
         try: 
+            try:
+                _v_or_raise(f"MO{a}")
+            except Exception as e:
+                print(f"[TEARDOWN] Validation warning for MO on {a}: {e}")
             io.mo(a)
         except: 
             pass

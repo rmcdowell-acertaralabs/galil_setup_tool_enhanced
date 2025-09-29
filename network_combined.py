@@ -15,6 +15,50 @@ from typing import Dict, List, Optional, Tuple
 from tkinter import messagebox
 from galil_combined import GalilController
 from controller_commands import ControllerCommands
+from command_validator import DMC4103CommandValidator
+
+# Validator-backed command sender
+_VALIDATOR_INSTANCE = None
+
+def _get_validator() -> DMC4103CommandValidator:
+    global _VALIDATOR_INSTANCE
+    if _VALIDATOR_INSTANCE is None:
+        _VALIDATOR_INSTANCE = DMC4103CommandValidator()
+    return _VALIDATOR_INSTANCE
+
+def send_galil_command(controller, command: str, log_fn: Optional[callable] = None) -> str:
+    """Send a Galil command with validation when applicable.
+    - Validates only single commands known to the validator (no semicolons)
+    - Skips validation for network/system commands not covered (e.g., IA, IP, DH, DHCP, GW, SM, CF)
+    - On validation failure, returns a Galil-style error string starting with '?'
+    """
+    try:
+        raw = command.strip()
+        if not raw:
+            return controller.send_command(command)
+        if ';' in raw:
+            return controller.send_command(command)
+        m = re.match(r"^([A-Za-z]+)", raw)
+        base = m.group(1).upper() if m else None
+        if not base:
+            return controller.send_command(command)
+        validator = _get_validator()
+        known = set(validator.get_all_commands())
+        skip_validation_bases = {"IA", "IP", "DH", "DHCP", "GW", "SM", "CF"}
+        if base not in known or base in skip_validation_bases:
+            return controller.send_command(command)
+        result = validator.validate_command(raw)
+        if not result.valid:
+            if log_fn:
+                log_fn(f"Validator blocked command '{raw}': {result.error_message}")
+            return f"? {result.error_message}"
+        if log_fn and result.warning_message:
+            log_fn(f"Warning for '{raw}': {result.warning_message}")
+        return controller.send_command(command)
+    except Exception as e:
+        if log_fn:
+            log_fn(f"Validation error for '{command}': {e}. Sending without validation.")
+        return controller.send_command(command)
 
 # ============================================================================
 # NETWORK CONFIGURATION CLASS
@@ -1315,7 +1359,7 @@ def comprehensive_network_test(controller) -> Dict[str, any]:
         
         for cmd in basic_commands:
             try:
-                response = controller.send_command(cmd)
+                response = send_galil_command(controller, cmd)
                 results['basic_commands'][cmd] = response.strip()
             except Exception as e:
                 results['basic_commands'][cmd] = f"ERROR: {str(e)}"
@@ -1339,7 +1383,7 @@ def comprehensive_network_test(controller) -> Dict[str, any]:
         
         for cmd, description in network_commands:
             try:
-                response = controller.send_command(cmd)
+                response = send_galil_command(controller, cmd)
                 if response.startswith('?'):
                     unsupported_network.append(f"{cmd} ({description})")
                     results['network_commands'][cmd] = "NOT SUPPORTED"
@@ -1362,7 +1406,7 @@ def comprehensive_network_test(controller) -> Dict[str, any]:
         
         for cmd, description in save_commands:
             try:
-                response = controller.send_command(cmd)
+                response = send_galil_command(controller, cmd)
                 if response.startswith('?'):
                     unsupported_save.append(f"{cmd} ({description})")
                     results['save_commands'][cmd] = "NOT SUPPORTED"
@@ -1377,21 +1421,21 @@ def comprehensive_network_test(controller) -> Dict[str, any]:
         try:
             # Try to read current IP
             try:
-                current_ip = controller.send_command("IP")
+                current_ip = send_galil_command(controller, "IP")
                 results['controller_info']['current_ip'] = current_ip.strip()
             except Exception as e:
                 results['controller_info']['current_ip'] = f"ERROR: {str(e)}"
             
             # Try to read current subnet mask
             try:
-                current_sm = controller.send_command("MG _SM")
+                current_sm = send_galil_command(controller, "MG _SM")
                 results['controller_info']['current_subnet'] = current_sm.strip()
             except Exception as e:
                 results['controller_info']['current_subnet'] = f"ERROR: {str(e)}"
             
             # Try to read current gateway
             try:
-                current_gw = controller.send_command("MG _GW")
+                current_gw = send_galil_command(controller, "MG _GW")
                 results['controller_info']['current_gateway'] = current_gw.strip()
             except Exception as e:
                 results['controller_info']['current_gateway'] = f"ERROR: {str(e)}"
@@ -1400,9 +1444,9 @@ def comprehensive_network_test(controller) -> Dict[str, any]:
             results['controller_info']['error'] = f"Error reading network settings: {str(e)}"
         
         # Test 5: Network configuration test (without actually changing anything)
-        # Convert test IP to IA format: 192.168.1.100 -> 100,1,168,192
+        # Convert test IP to IA format: 192.168.1.100 -> 192,168,1,100 (n0=byte0,n1=byte1,n2=byte2,n3=byte3)
         test_ip_parts = [192, 168, 1, 100]
-        ia_test_format = f"{test_ip_parts[3]},{test_ip_parts[2]},{test_ip_parts[1]},{test_ip_parts[0]}"
+        ia_test_format = f"{test_ip_parts[0]},{test_ip_parts[1]},{test_ip_parts[2]},{test_ip_parts[3]}"
         
         network_test_commands = [
             f"IA {ia_test_format}",           # Correct IA command format
@@ -1529,7 +1573,7 @@ def get_controller_network_status(controller) -> Dict[str, any]:
         
         # Check DHCP status
         try:
-            dhcp_status = controller.send_command("MG _DHCP").strip()
+            dhcp_status = send_galil_command(controller, "MG _DHCP").strip()
             status['dhcp_enabled'] = dhcp_status == "1" or dhcp_status.lower() == "true"
         except:
             pass
@@ -2050,7 +2094,7 @@ class ControllerConnectionManager:
             while self.connection_monitoring and self.controller:
                 try:
                     # Send a simple heartbeat command
-                    response = self.controller.send_command("TPA")
+                    response = send_galil_command(self.controller, "TPA", self.log)
                     if response and response.strip() != "?":
                         self.last_heartbeat = time.time()
                         time.sleep(2)  # Check every 2 seconds
@@ -2076,7 +2120,8 @@ class ControllerConnectionManager:
         if self.connection_thread and self.connection_thread.is_alive():
             # Safe thread join to prevent "cannot join current thread" error
             try:
-                if self.connection_thread is not threading.current_thread():
+                import threading as _threading
+                if self.connection_thread is not _threading.current_thread():
                     self.connection_thread.join(timeout=1.0)
             except:
                 pass

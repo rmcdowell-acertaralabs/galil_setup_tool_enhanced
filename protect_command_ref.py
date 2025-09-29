@@ -40,13 +40,31 @@ def check_protected_lines():
         for line in lines:
             if line.startswith('@@'):
                 # Parse line numbers from diff header
+                # Format: @@ -old_start,old_count +new_start,new_count @@
                 parts = line.split()
                 if len(parts) >= 3:
-                    line_info = parts[2]
-                    if ',' in line_info:
-                        start_line = int(line_info.split(',')[0])
-                        if start_line <= PROTECTED_LINES[1]:
-                            modified_lines.append(start_line)
+                    old_info = parts[1]  # -old_start,old_count
+                    new_info = parts[2]  # +new_start,new_count
+                    
+                    # Parse old line range
+                    if old_info.startswith('-') and ',' in old_info:
+                        old_start = int(old_info[1:].split(',')[0])
+                        old_count = int(old_info[1:].split(',')[1]) if ',' in old_info[1:] else 1
+                        old_end = old_start + old_count - 1
+                        
+                        # Check if any part of the change overlaps with protected lines
+                        if old_start <= PROTECTED_LINES[1] and old_end >= PROTECTED_LINES[0]:
+                            modified_lines.append(f"{old_start}-{old_end}")
+                    
+                    # Parse new line range
+                    if new_info.startswith('+') and ',' in new_info:
+                        new_start = int(new_info[1:].split(',')[0])
+                        new_count = int(new_info[1:].split(',')[1]) if ',' in new_info[1:] else 1
+                        new_end = new_start + new_count - 1
+                        
+                        # Check if any part of the change overlaps with protected lines
+                        if new_start <= PROTECTED_LINES[1] and new_end >= PROTECTED_LINES[0]:
+                            modified_lines.append(f"{new_start}-{new_end}")
         
         if modified_lines:
             print("❌ ERROR: Protected lines in command_validator.py have been modified!")

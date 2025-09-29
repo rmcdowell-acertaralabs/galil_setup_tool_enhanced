@@ -8654,13 +8654,13 @@ IP Address: Cannot read"""
         # Validate command before sending
         if hasattr(self, 'gui_framework') and self.gui_framework:
             validation = self.gui_framework.validate_command(command)
-            if not validation.is_valid:
-                error_msg = f"Command validation failed: {validation.error_message}"
-                if validation.suggestion:
-                    error_msg += f"\nSuggestion: {validation.suggestion}"
+            if not validation.valid:
+                desc = getattr(validation, 'description', 'Command validation failed')
+                err_detail = getattr(validation, 'error_message', None)
+                error_msg = f"{desc}: {err_detail}" if err_detail else str(desc)
                 messagebox.showerror("Command Validation Error", error_msg)
                 return
-            elif validation.warning_message:
+            elif getattr(validation, 'warning_message', None):
                 # Show warning but allow command to proceed
                 self.append_test_log(f"Command warning: {validation.warning_message}")
         
