@@ -10,13 +10,13 @@ import threading
 class MockController:
     def send_command(self, cmd):
         # Simulate some command responses
-        if cmd == "TP A":
+        if cmd == "TPA":
             return "1000"
-        elif cmd == "TP B":
+        elif cmd == "TPB":
             return "2000"
-        elif cmd == "TP C":
+        elif cmd == "TPC":
             return "3000"
-        elif cmd == "TP D":
+        elif cmd == "TPD":
             return "4000"
         elif cmd.startswith("SH"):
             return ""

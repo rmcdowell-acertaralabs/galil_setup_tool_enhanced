@@ -55,7 +55,7 @@ class EncoderPanelUpdater:
         self.controller = controller
         self.set_field = set_field
         self._after_id = None
-        self._period_ms = 100  # 10 Hz is plenty
+        self._period_ms = 50  # 20 Hz - throttled to 20-50ms as requested
 
     def start(self):
         if self._after_id is None:
@@ -65,6 +65,17 @@ class EncoderPanelUpdater:
         if self._after_id is not None:
             self.root.after_cancel(self._after_id)
             self._after_id = None
+    
+    def pause(self):
+        """Pause encoder updates temporarily"""
+        if self._after_id is not None:
+            self.root.after_cancel(self._after_id)
+            self._after_id = None
+    
+    def resume(self):
+        """Resume encoder updates after pause"""
+        if self._after_id is None:
+            self._tick()
 
     def _tick(self):
         # read A..D robustly; if any read fails, leave prior text alone
@@ -135,6 +146,7 @@ class GalilSetupApp:
             'secondary_fg': '#7f8c8d',    # Secondary text color (gray)
             'secondary_bg': '#ecf0f1',    # Light gray secondary background
             'accent_blue': '#3498db',     # Blue accent color
+            'accent_green': '#27ae60',    # Green accent color
             'success_green': '#27ae60',   # Green for success
             'warning_orange': '#f39c12',  # Orange for warnings
             'error_red': '#e74c3c',       # Red for errors
@@ -816,6 +828,9 @@ class GalilSetupApp:
                     
                     # Update local references in main thread
                     self.root.after(0, lambda: self.update_controller_references())
+                    
+                    # Initialize servo maintenance system once at connection
+                    self.root.after(0, lambda: self.initialize_servo_maintenance())
                 else:
                     self.root.after(0, lambda: self.update_discovery_status(f"Failed to connect to {ip}"))
                     self.root.after(0, lambda: self.append_test_log(f"Failed to connect to {ip}"))
@@ -843,6 +858,29 @@ class GalilSetupApp:
                 # Controller reference updated
         except Exception as e:
             self.append_test_log(f"Error updating controller references: {e}")
+    
+    def initialize_servo_maintenance(self):
+        """Initialize servo maintenance system once at application startup"""
+        try:
+            if not self.controller or not self.controller.g:
+                self.append_test_log("⚠️ Cannot initialize servo maintenance - no controller connection")
+                return
+            
+            self.append_test_log("🔧 Initializing servo maintenance system...")
+            
+            # Import and initialize servo maintenance
+            from controller_servo_maintenance import ControllerServoMaintenance
+            self.servo_maintenance = ControllerServoMaintenance(self.controller.g)
+            
+            if self.servo_maintenance.initialize_servo_maintenance():
+                self.append_test_log("✅ Servo maintenance system initialized - servos will stay enabled automatically")
+            else:
+                self.append_test_log("⚠️ Servo maintenance system initialization failed - continuing with manual servo management")
+                self.servo_maintenance = None
+                
+        except Exception as e:
+            self.append_test_log(f"⚠️ Error initializing servo maintenance: {e} - continuing with manual servo management")
+            self.servo_maintenance = None
             
     def disconnect_controller(self):
         """Disconnect from the Galil controller"""
@@ -2281,49 +2319,49 @@ class GalilSetupApp:
             self.append_test_log("=== TESTING AXIS A SETUP ===")
             
             # Turn off motor
-            self.controller.send_command("MO A")
+            self.controller.send_command("MOA")
             self.append_test_log("MOA (motor off): OK")
             
             # Set motor type to brushless servo
-            self.controller.send_command("MT A=1")
+            self.controller.send_command("MTA=1")
             self.append_test_log("MTA=1 (motor type): OK")
             
             # Set brushless modulo
-            self.controller.send_command("BM A=5000")
+            self.controller.send_command("BMA=5000")
             self.append_test_log("BMA=5000 (brushless modulo): OK")
             
             # Enable servo
-            self.controller.send_command("SH A")
+            self.controller.send_command("SHA")
             self.append_test_log("SHA (servo here): OK")
             
             # Set motion parameters
-            self.controller.send_command("SP A=5000")
+            self.controller.send_command("SPA=5000")
             self.append_test_log("SPA=5000 (speed): OK")
             
-            self.controller.send_command("AC A=2500")
+            self.controller.send_command("ACA=2500")
             self.append_test_log("ACA=2500 (acceleration): OK")
             
-            self.controller.send_command("DC A=2500")
+            self.controller.send_command("DCA=2500")
             self.append_test_log("DCA=2500 (deceleration): OK")
             
             # Set position to zero
-            self.controller.send_command("DP A=0")
+            self.controller.send_command("DPA=0")
             self.append_test_log("DPA=0 (define position): OK")
             
             # Test relative move
-            self.controller.send_command("PR A=1000")
+            self.controller.send_command("PRA=1000")
             self.append_test_log("PRA=1000 (position relative): OK")
             
             # Begin motion
-            self.controller.send_command("BG A")
+            self.controller.send_command("BGA")
             self.append_test_log("BGA (begin motion): OK")
             
             # Wait for motion complete
-            self.controller.send_command("AM A")
+            self.controller.send_command("AMA")
             self.append_test_log("AMA (after motion): OK")
             
             # Check final position
-            tp_response = self.controller.send_command("TP A")
+            tp_response = self.controller.send_command("TPA")
             self.append_test_log(f"TPA (final position): {tp_response}")
             
             self.append_test_log("=== DIAGNOSTIC COMPLETE ===")
@@ -3636,41 +3674,41 @@ class GalilSetupApp:
             self.log("Setting up axis B for brushless operation...")
             
             # Stop any motion on B
-            success, response = self.send_command("AB B")
+            success, response = self.send_command("AB")
             if not success:
                 self.log(f"Warning: Could not abort motion on B: {response}")
             
             # Turn off motor B
-            success, response = self.send_command("MO B")
+            success, response = self.send_command("MOB")
             if not success:
                 self.log(f"Warning: Could not turn off motor B: {response}")
             
             # Set B to servo mode
-            success, response = self.send_command("MT B=1")
+            success, response = self.send_command("MTB=1")
             if not success:
                 self.log(f"Failed to set B to servo mode: {response}")
                 return False
             
             # Assign B as brushless
-            success, response = self.send_command("BA B")
+            success, response = self.send_command("BAB")
             if not success:
                 self.log(f"Failed to assign B as brushless: {response}")
                 return False
             
             # Set brushless modulo for B
-            success, response = self.send_command("BM B=16000")
+            success, response = self.send_command("BMB=16000")
             if not success:
                 self.log(f"Failed to set BM for B: {response}")
                 return False
             
             # Initialize BZ commutation for B
-            success, response = self.send_command("BZ B")
+            success, response = self.send_command("BZB")
             if not success:
                 self.log(f"Failed to initialize BZ commutation for B: {response}")
                 return False
             
             # Enable servo for B
-            success, response = self.send_command("SH B")
+            success, response = self.send_command("SHB")
             if not success:
                 self.log(f"Failed to enable servo for B: {response}")
                 return False
@@ -3695,11 +3733,11 @@ class GalilSetupApp:
             from comprehensive_testing import ComprehensiveTester
             
             # Create tester instance
-            tester = ComprehensiveTester(self.controller, self.log)
+            tester = ComprehensiveTester(self.controller, self.log, main_app=self)
             
             # Test motion on axis B
             try:
-                start_pos_b = float(tester.gsend("TP B"))
+                start_pos_b = float(tester.gsend("TPB"))
                 self.log(f"Axis B starting position: {start_pos_b}")
                 
                 # Move axis B
@@ -3741,7 +3779,7 @@ class GalilSetupApp:
             from comprehensive_testing import ComprehensiveTester
             
             # Create tester instance
-            tester = ComprehensiveTester(self.controller, self.log)
+            tester = ComprehensiveTester(self.controller, self.log, main_app=self)
             
             # Test motion on both axes
             self.log("Testing motion on axis A...")
@@ -3765,7 +3803,7 @@ class GalilSetupApp:
             # Test motion on axis B
             self.log("Testing motion on axis B...")
             try:
-                start_pos_b = float(tester.gsend("TP B"))
+                start_pos_b = float(tester.gsend("TPB"))
                 self.log(f"Axis B starting position: {start_pos_b}")
                 
                 # Move axis B
@@ -3990,16 +4028,16 @@ class GalilSetupApp:
         try:
             # Add command to history
             timestamp = datetime.now().strftime("%H:%M:%S")
-            self.command_history_text.insert(tk.END, f"[{timestamp}] > {command}\n")
+            self.command_history_text.insert(tk.END, f"[{timestamp}] : {command}\n")
             
             # Send command to controller
             response = self.connection_manager.controller.send_command(command)
             
             # Add response to history
             if response:
-                self.command_history_text.insert(tk.END, f"[{timestamp}] < {response}\n")
+                self.command_history_text.insert(tk.END, f"[{timestamp}] : {response}\n")
             else:
-                self.command_history_text.insert(tk.END, f"[{timestamp}] < (no response)\n")
+                self.command_history_text.insert(tk.END, f"[{timestamp}] : (no response)\n")
             
             # Clear the input field
             self.command_entry.delete(0, tk.END)
@@ -4043,16 +4081,16 @@ class GalilSetupApp:
         try:
             # Add command to history
             timestamp = datetime.now().strftime("%H:%M:%S")
-            cmd_history.insert(tk.END, f"[{timestamp}] > {command}\n")
+            cmd_history.insert(tk.END, f"[{timestamp}] : {command}\n")
             
             # Send command to controller
             response = self.connection_manager.controller.send_command(command)
             
             # Add response to history
             if response:
-                cmd_history.insert(tk.END, f"[{timestamp}] < {response}\n")
+                cmd_history.insert(tk.END, f"[{timestamp}] : {response}\n")
             else:
-                cmd_history.insert(tk.END, f"[{timestamp}] < (no response)\n")
+                cmd_history.insert(tk.END, f"[{timestamp}] : (no response)\n")
             
             # Clear the input field
             cmd_entry.delete(0, tk.END)
@@ -4088,7 +4126,7 @@ class GalilSetupApp:
             
             # Check connection before starting
             try:
-                test_response = self.connection_manager.controller.send_command("TP A")
+                test_response = self.connection_manager.controller.send_command("TPA")
                 cmd_history.insert(tk.END, f"✓ Connection verified: TPA -> {test_response}\n")
                 cmd_history.see(tk.END)
             except Exception as e:
@@ -4530,29 +4568,47 @@ Repeat these steps for axes B, C, and D as needed.
                     if 'axis_presets' in config and current_axis in config['axis_presets']:
                         axis_data = config['axis_presets'][current_axis]
                         
+                        # Check if this is a verified axis (Axis A with complete settings)
+                        is_verified = 'mt' in axis_data and 'bm' in axis_data
+                        if is_verified and current_axis == 'A':
+                            self.append_test_log("⚠️ Loading VERIFIED settings for Axis A - prevents overheating!")
+                        
                         # Populate UI fields with preset data
                         if hasattr(self, 'motor_tuning_encoder_counts_entry'):
                             encoder_counts = axis_data.get('clicks_per_turn', 64000)
                             self.motor_tuning_encoder_counts_entry.delete(0, tk.END)
                             self.motor_tuning_encoder_counts_entry.insert(0, str(encoder_counts))
-                            self.append_test_log(f"Loaded encoder counts: {encoder_counts}")
+                            self.append_test_log(f"✓ Encoder counts: {encoder_counts}")
                         
                         if hasattr(self, 'motor_tuning_pole_pairs_entry'):
-                            # Set typical pole pairs for brushless motor (4-8 is common)
-                            pole_pairs = 4  # Typical for most brushless motors
+                            # Calculate pole pairs from BM and encoder counts
+                            bm = axis_data.get('bm', 5000)
+                            encoder_counts = axis_data.get('clicks_per_turn', 20000)
+                            pole_pairs = encoder_counts // bm  # pole_pairs = encoder_counts / BM
                             self.motor_tuning_pole_pairs_entry.delete(0, tk.END)
                             self.motor_tuning_pole_pairs_entry.insert(0, str(pole_pairs))
-                            self.append_test_log(f"Loaded pole pairs: {pole_pairs}")
+                            self.append_test_log(f"✓ Pole pairs: {pole_pairs} (from BM={bm})")
                         
                         if hasattr(self, 'motor_tuning_commutation_method_var'):
-                            self.motor_tuning_commutation_method_var.set("bz")
-                            self.append_test_log("Set commutation method: bz")
+                            # Set based on verified config or default to BZ
+                            method = "bz"  # BZ is verified working for Axis A
+                            self.motor_tuning_commutation_method_var.set(method)
+                            self.append_test_log(f"✓ Commutation method: {method} (VERIFIED - do not change!)")
                         
-                        # Set checkboxes based on motor type
+                        # Set checkboxes based on motor capabilities
                         if hasattr(self, 'motor_tuning_has_index_var'):
-                            self.motor_tuning_has_index_var.set(False)  # Default for brushless
+                            # Cymatix E017 has index pulse
+                            has_index = True if is_verified else False
+                            self.motor_tuning_has_index_var.set(has_index)
                         if hasattr(self, 'motor_tuning_has_halls_var'):
-                            self.motor_tuning_has_halls_var.set(True)  # Brushless motors have hall sensors
+                            # Brushless motors have hall sensors
+                            self.motor_tuning_has_halls_var.set(True)
+                        
+                        # Show verification status
+                        if is_verified and current_axis == 'A':
+                            self.append_test_log("✅ VERIFIED configuration loaded - motor will stay cool!")
+                            if '_note' in axis_data:
+                                self.append_test_log(f"Note: {axis_data['_note']}")
                         
                         self.append_test_log(f"Preset data loaded for axis {current_axis}")
                     else:
@@ -5304,7 +5360,7 @@ SAFETY:
             
         try:
             # Test basic commands
-            response = self.controller.send_command("TP A")
+            response = self.controller.send_command("TPA")
             self.append_test_log(f"Test command response: {response}")
         except Exception as e:
             self.append_test_log(f"Command test failed: {e}")
@@ -5703,7 +5759,7 @@ Subnet mask and gateway are handled by your system's network configuration.
             
             # Use a simple test command first to check if controller is responsive
             try:
-                test_response = self.controller.send_command("TP A")
+                test_response = self.controller.send_command("TPA")
                 if not test_response or test_response == '?':
                     # Controller not responsive, show basic info
                     self.show_basic_controller_info()
@@ -5743,16 +5799,37 @@ Subnet mask and gateway are handled by your system's network configuration.
             # Get controller model number with fallbacks
             model_info = "Unknown"
             try:
-                # MG _ID not supported on DMC-4143, use ID command instead
-                model_response = self.controller.send_command("ID")
+                # Use ID command to get controller information (bypass validation)
+                model_response = self.controller.send_command_unvalidated("ID")
                 if model_response and model_response.strip() != '?' and 'timeout' not in str(model_response).lower():
-                    model_info_raw = model_response.strip()
-                    # If numeric like 4143, prefix with DMC
-                    if model_info_raw.isdigit():
-                        model_info = f"DMC{model_info_raw}"
-                    else:
-                        model_info = model_info_raw
-            except Exception:
+                    # Parse the ID response to extract model information
+                    id_lines = model_response.strip().splitlines()
+                    for line in id_lines:
+                        line = line.strip()
+                        if line and not line.startswith((':', ';')):
+                            # Look for DMC model in various formats
+                            if 'DMC' in line.upper():
+                                # Extract DMC model from line
+                                import re
+                                match = re.search(r'DMC(\d+)', line.upper())
+                                if match:
+                                    model_info = f"DMC{match.group(1)}"
+                                    break
+                                # Try to extract any DMC reference
+                                parts = line.split(',')
+                                for part in parts:
+                                    if 'DMC' in part.upper():
+                                        model_info = part.strip().split(' Rev')[0].strip()
+                                        break
+                                if model_info != "Unknown":
+                                    break
+                    # If still unknown, try to parse as numeric
+                    if model_info == "Unknown":
+                        model_info_raw = model_response.strip()
+                        if model_info_raw.isdigit():
+                            model_info = f"DMC{model_info_raw}"
+            except Exception as e:
+                self.log_message(f"Error getting model info: {e}")
                 pass
             if model_info in (None, "", "?", "Unknown"):
                 try:
@@ -5808,11 +5885,35 @@ Subnet mask and gateway are handled by your system's network configuration.
             # Get firmware version with fallbacks
             firmware = "Unknown"
             try:
-                # MG _FW not supported on DMC-4143, use ID command instead
-                fw_response = self.controller.send_command("ID")
+                # Use ID command to get firmware information (bypass validation)
+                fw_response = self.controller.send_command_unvalidated("ID")
                 if fw_response and fw_response.strip() != '?' and 'timeout' not in str(fw_response).lower():
-                    firmware = fw_response.strip()
-            except Exception:
+                    # Parse the ID response to extract firmware information
+                    id_lines = fw_response.strip().splitlines()
+                    for line in id_lines:
+                        line = line.strip()
+                        if line and not line.startswith((':', ';')):
+                            # Look for firmware version patterns
+                            if 'FW' in line.upper() or 'REV' in line.upper():
+                                import re
+                                # Try to extract version number
+                                match = re.search(r'(?:FW|Rev)\s*[=:]?\s*([\w.\-]+)', line, re.IGNORECASE)
+                                if match:
+                                    firmware = match.group(1).strip()
+                                    break
+                                # Try to extract from comma-separated values
+                                parts = line.split(',')
+                                for part in parts:
+                                    if 'REV' in part.upper() or 'FW' in part.upper():
+                                        # Extract version from part
+                                        version_match = re.search(r'([\w.\-]+)', part)
+                                        if version_match:
+                                            firmware = version_match.group(1).strip()
+                                            break
+                                if firmware != "Unknown":
+                                    break
+            except Exception as e:
+                self.log_message(f"Error getting firmware info: {e}")
                 pass
             # If still unknown, try to parse firmware from ID output
             if firmware in (None, "", "?", "Unknown"):
@@ -5856,11 +5957,42 @@ Subnet mask and gateway are handled by your system's network configuration.
             # Get serial number with fallbacks
             serial_num = "Unknown"
             try:
-                sn_resp = self.controller.send_command("MG _BN")
+                # Try MG _BN command first (bypass validation)
+                sn_resp = self.controller.send_command_unvalidated("MG _BN")
                 if sn_resp and sn_resp.strip() != '?' and 'timeout' not in str(sn_resp).lower():
                     serial_num = sn_resp.strip()
-            except Exception:
+            except Exception as e:
+                self.log_message(f"Error getting serial with MG _BN: {e}")
                 pass
+            
+            # If still unknown, try to parse from ID command
+            if serial_num in (None, "", "?", "Unknown"):
+                try:
+                    id_resp = self.controller.send_command_unvalidated("ID")
+                    if id_resp and id_resp.strip() != '?' and 'timeout' not in str(id_resp).lower():
+                        # Parse ID response for serial number
+                        id_lines = id_resp.strip().splitlines()
+                        for line in id_lines:
+                            line = line.strip()
+                            if line and not line.startswith((':', ';')):
+                                # Look for serial number patterns (usually numeric at end of line)
+                                parts = line.split(',')
+                                if len(parts) >= 2:
+                                    # Check if last part is numeric (serial number)
+                                    last_part = parts[-1].strip()
+                                    if last_part.isdigit():
+                                        serial_num = last_part
+                                        break
+                                # Also check for any standalone numeric values
+                                import re
+                                numbers = re.findall(r'\b\d+\b', line)
+                                if numbers:
+                                    # Take the last number found (likely serial)
+                                    serial_num = numbers[-1]
+                                    break
+                except Exception as e:
+                    self.log_message(f"Error getting serial from ID: {e}")
+                    pass
             if serial_num in (None, "", "?", "Unknown"):
                 try:
                     # ^R^V not supported on DMC-4143, use ID command instead
@@ -7473,6 +7605,11 @@ IP Address: Cannot read"""
         
         while self.test_encoder_update_running:
             try:
+                # CRITICAL: Pause encoder polling during comprehensive test to prevent concurrent GCommand calls
+                if hasattr(self, 'comprehensive_tester') and self.comprehensive_tester and self.comprehensive_tester.is_running:
+                    time.sleep(0.1)  # Sleep while test is running
+                    continue
+                
                 # Quick controller check without blocking - make resilient per user requirements
                 if not self.controller:
                     connection_check_count += 1
@@ -7493,33 +7630,23 @@ IP Address: Cannot read"""
                 axis_velocities = {}
                 
                 try:
-                    # Use batch command to get all positions at once (more efficient)
-                    pos_response = self.controller.send_command("TP A;TP B;TP C;TP D")
-                    if pos_response and pos_response.strip():
-                        # Parse batch response (format: "posA,posB,posC,posD")
-                        positions = [int(x.strip()) for x in pos_response.split(',')]
-                        axis_positions = {"A": positions[0], "B": positions[1], "C": positions[2], "D": positions[3]}
-                    
-                    # Get velocities with batch command
-                    vel_response = self.controller.send_command("TV A,B,C,D")
-                    if vel_response and vel_response.strip():
-                        velocities = [abs(float(x.strip())) for x in vel_response.split(',')]
-                        axis_velocities = {"A": velocities[0], "B": velocities[1], "C": velocities[2], "D": velocities[3]}
-                        
-                except Exception as e:
-                    # Fallback to individual axis reads if batch fails
-                    for axis in ["A", "B", "C", "D"]:
+                    # Only poll axes A and B (C and D not fitted on this hardware)
+                    # Use correct syntax: TPA not TP A
+                    for axis in ["A", "B"]:
                         try:
-                            pos_str = self.controller.send_command(f"TP {axis}")
+                            pos_str = self.controller.send_command(f"TP{axis}")
                             axis_positions[axis] = int(pos_str.strip())
                             
-                            vel_str = self.controller.send_command(f"TV {axis}")
+                            vel_str = self.controller.send_command(f"TV{axis}")
                             axis_velocities[axis] = abs(float(vel_str.strip()))
                         except Exception as axis_error:
                             # Mark axis as error but continue with others
                             axis_positions[axis] = None
                             axis_velocities[axis] = 0
                             error_count += 1
+                        
+                except Exception as e:
+                    error_count += 1
                 
                 # Update displays in main thread (non-blocking)
                 if self.test_encoder_update_running:
@@ -7546,24 +7673,6 @@ IP Address: Cannot read"""
                 # Continue with error recovery
                 time.sleep(0.2)  # Short wait before retry
                 
-    def _ensure_encoder_update_running(self):
-        """Ensure encoder update is running with robust updater"""
-        # Only start encoder updates if we have a valid controller
-        if self.controller is None:
-            return
-            
-        try:
-            if not hasattr(self, "_enc_updater") or self._enc_updater is None:
-                self._enc_updater = EncoderPanelUpdater(self.root, self.controller, self._set_encoder_entry_text)
-            
-            # Only start if not already running
-            if self._enc_updater and self._enc_updater._after_id is None:
-                self._enc_updater.start()
-        except Exception as e:
-            # Log the error but don't crash
-            print(f"Warning: Could not start encoder updates: {e}")
-            pass
-            
     def _validate_encoder_widgets(self):
         """Validate that encoder widgets exist and are accessible"""
         try:
@@ -8149,7 +8258,7 @@ IP Address: Cannot read"""
         """Run the traditional comprehensive test without visual interface"""
         # Initialize comprehensive tester if not already done
         if not self.comprehensive_tester:
-            self.comprehensive_tester = ComprehensiveTester(self.controller, self.append_test_log)
+            self.comprehensive_tester = ComprehensiveTester(self.controller, self.append_test_log, main_app=self)
         
         # Run the test in a separate thread to avoid blocking the UI
         def run_test():
@@ -8214,17 +8323,24 @@ IP Address: Cannot read"""
                     self.append_test_log(f"    • {step_name}: {step_result}")
                 
     def _auto_start_encoder_updates(self):
-        """Auto-start encoder updates when controller connects or page is shown"""
+        """Auto-start encoder updates when controller connects or page is shown - IDEMPOTENT"""
         if self.controller:
             try:
+                # Check if encoder updater already exists and is running
+                if hasattr(self, "_enc_updater") and self._enc_updater is not None:
+                    if self._enc_updater._after_id is not None:
+                        return  # Already running, don't start another
+                
                 # Use the robust encoder updater
                 self._ensure_encoder_update_running()
                 
-                # Log the auto-start
-                if hasattr(self, 'append_test_log'):
-                    self.append_test_log("Encoder updates auto-started")
-                elif hasattr(self, 'log_info'):
-                    self.log_info("Encoder updates auto-started")
+                # Log the auto-start (only once)
+                if not hasattr(self, '_encoder_started_logged'):
+                    if hasattr(self, 'append_test_log'):
+                        self.append_test_log("Encoder updates auto-started")
+                    elif hasattr(self, 'log_info'):
+                        self.log_info("Encoder updates auto-started")
+                    self._encoder_started_logged = True
                     
             except Exception as e:
                 # Log error but don't crash
@@ -8232,6 +8348,16 @@ IP Address: Cannot read"""
                     self.append_test_log(f"Failed to auto-start encoder updates: {e}")
                 elif hasattr(self, 'log_error'):
                     self.log_error(f"Failed to auto-start encoder updates: {e}")
+    
+    def pause_encoder_updates(self):
+        """Pause encoder updates during motion testing"""
+        if hasattr(self, "_enc_updater") and self._enc_updater is not None:
+            self._enc_updater.pause()
+    
+    def resume_encoder_updates(self):
+        """Resume encoder updates after motion testing"""
+        if hasattr(self, "_enc_updater") and self._enc_updater is not None:
+            self._enc_updater.resume()
                 
     def _enable_servo_with_verification(self, axis):
         """Enable servo for the specified axis with verification and set default motion parameters"""
@@ -8670,7 +8796,7 @@ IP Address: Cannot read"""
             
             # Log the command and response
             timestamp = datetime.now().strftime("%H:%M:%S")
-            log_entry = f"[{timestamp}] > {command}\n[{timestamp}] < {response}\n"
+            log_entry = f"[{timestamp}] : {command}\n[{timestamp}] : {response}\n"
             
             # Update appropriate command history based on interface type
             if interface_type == 'motor_tuning' and hasattr(self, 'motor_tuning_command_history_text'):

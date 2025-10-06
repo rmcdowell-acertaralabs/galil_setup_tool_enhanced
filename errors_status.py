@@ -17,14 +17,33 @@ def _norm_axes(axes: AxisList):
     return axes
 
 def _cmd(g, s: str) -> str:
-    r = g.GCommand(s)
-    return r.strip() if isinstance(r, str) else ""
+    try:
+        r = g.GCommand(s)
+        return r.strip() if isinstance(r, str) else ""
+    except Exception as e:
+        error_str = str(e).lower()
+        if any(conn_error in error_str for conn_error in ["connection", "timeout", "network", "socket", "ethernet", "not connected"]):
+            # Return empty string for connection errors to avoid crashing the status check
+            return ""
+        else:
+            # Re-raise non-connection errors
+            raise
 
 def _num(s: str) -> float:
     try:
         return float(s.strip())
     except Exception:
         return float("nan")
+
+def _safe_int(s: str, default: int = 0) -> int:
+    """Safely convert string to int, handling NaN and invalid values"""
+    try:
+        val = _num(s)
+        if str(val).lower() == 'nan' or str(val).lower() == 'inf':
+            return default
+        return int(val)
+    except (ValueError, TypeError):
+        return default
 
 # ---- TC (Tell Error Code) ----
 
@@ -136,21 +155,32 @@ def read_tc(g, with_message: bool = True) -> Dict[str, Union[int, str]]:
     TC: returns the last command/programming error.
     NOTE: 'TC' (or 'TC n') *clears* the code; operand _TC does not.
     """
-    # Peek via operand (does not clear)
-    code_peek = int(_num(_cmd(g, "MG _TC")))
-    result = {"tc_peek": code_peek, "code": 0, "text": ""}
-    if with_message:
-        # Pull + clear, with text
-        s = _cmd(g, "TC 1")  # e.g. "1       Unrecognized command"
-        if s:
-            # Split at first whitespace group
-            parts = s.split(None, 1)
-            code = int(parts[0]) if parts else 0
-            txt = parts[1].strip() if len(parts) > 1 else _TC_TEXT.get(code, "")
-            result.update({"code": code, "text": txt or _TC_TEXT.get(code, "")})
-    else:
-        code = int(_num(_cmd(g, "TC 0")))
-        result.update({"code": code, "text": _TC_TEXT.get(code, "")})
+    result = {"tc_peek": 0, "code": 0, "text": ""}
+    try:
+        # Peek via operand (does not clear)
+        tc_response = _cmd(g, "MG _TC")
+        if tc_response:
+            code_peek = _safe_int(tc_response)
+            result["tc_peek"] = code_peek
+        
+        if with_message:
+            # Pull + clear, with text
+            s = _cmd(g, "TC 1")  # e.g. "1       Unrecognized command"
+            if s:
+                # Split at first whitespace group
+                parts = s.split(None, 1)
+                code = int(parts[0]) if parts else 0
+                txt = parts[1].strip() if len(parts) > 1 else _TC_TEXT.get(code, "")
+                result.update({"code": code, "text": txt or _TC_TEXT.get(code, "")})
+        else:
+            tc0_response = _cmd(g, "TC 0")
+            if tc0_response:
+                code = _safe_int(tc0_response)
+                result.update({"code": code, "text": _TC_TEXT.get(code, "")})
+    except Exception as e:
+        # If we can't read TC, return default values
+        result["text"] = f"Could not read TC: {e}"
+    
     return result
 
 # ---- TB (controller status) ----
@@ -168,7 +198,7 @@ def read_tb(g) -> Dict[str, Union[int, Dict[str,int]]]:
     Bit 1: N/A
     Bit 0: Echo on
     """
-    v = int(_num(_cmd(g, "TB")))  # returns decimal
+    v = _safe_int(_cmd(g, "TB"))  # returns decimal
     return {
         "tb": v,
         "flags": {
@@ -197,7 +227,7 @@ def read_ts(g, axis: str) -> Dict[str, Union[int, Dict[str,int]]]:
     Bit 0: Position Latch has occurred
     """
     axis = axis.upper()
-    v = int(_num(_cmd(g, f"MG _TS{axis}")))
+    v = _safe_int(_cmd(g, f"MG _TS{axis}"))
     bits = {
         "in_motion":        (v >> 7) & 1,
         "error_limit":      (v >> 6) & 1,
@@ -215,7 +245,7 @@ def read_ts(g, axis: str) -> Dict[str, Union[int, Dict[str,int]]]:
 def read_te(g, axis: str) -> int:
     """TE: instantaneous position error (counts)."""
     axis = axis.upper()
-    return int(_num(_cmd(g, f"TE{axis}")))
+    return _safe_int(_cmd(g, f"TE{axis}"))
 
 def read_ta(g, axis: str) -> int:
     """
@@ -280,7 +310,7 @@ _SC_TEXT = {
 
 def read_sc(g, axis: str) -> Dict[str, Union[int,str]]:
     axis = axis.upper()
-    v = int(_num(_cmd(g, f"SC {axis}")))
+    v = _safe_int(_cmd(g, f"SC {axis}"))
     return {"axis": axis, "sc": v, "text": _SC_TEXT.get(v, "")}
 
 # ---- AZ (amp errors) and TW (MC timeout) ----
@@ -289,7 +319,7 @@ def az_enable_enhanced(g, enable: bool = True) -> int:
     """AZ2 enable enhanced error reporting; returns _AZ2 (0/1)."""
     if enable:
         _cmd(g, "AZ2")
-    return int(_num(_cmd(g, "MG _AZ2")))
+    return _safe_int(_cmd(g, "MG _AZ2"))
 
 def az_clear_latched(g) -> None:
     """
@@ -306,11 +336,11 @@ def set_tw(g, axis: str, ms: int) -> int:
     """
     axis = axis.upper()
     _cmd(g, f"TW{axis}={int(ms)}")
-    return int(_num(_cmd(g, f"MG _TW{axis}")))
+    return _safe_int(_cmd(g, f"MG _TW{axis}"))
 
 def get_tw(g, axis: str) -> int:
     axis = axis.upper()
-    return int(_num(_cmd(g, f"MG _TW{axis}")))
+    return _safe_int(_cmd(g, f"MG _TW{axis}"))
 
 # ---- One-shot full snapshot ----
 

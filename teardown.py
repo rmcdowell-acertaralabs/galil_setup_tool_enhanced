@@ -112,8 +112,11 @@ def teardown_axes(
     # Stop any existing motion first
     for a in ax_list:
         try:
-            _cmd(g, f"ST")  # Stop all motion
-            _cmd(g, f"AM{a}")  # Wait for motion complete on axis
+            _cmd(g, f"ST{a}")  # Stop motion on this axis
+            # DO NOT use AM - it's program-only trippoint
+            # Poll _BG instead
+            import time
+            time.sleep(0.1)  # Brief pause for motion to stop
         except Exception as e:
             print(f"[TEARDOWN] {a}: Error stopping motion: {e}")
     

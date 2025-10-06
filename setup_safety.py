@@ -1,6 +1,7 @@
 # setup_safety.py
 # Requires: gclib (Galil) handle already opened elsewhere as `g`
 
+import time
 from typing import Dict, Iterable, Tuple, Union
 
 AxisList = Union[Iterable[str], str]
@@ -42,17 +43,18 @@ def abort(g, motion_only: bool = False) -> None:
 
 def enable_enhanced_amp_reporting(g, enable: bool = True) -> int:
     """
-    AZ2 to enable enhanced error reporting; returns _AZ2 (0 or 1).
+    AZ 2 to enable enhanced error reporting.
+    NOTE: _AZ2 operand may not exist on all controllers - skip if error.
     """
     if enable:
-        _gcmd(g, "AZ2")
-    state = _gcmd(g, "MG _AZ2")
-    try:
-        return int(float(state))
-    except Exception:
-        return -1  # unknown
+        try:
+            _gcmd(g, "AZ 2")  # Use AZ 2 command, not AZ2
+        except:
+            pass  # Some controllers may not support this
+    # Don't try to read _AZ2 - may not exist on all hardware
+    return -1  # unknown/not supported
 
-def clear_latched_amp_errors(g, axes: AxisList = ("A", "B", "C", "D")) -> None:
+def clear_latched_amp_errors(g, axes: AxisList = ("A", "B")) -> None:
     """
     Proper sequence to clear latched amplifier errors:
     1) MO on involved axes
@@ -75,7 +77,7 @@ def clear_latched_amp_errors(g, axes: AxisList = ("A", "B", "C", "D")) -> None:
     # Clear latched amp faults only if all are off
     if all_off:
         _gcmd(g, "AZ")     # <— use AZ; no index; valid on 41x3
-        _gcmd(g, "WT 2,0")  # Wait 2ms (minimum valid value)
+        time.sleep(0.002)  # Host sleep 2ms (WT is program-only, not valid in terminal)
     else:
         # Log warning but don't fail
         print("Warning: Not all axes are off, skipping AZ")
@@ -178,36 +180,63 @@ def check_abort_input(g) -> int:
 def servo_bringup_41x3(g):
     """Force SERVO motors, sane CN/OE, and verify SH per-axis (no brace syntax)."""
     # Quiesce; ignore if a subcommand isn't supported
-    for cmd in ("TC 0", "AB", "ST"):
+    for cmd in ("TC 0", "AB 1", "ST"):  # AB 1 = abort motion only, not program
         try: 
             g.GCommand(cmd)
         except: 
             pass
 
     # Force servo mode per-axis (older firmwares dislike tuple MT):
-    for ax in "ABCD":
+    # NOTE: Only A and B axes are fitted on this hardware
+    for ax in "AB":  # Only axes A and B present, C and D not fitted
         try: 
             g.GCommand(f"MT{ax}=0")
         except: 
             pass  # keep going; some axes may not exist
 
     # Put config into a sane baseline
-    for cmd in ("CN 0", "OE 0"):
+    # CN -1 = limits active low (safe for no limit switches - inputs float high)
+    for cmd in ("CN -1", "OE 0"):
         try: 
             g.GCommand(cmd)
         except: 
             pass
 
-    # Engage each axis individually (so one bad axis doesn't poison others)
+    # Engage each axis individually with retry logic (so one bad axis doesn't poison others)
+    # CRITICAL: Only A and B axes exist on this hardware
     mo_status = {}
-    for ax in "ABCD":
+    for ax in "AB":  # Only A and B fitted, not C or D
         try:
-            g.GCommand(f"SH{ax}")
-            # read back with a simple, brace-free MG
-            s = g.GCommand(f"MG _MO{ax}") or "1"
-            mo_status[ax] = int(float(s.split(",")[0]))
-        except Exception:
+            # Try to enable servo with retry logic
+            for attempt in range(3):  # Try up to 3 times
+                try:
+                    g.GCommand(f"SH{ax}")
+                    # Wait a bit for servo to engage
+                    import time
+                    time.sleep(0.1)
+                    
+                    # Check if servo is enabled
+                    s = g.GCommand(f"MG _MO{ax}") or "1"
+                    mo_value = int(float(s.split(",")[0]))
+                    if mo_value == 0:  # Servo enabled successfully
+                        mo_status[ax] = 0
+                        print(f"[SETUP] Axis {ax}: Servo enabled successfully")
+                        break
+                    else:
+                        print(f"[SETUP] Axis {ax}: Servo enable attempt {attempt + 1} failed (MO={mo_value})")
+                        if attempt < 2:  # Not the last attempt
+                            time.sleep(0.2)  # Wait before retry
+                except Exception as e:
+                    print(f"[SETUP] Axis {ax}: Servo enable attempt {attempt + 1} failed: {e}")
+                    if attempt < 2:  # Not the last attempt
+                        time.sleep(0.2)  # Wait before retry
+            else:
+                # All attempts failed
+                mo_status[ax] = 1
+                print(f"[SETUP] Axis {ax}: All servo enable attempts failed")
+        except Exception as e:
             mo_status[ax] = 1  # treat as OFF if anything fails
+            print(f"[SETUP] Axis {ax}: Servo enable error: {e}")
 
     print(f"[SETUP] _MO: " + ", ".join(f"{k}={v}" for k,v in mo_status.items()))
     return mo_status
@@ -224,8 +253,8 @@ def enforce_servo_only(g):
         _gcmd(g, "OE 0")          # don't trip out on minor errors during setup
         _gcmd(g, "ER=200000,200000,200000,200000")
         _gcmd(g, "TL=100,100,100,100")
-        # Clean slate
-        _gcmd(g, "AB; ST; AMA; AMB; AMC; AMD; TC 0")
+        # Clean slate (NOTE: AM is program-only, use ST and AB 1 for host-side control)
+        _gcmd(g, "AB 1; ST; TC 0")  # AB 1 = abort motion only (not program), ST = stop all axes
     except Exception:
         pass
 

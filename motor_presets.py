@@ -44,7 +44,7 @@ class MotorPresetManager:
             commutation_method=CommutationMethod.BX,
             initialization_commands=[
                 "MOA",           # Motor off
-                "BA A",          # Enable sine-drive mode
+                "BAA",           # Enable sine-drive mode
                 "DPA=0",         # Zero position
                 "CEA=0",         # Normal encoder polarity
                 "BMA=5000",      # BM = 20000/4 = 5000
@@ -82,7 +82,7 @@ class MotorPresetManager:
             commutation_method=CommutationMethod.BX,
             initialization_commands=[
                 "MOA",           # Motor off
-                "BA A",          # Enable sine-drive mode
+                "BAA",           # Enable sine-drive mode
                 "DPA=0",         # Zero position
                 "CEA=0",         # Normal encoder polarity
                 "BMA=5000",      # BM = 20000/4 = 5000
@@ -120,7 +120,7 @@ class MotorPresetManager:
             commutation_method=CommutationMethod.BZ,
             initialization_commands=[
                 "MOA",           # Motor off
-                "BA A",          # Enable sine-drive mode
+                "BAA",           # Enable sine-drive mode
                 "DPA=0",         # Zero position
                 "CEA=0",         # Normal encoder polarity
                 "BMA=5000",      # BM = 20000/4 = 5000
@@ -158,7 +158,7 @@ class MotorPresetManager:
             commutation_method=CommutationMethod.BX,
             initialization_commands=[
                 "MOA",           # Motor off
-                "BA A",          # Enable sine-drive mode
+                "BAA",           # Enable sine-drive mode
                 "DPA=0",         # Zero position
                 "CEA=0",         # Normal encoder polarity
                 "BMA=5000",      # BM = counts/rev / pole_pairs
@@ -216,7 +216,7 @@ class MotorPresetManager:
             commutation_method=commutation_method,
             initialization_commands=[
                 "MOA",           # Motor off
-                "BA A",          # Enable sine-drive mode
+                "BAA",           # Enable sine-drive mode
                 "DPA=0",         # Zero position
                 "CEA=0",         # Normal encoder polarity
                 f"BMA={bm_value}",  # Calculated BM

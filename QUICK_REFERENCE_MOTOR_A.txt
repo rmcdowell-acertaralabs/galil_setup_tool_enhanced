@@ -1,0 +1,99 @@
+================================================================================
+QUICK REFERENCE - Motor A Configuration (Cymatix E017)
+Galil DMC-4103 - VERIFIED WORKING - October 6, 2025
+================================================================================
+
+COMPLETE INITIALIZATION SEQUENCE (Copy & Paste into Terminal):
+--------------------------------------------------------------------------------
+MOA
+MTA=-1
+CEA=2
+BAA
+BMA=5000
+KPA=6
+KDA=64
+KIA=0
+TLA=5
+TKA=9.99
+AGA=2
+AUA=9
+BZ <1000>1500
+BZA=3
+SHA
+DPA=0
+
+VERIFICATION TEST:
+--------------------------------------------------------------------------------
+SPA=500
+ACA=2000
+DCA=2000
+PRA=1000
+BGA
+MG _BGA
+MG _TPA
+MG _TEA
+
+Expected Results:
+  _BGA = 0 (motion complete)
+  _TPA ≈ 940-986 (94-99% accurate)
+  _TEA ≈ 14-60 (1-6% error)
+  Motor: COOL
+
+SAVE TO EEPROM (Only after verification!):
+--------------------------------------------------------------------------------
+BN
+
+CRITICAL SETTINGS (DO NOT CHANGE):
+--------------------------------------------------------------------------------
+MT = -1           (Brushless servo, reversed)
+CE = 2            (Encoder reversed)
+BM = 5000         (Brushless modulo)
+BZ method         (NOT BI/BC!)
+Encoder: 20,000 counts/rev (NOT 64,000!)
+
+QUICK DIAGNOSTICS:
+--------------------------------------------------------------------------------
+MG _MOA           ; Should be 0 (motor ON)
+MG _TPA           ; Current position
+MG _TEA           ; Following error
+MG _TTA           ; Torque output
+MG _BDA           ; Commutation angle
+MG _BZA           ; BZ initialization status
+
+TROUBLESHOOTING:
+--------------------------------------------------------------------------------
+Motor oscillates after SHA?
+  → Lower gains: KPA=4, KDA=20
+
+Wrong direction?
+  → Toggle CE between 0 and 2
+
+Motor overheats?
+  → Verify MT=-1, BM=5000, used BZ (not BI/BC)
+
+Position error > 20%?
+  → Re-run: BZA=3
+
+EMERGENCY STOP:
+--------------------------------------------------------------------------------
+STA               ; Stop motion
+MOA               ; Motor off
+
+================================================================================
+Python Quick Start:
+--------------------------------------------------------------------------------
+from controller_servo_maintenance import setup_motor_complete
+import gclib
+
+g = gclib.py()
+g.GOpen("10.1.0.24 -s ALL")
+setup_motor_complete(g, 'A')
+
+================================================================================
+Performance Metrics:
+  Position Accuracy: 94-99%
+  Following Error: 1-6%
+  Temperature: Cool/barely warm
+  Stability: No oscillation
+================================================================================
+

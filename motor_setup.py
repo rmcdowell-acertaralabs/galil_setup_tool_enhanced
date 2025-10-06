@@ -46,11 +46,24 @@ class SetupResult:
 class MotorSetup:
     """Motor setup and tuning system for DMC-4143 + AMP-43540"""
     
-    # Default servo parameters for consistent application
-    DEFAULTS = {
+    # ⚠️ DEPRECATED - Use config.json instead!
+    # These old defaults cause motor overheating
+    DEPRECATED_DEFAULTS = {
         "TL": 8.0, "KI": 0.1, "KP": 10.0, "KD": 50.0,
         "AC": 200000, "DC": 200000
     }
+    
+    # Load verified settings from config.json
+    @staticmethod
+    def load_axis_config(axis='A', config_file='config.json'):
+        """Load verified axis configuration from config file"""
+        try:
+            import json
+            with open(config_file, 'r') as f:
+                config = json.load(f)
+            return config['axis_presets'].get(axis, MotorSetup.DEPRECATED_DEFAULTS)
+        except:
+            return MotorSetup.DEPRECATED_DEFAULTS
     
     def __init__(self, controller, log_callback=None):
         """
@@ -116,13 +129,27 @@ class MotorSetup:
         return ax
     
     def _apply_safe_servo_defaults(self, ax: str):
-        """Apply safe servo defaults to prevent heating and ensure stable operation"""
-        self.send_command(f"TL{ax}={self.DEFAULTS['TL']}")
-        self.send_command(f"KI{ax}={self.DEFAULTS['KI']}")
-        self.send_command(f"KP{ax}={self.DEFAULTS['KP']}")
-        self.send_command(f"KD{ax}={self.DEFAULTS['KD']}")
-        self.send_command(f"AC{ax}={self.DEFAULTS['AC']}")
-        self.send_command(f"DC{ax}={self.DEFAULTS['DC']}")
+        """Apply safe servo defaults from config.json to prevent heating and ensure stable operation"""
+        # Load verified settings from config.json
+        config = self.load_axis_config(ax)
+        
+        # Apply torque limits
+        tl = config.get('tl', 5.0)
+        self.send_command(f"TL{ax}={tl}")
+        
+        # Apply PID gains
+        ki = config.get('ki', 0.0)
+        kp = config.get('kp', 6.0)
+        kd = config.get('kd', 64.0)
+        self.send_command(f"KI{ax}={ki}")
+        self.send_command(f"KP{ax}={kp}")
+        self.send_command(f"KD{ax}={kd}")
+        
+        # Apply motion parameters
+        ac = config.get('ac', 2560000)
+        dc = config.get('dc', 2560000)
+        self.send_command(f"AC{ax}={ac}")
+        self.send_command(f"DC{ax}={dc}")
     
     def _mg_float(self, expr: str) -> Tuple[bool, float]:
         """Debounced readback parsing helper for MG commands"""

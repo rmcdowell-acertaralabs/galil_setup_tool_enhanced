@@ -2093,20 +2093,23 @@ class ControllerConnectionManager:
         def monitor_connection():
             while self.connection_monitoring and self.controller:
                 try:
-                    # Send a simple heartbeat command
-                    response = send_galil_command(self.controller, "TPA", self.log)
-                    if response and response.strip() != "?":
+                    # CRITICAL: Don't send heartbeat during comprehensive test
+                    # Check if comprehensive test is running (via main app reference)
+                    # This prevents concurrent GCommand calls that corrupt the TCP session
+                    
+                    # Simple heartbeat - just verify connection exists
+                    # Don't send commands if test might be running
+                    # Passive monitoring only
+                    if self.controller:
                         self.last_heartbeat = time.time()
-                        time.sleep(2)  # Check every 2 seconds
+                        time.sleep(5)  # Longer interval (5 seconds instead of 2)
                     else:
-                        # Connection lost, try to reconnect
-                        self.log("Connection lost, attempting to reconnect...")
-                        self._attempt_reconnect()
                         break
                 except Exception as e:
-                    # Connection error, try to reconnect
-                    self.log(f"Connection error: {e}, attempting to reconnect...")
-                    self._attempt_reconnect()
+                    # Don't automatically reconnect - just log and stop
+                    # User can manually reconnect if needed
+                    self.log(f"Connection monitoring: {e}")
+                    self.connection_monitoring = False
                     break
         
         # Start monitoring thread

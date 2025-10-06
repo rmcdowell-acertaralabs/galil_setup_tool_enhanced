@@ -120,7 +120,7 @@ class GalilController:
             
             # Testing connection
             # Test the connection with a simple command that works on DMC-4103
-            test_response = self.g.GCommand("TP A")
+            test_response = self.g.GCommand("TPA")
             # Connection test successful
             
             # Store connection info for IP tracking
@@ -173,6 +173,35 @@ class GalilController:
         
         try:
             # Send command and return response
+            response = self.g.GCommand(command)
+            return response
+        except Exception as e:
+            # Log the error for debugging
+            print(f"Command '{command}' failed: {e}")
+            # Check if this is a connection error
+            if "not connected" in str(e).lower() or "connection" in str(e).lower():
+                # Connection lost
+                self.g = None
+            raise
+
+    def send_command_unvalidated(self, command):
+        """
+        Send a command to the controller without validation.
+        Use this for basic information commands that may not be in the command reference.
+        """
+        if not self.g:
+            raise ConnectionError("Controller not connected.")
+        
+        # Safety check: ensure command is a string and doesn't contain widget references
+        if not isinstance(command, str):
+            raise ValueError(f"Command must be a string, got {type(command)}: {command}")
+        
+        # Check for widget references (Tkinter widget paths start with ".")
+        if command.startswith(".") and ("frame" in command or "canvas" in command or "label" in command):
+            raise ValueError(f"Invalid command contains widget reference: {command}")
+        
+        try:
+            # Send command and return response without validation
             response = self.g.GCommand(command)
             return response
         except Exception as e:

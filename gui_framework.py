@@ -961,7 +961,7 @@ class GUIFramework:
         
         main_app.motor_tuning_axis_var = tk.StringVar(value="A")
         axis_combo = ttk.Combobox(axis_frame, textvariable=main_app.motor_tuning_axis_var, 
-                                values=["A", "B", "C", "D"], width=5, state="readonly")
+                                values=["A", "B", "C"], width=5, state="readonly")
         axis_combo.pack(side='left', padx=(10, 0))
         
         # Motor presets
@@ -971,10 +971,10 @@ class GUIFramework:
         tk.Label(preset_frame, text="Motor Presets:", font=("Arial", 10, "bold"),
                bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(anchor='w')
         
-        main_app.motor_tuning_preset_var = tk.StringVar(value="axis_a_20k_4p")
+        main_app.motor_tuning_preset_var = tk.StringVar(value="axis_a_verified")
         preset_combo = ttk.Combobox(preset_frame, textvariable=main_app.motor_tuning_preset_var,
-                                  values=["axis_a_20k_4p", "axis_a_20k_4p_high_voltage", 
-                                         "axis_a_20k_4p_bz", "generic_template"],
+                                  values=["axis_a_verified", "axis_b_template", 
+                                         "axis_c_template", "generic_template"],
                                   width=40, state="readonly")
         preset_combo.pack(anchor='w', pady=(5, 0))
         
@@ -1030,24 +1030,27 @@ class GUIFramework:
                                    fg=self.colors['main_fg'])
         halls_check.pack(side='left', padx=(20, 0))
         
-        # Commutation method
+        # Commutation method (FIXED - BZ only)
         comm_frame = tk.Frame(motor_setup_content, bg=self.colors['main_bg'])
         comm_frame.pack(fill='x', pady=(0, 10))
         
         tk.Label(comm_frame, text="Commutation Method:", font=("Arial", 10, "bold"),
                bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(anchor='w')
         
-        main_app.motor_tuning_commutation_method_var = tk.StringVar(value="bx")
-        comm_combo = ttk.Combobox(comm_frame, textvariable=main_app.motor_tuning_commutation_method_var,
-                                values=["bx", "bz", "bc_bi"],
-                                width=30, state="readonly")
-        comm_combo.pack(anchor='w', pady=(5, 0))
+        main_app.motor_tuning_commutation_method_var = tk.StringVar(value="bz")
         
-        # Add method descriptions
-        method_desc = tk.Label(comm_frame, 
-                             text="bx=Minimal Motion, bz=Drive to Electrical Zero, bc_bi=Hall-based",
-                             font=("Arial", 8), bg=self.colors['main_bg'], fg=self.colors['secondary_fg'])
-        method_desc.pack(anchor='w', pady=(2, 0))
+        # Display only - BZ method is VERIFIED working
+        method_label = tk.Label(comm_frame, 
+                             text="BZ (Voltage-based) - VERIFIED WORKING ✓",
+                             font=("Arial", 10, "bold"), bg=self.colors['success_green'], 
+                             fg='white', padx=10, pady=5, relief='solid', bd=1)
+        method_label.pack(anchor='w', pady=(5, 0))
+        
+        # Add warning note
+        warning_label = tk.Label(comm_frame, 
+                             text="⚠️ DO NOT use BI/BC method - causes motor instability and overheating",
+                             font=("Arial", 8), bg=self.colors['main_bg'], fg=self.colors['error_red'])
+        warning_label.pack(anchor='w', pady=(5, 0))
         
         # Setup buttons
         setup_buttons_frame = tk.Frame(motor_setup_content, bg=self.colors['main_bg'])
@@ -1072,170 +1075,312 @@ class GUIFramework:
                                                 state='disabled')
         main_app.stop_motor_tuning_btn.pack(side='left', padx=(0, 10))
 
-        # PID Configuration Section
-        pid_frame = tk.LabelFrame(tuning_frame, text="⚙️ PID Configuration", 
-                                font=("Arial", 12, "bold"),
-                                bg=self.colors['main_bg'], fg=self.colors['main_fg'],
-                                relief='solid', bd=1)
-        pid_frame.pack(fill='x', pady=(0, 20), padx=10)
-        
-        # PID content container
-        pid_content = tk.Frame(pid_frame, bg=self.colors['main_bg'])
-        pid_content.pack(fill='x', padx=15, pady=15)
-        
-        # Axis selection
-        tk.Label(pid_content, text="Axis:", font=("Arial", 10, "bold"),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(anchor='w')
-        
-        main_app.axis_var = tk.StringVar(value="A")
-        axis_combo = ttk.Combobox(pid_content, textvariable=main_app.axis_var, 
-                                 values=["A", "B", "C", "D"], width=10)
-        axis_combo.pack(anchor='w', pady=(5, 15))
-        
-        # KP input
-        tk.Label(pid_content, text="KP:", font=("Arial", 10, "bold"),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(anchor='w')
-        
-        main_app.kp_entry = tk.Entry(pid_content, font=("Arial", 10), width=15)
-        main_app.kp_entry.pack(anchor='w', pady=(5, 10))
-        main_app.kp_entry.insert(0, "10.0")
-        
-        # KI input
-        tk.Label(pid_content, text="KI:", font=("Arial", 10, "bold"),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(anchor='w')
-        
-        main_app.ki_entry = tk.Entry(pid_content, font=("Arial", 10), width=15)
-        main_app.ki_entry.pack(anchor='w', pady=(5, 10))
-        main_app.ki_entry.insert(0, "0.1")
-        
-        # KD input
-        tk.Label(pid_content, text="KD:", font=("Arial", 10, "bold"),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(anchor='w')
-        
-        main_app.kd_entry = tk.Entry(pid_content, font=("Arial", 10), width=15)
-        main_app.kd_entry.pack(anchor='w', pady=(5, 15))
-        main_app.kd_entry.insert(0, "50.0")
-        
-        # Tune button
-        tune_btn = tk.Button(pid_content, text="Tune Axis", 
-                           font=("Arial", 10, "bold"),
-                           bg=self.colors['success_green'], fg='white',
-                           command=main_app.tune_axis)
-        tune_btn.pack(anchor='w')
+        # PID Configuration Section - REMOVED
+        # PID settings are now part of the verified configuration loaded from config.json
+        # Use "Run Complete Setup" button above to apply all verified settings
+        # For manual PID adjustment, use the Command Interface below
 
-        # Command Interface Section
-        command_frame = tk.LabelFrame(tuning_frame, text="💻 Command Interface", 
+        # Motor Testing Terminal Section
+        command_frame = tk.LabelFrame(tuning_frame, text="🖥️ Motor Testing Terminal", 
                                     font=("Arial", 12, "bold"),
                                     bg=self.colors['main_bg'], fg=self.colors['main_fg'],
                                     relief='solid', bd=1)
-        command_frame.pack(fill='x', pady=(20, 20), padx=10)
+        command_frame.pack(fill='both', expand=True, pady=(20, 20), padx=10)
         
-        # Command interface content
-        command_content = tk.Frame(command_frame, bg=self.colors['main_bg'])
-        command_content.pack(fill='x', padx=15, pady=15)
+        # Terminal interface with two-column layout
+        terminal_container = tk.Frame(command_frame, bg=self.colors['main_bg'])
+        terminal_container.pack(fill='both', expand=True, padx=15, pady=15)
         
-        # Command input
-        cmd_input_frame = tk.Frame(command_content, bg=self.colors['main_bg'])
-        cmd_input_frame.pack(fill='x', pady=(0, 10))
+        # LEFT COLUMN: Step-by-step testing guide
+        guide_frame = tk.Frame(terminal_container, bg=self.colors['main_bg'], width=400)
+        guide_frame.pack(side='left', fill='both', expand=False, padx=(0, 10))
+        guide_frame.pack_propagate(False)
         
-        tk.Label(cmd_input_frame, text="Send Command:", font=("Arial", 10, "bold"),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
+        tk.Label(guide_frame, text="📋 Step-by-Step Testing Guide", 
+                font=("Arial", 11, "bold"),
+                bg=self.colors['accent_blue'], fg='white', 
+                padx=10, pady=5).pack(fill='x')
         
-        main_app.motor_tuning_command_entry = tk.Entry(cmd_input_frame, font=("Courier", 10), width=30)
-        main_app.motor_tuning_command_entry.pack(side='left', padx=(10, 10))
+        # Testing steps guide
+        guide_text = scrolledtext.ScrolledText(guide_frame, font=("Courier", 9),
+                                              bg='#1e1e1e', fg='#00ff00',
+                                              wrap='word', height=25)
+        guide_text.pack(fill='both', expand=True, pady=(5, 0))
+        
+        # Insert testing guide
+        testing_guide = """MOTOR TESTING PROCEDURE
+Cymatix E017 Brushless Motor
+Verified Working Configuration
+
+═══════════════════════════════════════
+STEP 1: APPLY VERIFIED CONFIGURATION
+═══════════════════════════════════════
+MOA
+MTA=-1
+CEA=2
+BAA
+BMA=5000
+KPA=6
+KDA=64
+KIA=0
+TLA=5
+TKA=9.99
+AGA=2
+AUA=9
+
+═══════════════════════════════════════
+STEP 2: INITIALIZE BRUSHLESS (BZ METHOD)
+═══════════════════════════════════════
+BZ <1000>1500
+BZA=3
+(Wait ~3 seconds for init to complete)
+
+═══════════════════════════════════════
+STEP 3: ENABLE SERVO & ZERO POSITION
+═══════════════════════════════════════
+SHA
+DPA=0
+
+Verify:
+MG _MOA     (should be 0 = ON)
+MG _TPA     (should be ~0)
+
+═══════════════════════════════════════
+STEP 4: SET MOTION PROFILE
+═══════════════════════════════════════
+SPA=500
+ACA=2000
+DCA=2000
+
+═══════════════════════════════════════
+STEP 5: TEST SMALL MOVE
+═══════════════════════════════════════
+PRA=1000
+BGA
+
+Wait ~3 seconds, then check:
+MG _BGA     (should be 0 = done)
+MG _TPA     (should be ~940-986)
+MG _TEA     (should be <100)
+
+✓ EXPECTED: Motor cool, ~94% accuracy
+
+═══════════════════════════════════════
+STEP 6: RETURN TO ZERO
+═══════════════════════════════════════
+PAA=0
+BGA
+
+Wait, then check:
+MG _TPA     (should be ~70-80)
+
+═══════════════════════════════════════
+STEP 7: TEST LARGER MOVE
+═══════════════════════════════════════
+PRA=5000
+BGA
+
+Wait ~5 seconds, then:
+MG _TPA     (should be ~4971)
+MG _TEA     (should be <50)
+
+✓ EXPECTED: Motor cool, ~99% accuracy
+
+═══════════════════════════════════════
+STEP 8: SAVE TO EEPROM (CRITICAL!)
+═══════════════════════════════════════
+BN
+
+Wait ~5 seconds for completion.
+Settings now persist on power cycle!
+
+═══════════════════════════════════════
+DIAGNOSTICS (If problems occur)
+═══════════════════════════════════════
+MG _MTA     (motor type: should be -1)
+MG _CEA     (encoder: should be 2)
+MG _BMA     (brushless: should be 5000)
+MG _KPA     (P gain: should be 6)
+MG _KDA     (D gain: should be 64)
+MG _TLA     (torque: should be 5)
+MG _BDA     (commutation angle)
+MG _TTA     (torque output)
+
+═══════════════════════════════════════
+EMERGENCY STOP
+═══════════════════════════════════════
+STA         (stop motion)
+AB 1        (abort all)
+MOA         (motor off - safe state)
+
+═══════════════════════════════════════
+"""
+        guide_text.insert('1.0', testing_guide)
+        guide_text.config(state='disabled')
+        
+        # RIGHT COLUMN: Terminal and command buttons
+        terminal_frame = tk.Frame(terminal_container, bg=self.colors['main_bg'])
+        terminal_frame.pack(side='left', fill='both', expand=True)
+        
+        # Command input area
+        cmd_input_frame = tk.Frame(terminal_frame, bg=self.colors['main_bg'])
+        cmd_input_frame.pack(fill='x', pady=(0, 5))
+        
+        tk.Label(cmd_input_frame, text="Command:", font=("Courier", 10, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left', padx=(0, 5))
+        
+        main_app.motor_tuning_command_entry = tk.Entry(cmd_input_frame, font=("Courier", 11), 
+                                                       bg='#2b2b2b', fg='#00ff00',
+                                                       insertbackground='#00ff00')
+        main_app.motor_tuning_command_entry.pack(side='left', fill='x', expand=True, padx=(0, 5))
         main_app.motor_tuning_command_entry.bind('<Return>', lambda e: main_app.send_motor_tuning_command())
         
-        # Add real-time command validation
-        def validate_motor_tuning_command(*args):
-            command = main_app.motor_tuning_command_entry.get().strip()
-            if command:
-                validation = self.validate_command(command)
-                self.show_command_validation_feedback(validation, main_app.motor_tuning_command_entry)
-            else:
-                self.clear_command_validation_feedback(main_app.motor_tuning_command_entry)
-        
-        main_app.motor_tuning_command_entry.bind('<KeyRelease>', validate_motor_tuning_command)
-        main_app.motor_tuning_command_entry.bind('<FocusOut>', validate_motor_tuning_command)
-        
-        main_app.send_motor_tuning_command_btn = tk.Button(cmd_input_frame, text="Send", 
+        main_app.send_motor_tuning_command_btn = tk.Button(cmd_input_frame, text="▶ Send", 
                                             font=("Arial", 10, "bold"),
                                             bg=self.colors['accent_blue'], fg='white',
                                             command=main_app.send_motor_tuning_command)
         main_app.send_motor_tuning_command_btn.pack(side='left', padx=(0, 5))
         
-        # Add help button for command validation
-        def show_motor_tuning_help():
-            command = main_app.motor_tuning_command_entry.get().strip()
-            if command:
-                help_text = self.get_command_help(command)
-                if help_text:
-                    messagebox.showinfo("Command Help", help_text)
-                else:
-                    messagebox.showinfo("Command Help", f"No help available for command: {command}")
-            else:
-                messagebox.showinfo("Command Help", "Enter a command to see help information")
-        
-        help_btn = tk.Button(cmd_input_frame, text="?", 
-                           font=("Arial", 10, "bold"),
-                           bg=self.colors['accent_green'], fg='white',
-                           command=show_motor_tuning_help)
-        help_btn.pack(side='left', padx=(0, 10))
-        
-        main_app.clear_motor_tuning_commands_btn = tk.Button(cmd_input_frame, text="Clear", 
+        main_app.clear_motor_tuning_commands_btn = tk.Button(cmd_input_frame, text="🗑️ Clear", 
                                               font=("Arial", 10, "bold"),
                                               bg=self.colors['warning_orange'], fg='white',
                                               command=main_app.clear_motor_tuning_command_history)
         main_app.clear_motor_tuning_commands_btn.pack(side='left')
         
-        # Quick command buttons
-        quick_cmd_frame = tk.Frame(command_content, bg=self.colors['main_bg'])
-        quick_cmd_frame.pack(fill='x', pady=(10, 0))
+        # Quick Commands Section
+        quick_cmd_frame = tk.Frame(terminal_frame, bg=self.colors['main_bg'])
+        quick_cmd_frame.pack(fill='x', pady=(5, 5))
         
-        tk.Label(quick_cmd_frame, text="Quick Commands:", font=("Arial", 9, "bold"),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(anchor='w')
+        tk.Label(quick_cmd_frame, text="Quick Commands (Step 1-3):", font=("Arial", 9, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(anchor='w', pady=(0, 3))
         
-        quick_buttons_frame = tk.Frame(quick_cmd_frame, bg=self.colors['main_bg'])
-        quick_buttons_frame.pack(fill='x', pady=(5, 0))
+        # Configuration commands (Step 1)
+        config_row1 = tk.Frame(quick_cmd_frame, bg=self.colors['main_bg'])
+        config_row1.pack(fill='x', pady=2)
         
-        # Common commands
-        common_commands = [
-            ("TPA", "Tell Position A"),
-            ("TPB", "Tell Position B"), 
-            ("TPC", "Tell Position C"),
-            ("TPD", "Tell Position D"),
-            ("MOA", "Motor Off A"),
-            ("SHA", "Servo Here A"),
-            ("QHA", "Query Hall A"),
-            ("MG _BMA", "Brushless Modulo A")
+        config_cmds_1 = [
+            "MOA", "MTA=-1", "CEA=2", "BAA", "BMA=5000"
         ]
-        
-        for i, (cmd, desc) in enumerate(common_commands):
-            btn = tk.Button(quick_buttons_frame, text=f"{cmd}", 
-                          font=("Arial", 8), width=8,
-                          bg=self.colors['secondary_bg'], fg=self.colors['main_fg'],
+        for cmd in config_cmds_1:
+            btn = tk.Button(config_row1, text=cmd, font=("Courier", 8), width=10,
+                          bg='#4a4a4a', fg='white',
                           command=lambda c=cmd: main_app.insert_motor_tuning_command(c))
-            btn.pack(side='left', padx=(0, 5), pady=2)
-            
-            # Add tooltip description
-            self._create_tooltip(btn, desc)
+            btn.pack(side='left', padx=2)
         
-        # Command history
-        cmd_history_frame = tk.Frame(command_content, bg=self.colors['main_bg'])
+        config_row2 = tk.Frame(quick_cmd_frame, bg=self.colors['main_bg'])
+        config_row2.pack(fill='x', pady=2)
+        
+        config_cmds_2 = [
+            "KPA=6", "KDA=64", "KIA=0", "TLA=5", "TKA=9.99"
+        ]
+        for cmd in config_cmds_2:
+            btn = tk.Button(config_row2, text=cmd, font=("Courier", 8), width=10,
+                          bg='#4a4a4a', fg='white',
+                          command=lambda c=cmd: main_app.insert_motor_tuning_command(c))
+            btn.pack(side='left', padx=2)
+        
+        config_row3 = tk.Frame(quick_cmd_frame, bg=self.colors['main_bg'])
+        config_row3.pack(fill='x', pady=2)
+        
+        config_cmds_3 = [
+            "AGA=2", "AUA=9", "BZ <1000>1500", "BZA=3", "SHA", "DPA=0"
+        ]
+        for cmd in config_cmds_3:
+            btn = tk.Button(config_row3, text=cmd, font=("Courier", 8), width=12,
+                          bg='#4a4a4a', fg='white',
+                          command=lambda c=cmd: main_app.insert_motor_tuning_command(c))
+            btn.pack(side='left', padx=2)
+        
+        # Separator
+        tk.Label(quick_cmd_frame, text="Motion Testing (Step 4-7):", font=("Arial", 9, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(anchor='w', pady=(8, 3))
+        
+        # Motion commands
+        motion_row1 = tk.Frame(quick_cmd_frame, bg=self.colors['main_bg'])
+        motion_row1.pack(fill='x', pady=2)
+        
+        motion_cmds = [
+            "SPA=500", "ACA=2000", "DCA=2000", "PRA=1000", "BGA", "PAA=0"
+        ]
+        for cmd in motion_cmds:
+            btn = tk.Button(motion_row1, text=cmd, font=("Courier", 8), width=10,
+                          bg='#2d5a2d', fg='white',
+                          command=lambda c=cmd: main_app.insert_motor_tuning_command(c))
+            btn.pack(side='left', padx=2)
+        
+        # Separator
+        tk.Label(quick_cmd_frame, text="Diagnostics:", font=("Arial", 9, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(anchor='w', pady=(8, 3))
+        
+        # Diagnostic commands
+        diag_row = tk.Frame(quick_cmd_frame, bg=self.colors['main_bg'])
+        diag_row.pack(fill='x', pady=2)
+        
+        diag_cmds = [
+            "MG _TPA", "MG _TEA", "MG _BGA", "MG _MOA", "MG _TTA", "MG _BDA"
+        ]
+        for cmd in diag_cmds:
+            btn = tk.Button(diag_row, text=cmd, font=("Courier", 8), width=10,
+                          bg='#2a4a7f', fg='white',
+                          command=lambda c=cmd: main_app.insert_motor_tuning_command(c))
+            btn.pack(side='left', padx=2)
+        
+        # Emergency commands
+        emergency_row = tk.Frame(quick_cmd_frame, bg=self.colors['main_bg'])
+        emergency_row.pack(fill='x', pady=2)
+        
+        tk.Label(emergency_row, text="Emergency:", font=("Arial", 9, "bold"),
+               bg=self.colors['main_bg'], fg=self.colors['error_red']).pack(side='left', padx=(0, 10))
+        
+        emerg_cmds = [
+            ("STA", "Stop"), ("AB 1", "Abort"), ("MOA", "Motor Off"), ("BN", "Save")
+        ]
+        for cmd, label in emerg_cmds:
+            btn = tk.Button(emergency_row, text=f"{cmd}\n({label})", font=("Courier", 7), width=12,
+                          bg='#7f2a2a', fg='white',
+                          command=lambda c=cmd: main_app.insert_motor_tuning_command(c))
+            btn.pack(side='left', padx=2)
+        
+        # Terminal output
+        cmd_history_frame = tk.Frame(terminal_frame, bg=self.colors['main_bg'])
         cmd_history_frame.pack(fill='both', expand=True, pady=(10, 0))
         
-        tk.Label(cmd_history_frame, text="Command History:", font=("Arial", 10, "bold"),
+        tk.Label(cmd_history_frame, text="Terminal Output:", font=("Arial", 10, "bold"),
                bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(anchor='w')
         
-        main_app.motor_tuning_command_history_text = tk.Text(cmd_history_frame, height=8, width=80,
-                                              font=("Courier", 9), bg=self.colors['card_bg'],
-                                              fg=self.colors['main_fg'], relief='solid', bd=1)
+        # Terminal-style output
+        main_app.motor_tuning_command_history_text = scrolledtext.ScrolledText(
+            cmd_history_frame, 
+            font=("Courier", 10),
+            bg='#1e1e1e', 
+            fg='#00ff00',
+            insertbackground='#00ff00',
+            relief='solid', 
+            bd=1,
+            wrap='none'
+        )
         main_app.motor_tuning_command_history_text.pack(fill='both', expand=True, pady=(5, 0))
         
-        # Add scrollbar to command history
-        cmd_scrollbar = tk.Scrollbar(cmd_history_frame, orient="vertical", 
-                                   command=main_app.motor_tuning_command_history_text.yview)
-        main_app.motor_tuning_command_history_text.configure(yscrollcommand=cmd_scrollbar.set)
-        cmd_scrollbar.pack(side="right", fill="y")
+        # Add initial terminal message
+        welcome_msg = """╔══════════════════════════════════════════════════════════════╗
+║  GALIL DMC-4103 MOTOR TESTING TERMINAL                       ║
+║  Cymatix E017 Brushless Motor - Verified Configuration       ║
+╚══════════════════════════════════════════════════════════════╝
+
+Connected to: 10.1.0.21
+Motor: Axis A (Cymatix E017)
+Configuration: Verified (prevents overheating)
+
+Instructions:
+  1. Follow steps in left panel
+  2. Click command buttons or type commands
+  3. Press Enter or click Send
+  4. Monitor output below
+
+Ready for commands...
+:"""
+        main_app.motor_tuning_command_history_text.insert('1.0', welcome_msg)
+        main_app.motor_tuning_command_history_text.see('end')
         
         # Motor tuning page complete
         # Update scroll region
@@ -1824,7 +1969,7 @@ class GUIFramework:
         
         main_app.jog_axis_var = tk.StringVar(value="A")
         jog_axis_combo = ttk.Combobox(jog_axis_frame, textvariable=main_app.jog_axis_var, 
-                                     values=["A", "B", "C", "D"], width=10)
+                                     values=["A", "B", "C"], width=10)
         jog_axis_combo.pack(side='left', padx=(10, 20))
         
         # Jog distance
@@ -1914,7 +2059,7 @@ class GUIFramework:
         
         main_app.test_axis_var = tk.StringVar(value="A")
         test_axis_combo = ttk.Combobox(motion_controls_frame, textvariable=main_app.test_axis_var, 
-                                      values=["A", "B", "C", "D"], width=10)
+                                      values=["A", "B", "C"], width=10)
         test_axis_combo.pack(side='left', padx=(10, 20))
         
         # Distance input
@@ -2147,7 +2292,7 @@ class GUIFramework:
     
     def show_command_validation_feedback(self, validation: CommandValidation, entry_widget=None):
         """Show validation feedback in the UI"""
-        if validation.is_valid:
+        if validation.valid:
             # Command is valid - show success feedback
             if entry_widget:
                 entry_widget.configure(bg='lightgreen')
@@ -2157,9 +2302,8 @@ class GUIFramework:
             # Command is invalid - show error feedback
             if entry_widget:
                 entry_widget.configure(bg='lightcoral')
-            self.log_message(f"Command validation error: {validation.error_message}")
-            if validation.suggestion:
-                self.log_message(f"Suggestion: {validation.suggestion}")
+            if validation.error_message:
+                self.log_message(f"Command validation error: {validation.error_message}")
     
     def clear_command_validation_feedback(self, entry_widget):
         """Clear validation feedback styling from entry widget"""

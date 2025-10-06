@@ -40,7 +40,7 @@ class ControllerCommands:
             
         try:
             # Test basic communication with a simple command
-            response = self.controller.send_command("TP A").strip()
+            response = self.controller.send_command("TPA").strip()
             if response == "?":
                 self.log("WARNING: Basic controller communication test failed - controller may not be responding properly")
                 return False
@@ -67,8 +67,8 @@ class ControllerCommands:
             ("MTA=-1", "servo motor reversed"),
             ("MTA=2", "stepper motor"),
             ("MTA=-2", "stepper motor reversed"),
-            ("MT A=1", "with space - incorrect but test anyway"),
-            ("MT A", "query current setting"),
+            ("MTA=1", "brushless servo motor"),
+            ("MTA", "query current setting"),
             ("MTA", "query current setting"),
             ("MT ?", "query all motor types"),
             ("MTA=?", "query axis A motor type")
@@ -98,7 +98,7 @@ class ControllerCommands:
             mt_all = self.controller.send_command("MT ?").strip()
             self.log(f"MT ? (all axes): {mt_all}")
             
-            mta_single = self.controller.send_command("MT A=?").strip()
+            mta_single = self.controller.send_command("MTA=?").strip()
             self.log(f"MTA=? (axis A only): {mta_single}")
             
             if mt_all != mta_single:

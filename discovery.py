@@ -4,6 +4,7 @@
 import threading
 from typing import Dict, Iterable, Tuple, Union
 from command_validator import CommandValidation, DMC4103CommandValidator
+from galil_connection import SUPPORTED_AXES, MAX_DI, MAX_DO
 
 # Global command validator instance
 _command_validator = DMC4103CommandValidator()
@@ -16,17 +17,18 @@ def safe_join(t, timeout=None):
     try: t.join(timeout=timeout)
     except: pass
 
-def gc(g, cmd: str) -> str:
+def gc(g, cmd: str, validate: bool = True) -> str:
     """Centralized controller command wrapper that validates commands and raises RuntimeError with TC1 details"""
     try:
-        # Validate command before sending to controller
-        validation = _command_validator.validate_command(cmd)
-        if not validation.valid:
-            raise RuntimeError(f"Command validation failed: {cmd} - {validation.error_message}")
-        
-        # Log warnings if any
-        if validation.warning_message:
-            print(f"[VALIDATION WARNING] {cmd}: {validation.warning_message}")
+        if validate:
+            # Validate command before sending to controller
+            validation = _command_validator.validate_command(cmd)
+            if not validation.valid:
+                raise RuntimeError(f"Command validation failed: {cmd} - {validation.error_message}")
+            
+            # Log warnings if any
+            if validation.warning_message:
+                print(f"[VALIDATION WARNING] {cmd}: {validation.warning_message}")
         
         result = g.GCommand(cmd)
         if result and result.strip() == "?":
@@ -45,6 +47,35 @@ def gc(g, cmd: str) -> str:
             raise  # Re-raise validation errors
         if "Controller rejected:" in str(e):
             raise  # Re-raise our custom error
+        # Check for connection-related errors
+        error_str = str(e).lower()
+        if any(conn_error in error_str for conn_error in ["connection", "timeout", "network", "socket", "ethernet"]):
+            print(f"Connection lost, attempting to reconnect...")
+            # Try to trigger reconnection in the controller wrapper
+            if hasattr(g, 'controller') and hasattr(g.controller, 'reconnect'):
+                try:
+                    g.controller.reconnect()
+                    print("Reconnection successful!")
+                    
+                    # CRITICAL: Re-enable servos after reconnection
+                    print("CRITICAL: Re-enabling servos after reconnection...")
+                    import time
+                    for axis in ["A", "B", "C", "D"]:
+                        try:
+                            g.GCommand(f"SH{axis}")  # Enable servo
+                            time.sleep(0.1)
+                            mo_response = g.GCommand(f"MG _MO{axis}")
+                            if mo_response and mo_response != "?":
+                                mo_value = float(mo_response.split(",")[0])
+                                if mo_value == 0.0:
+                                    print(f"CRITICAL: Axis {axis} servo re-enabled after reconnection")
+                                else:
+                                    print(f"CRITICAL: Axis {axis} servo re-enable failed after reconnection (MO={mo_value})")
+                        except Exception as servo_error:
+                            print(f"CRITICAL: Error re-enabling servo {axis} after reconnection: {servo_error}")
+                    
+                except Exception as reconnect_error:
+                    print(f"Reconnection failed: {reconnect_error}")
         # For other exceptions, wrap them
         raise RuntimeError(f"Controller command failed: {cmd} - {e}")
 
@@ -58,9 +89,9 @@ def _norm_axes(axes: AxisList) -> Tuple[str, ...]:
         raise ValueError("No valid axes provided (A-D).")
     return axes
 
-def _cmd(g, cmd: str) -> str:
+def _cmd(g, cmd: str, validate: bool = True) -> str:
     """Send a command and return the (stripped) response (may be empty)."""
-    return gc(g, cmd)
+    return gc(g, cmd, validate)
 
 def _num(s: str) -> float:
     try:
@@ -68,22 +99,22 @@ def _num(s: str) -> float:
     except Exception:
         return float("nan")
 
-def _get_ts(g, axis: str) -> int:
-    v = _cmd(g, f"MG _TS{axis}")
+def _get_ts(g, axis: str, validate_commands=False) -> int:
+    v = _cmd(g, f"MG _TS{axis}", validate_commands)
     try:
         # take only first value if a comma sneaks in
         return int(float(v.split(',')[0]))
     except Exception:
         return 0  # treat as unknown but not fatal
 
-def _get_tp(g, axis: str) -> float:
+def _get_tp(g, axis: str, validate_commands=False) -> float:
     # Use proper TP{axis} syntax for DMC-4143 compatibility
-    return _num(_cmd(g, f"TP{axis}"))
+    return _num(_cmd(g, f"TP{axis}", validate_commands))
 
-def _get_ta_bankbits(g) -> int:
+def _get_ta_bankbits(g, validate_commands=False) -> int:
     """41x3-safe read of amplifier error banks. Combine _TA0.._TA3."""
     def _r(name):
-        s = _cmd(g, f"MG {name}")  # will raise if "?"
+        s = _cmd(g, f"MG {name}", validate_commands)  # will raise if "?"
         try:
             return int(float(s))
         except Exception:
@@ -109,8 +140,8 @@ def _tc_clear_silent(g):
     except Exception:
         pass
 
-# Adjust if your 41x3 has >8 isolated outputs; expanded to 1..16 for broader coverage
-OUTPUT_BITS = range(1, 17)  # was 1..8; try 1..16 (or 1..24 if your unit has more)
+# Hardware only has 8 isolated outputs
+OUTPUT_BITS = range(1, MAX_DO + 1)  # 1..8 only (hardware limit)
 
 # Once a bit/polarity works we cache it here to avoid scanning every run.
 AMP_ENABLE_BITS = {}  # e.g. {"A": (3, "active-low")}
@@ -118,21 +149,21 @@ AMP_ENABLE_BITS = {}  # e.g. {"A": (3, "active-low")}
 # AMP_ENABLE_BITS = {"A": (3, "active-low"), "B": (4, "active-high")}
 # then set autoscan=False for faster, deterministic future runs
 
-def _try_enable_bit(g, axis: str, bit: int, active_low: bool) -> bool:
+def _try_enable_bit(g, axis: str, bit: int, active_low: bool, validate_commands=False) -> bool:
     """Toggle one digital output as amp-enable, then attempt SH"""
     axis = axis.upper()
-    _cmd(g, f"MO{axis}")
+    # DO NOT turn off servo first - just try to enable
     import time
     time.sleep(0.1)  # 100ms delay
-    _cmd(g, f"{'CB' if active_low else 'SB'} {bit}")   # assert enabling level
+    _cmd(g, f"{'CB' if active_low else 'SB'} {bit}", validate_commands)   # assert enabling level
     time.sleep(0.05)  # 50ms delay
-    _cmd(g, f"SH{axis}")
-    mo_response = _cmd(g, f"MG _MO{axis}")
+    _cmd(g, f"SH{axis}", validate_commands)
+    mo_response = _cmd(g, f"MG _MO{axis}", validate_commands)
     mo_response = mo_response.replace('\r', '').replace('\n', '').replace(':', '') if mo_response else "1"
     mo = float(mo_response.split(",")[0])
     return mo == 0.0
 
-def enable_servo_or_explain(g, axis: str, autoscan: bool) -> Tuple[bool, str]:
+def enable_servo_or_explain(g, axis: str, autoscan: bool, validate_commands: bool = False) -> Tuple[bool, str]:
     """
     Deterministic servo bring-up (amp-enable + verify)
     """
@@ -140,14 +171,14 @@ def enable_servo_or_explain(g, axis: str, autoscan: bool) -> Tuple[bool, str]:
 
     # 0) Guarantee servo mode (defensive)
     try: 
-        _cmd(g, f"MT{axis}=0")
+        _cmd(g, f"MT{axis}=0", validate_commands)
     except: 
         pass
 
     # 1) If we already learned the bit, use it.
     if axis in AMP_ENABLE_BITS:
         bit, pol = AMP_ENABLE_BITS[axis]
-        if _try_enable_bit(g, axis, bit, pol == "active-low"):
+        if _try_enable_bit(g, axis, bit, pol == "active-low", validate_commands):
             return True, f"enabled via DO{bit} ({pol})"
 
     # 2) One-shot autoscan to learn the output bit + polarity.
@@ -155,23 +186,23 @@ def enable_servo_or_explain(g, axis: str, autoscan: bool) -> Tuple[bool, str]:
         for bit in OUTPUT_BITS:
             # active-high first
             try:
-                if _try_enable_bit(g, axis, bit, active_low=False):
+                if _try_enable_bit(g, axis, bit, active_low=False, validate_commands=validate_commands):
                     AMP_ENABLE_BITS[axis] = (bit, "active-high")
                     return True, f"autoscan DO{bit} active-high"
             except Exception:
                 pass
             # then active-low
             try:
-                if _try_enable_bit(g, axis, bit, active_low=True):
+                if _try_enable_bit(g, axis, bit, active_low=True, validate_commands=validate_commands):
                     AMP_ENABLE_BITS[axis] = (bit, "active-low")
                     return True, f"autoscan DO{bit} active-low"
             except Exception:
                 pass
 
     # 3) Still OFF → tell the operator exactly what's blocking.
-    mo  = (_cmd(g, f"MG _MO{axis}") or "").strip()
-    ts  = (_cmd(g, f"MG _TS{axis}") or "").strip()
-    ta0 = (_cmd(g, "MG _TA0") or "").strip()
+    mo  = (_cmd(g, f"MG _MO{axis}", validate_commands) or "").strip()
+    ts  = (_cmd(g, f"MG _TS{axis}", validate_commands) or "").strip()
+    ta0 = (_cmd(g, "MG _TA0", validate_commands) or "").strip()
     return False, (f"Servo did not engage on {axis} (MO{axis}={mo}). "
                    f"Check amp-enable wiring/E-stop/drive-ready. TS={ts} TA0={ta0}")
 
@@ -297,7 +328,7 @@ def _read_out(g, i):
     s = s.replace('\r', '').replace('\n', '').replace(':', '')
     return int(float(s.split(",")[0]))
 
-def detect_outputs(g, max_try=32):
+def detect_outputs(g, max_try=MAX_DO):
     """Detect how many outputs exist by trying SB/CB until we hit ?"""
     last = 0
     for i in range(1, max_try+1):
@@ -328,10 +359,11 @@ def _write_out(g, i, val):
     """Write output using SB/CB commands only (no @OUT assignments)"""
     write_do(g, i, val)
 
-def detect_ranges(g, max_probe=32):
+def detect_ranges(g, max_probe=MAX_DO):
     """Detect actual hardware IO ranges using new detection methods"""
-    nin = detect_inputs(g, max_probe)
-    nout = detect_outputs(g, max_probe)
+    # Hardware has 8 inputs and 8 outputs only
+    nin = detect_inputs(g, min(max_probe, MAX_DI))
+    nout = detect_outputs(g, min(max_probe, MAX_DO))
     print(f"[IO] detected IN 1..{nin}, OUT 1..{nout}")
     return nin, nout
 
@@ -386,7 +418,8 @@ def io_correlation_probe(g):
         print(f"[IO-CORRELATION] Base inputs: {base_ins}")
         
         # Only test outputs within detected range
-        for bit in range(1, min(nout+1, 17)):  # cap at 16 for safety
+        # Hardware only has 8 outputs (not 16) - limit testing
+        for bit in range(1, min(nout+1, MAX_DO+1)):  # cap at 8 for actual hardware
             for set_high in (True, False):
                 try:
                     _write_out(g, bit, set_high)
@@ -438,12 +471,12 @@ def _quiesce(g):
         pass
     _tc_clear_silent(g)
 
-def _wait_idle(g, axis, timeout_ms=1000):
+def _wait_idle(g, axis, timeout_ms=1000, validate_commands=False):
     """Wait for axis to be idle (motion bit = 0)."""
     import time
     t0 = time.time()
     while True:
-        ts = _get_ts(g, axis)
+        ts = _get_ts(g, axis, validate_commands)
         in_motion = (ts >> 7) & 1
         if not in_motion:
             return True
@@ -460,7 +493,8 @@ def setup_baseline(g):
     for ax in "AB":  # only the axes you use
         try: gc(g, f"MT{ax}=0")  # 0 = servo
         except: pass
-    for cmd in ("CN 0", "OE 0"):
+    # CN -1 = limits active low (safe for no limit switches - inputs float high)
+    for cmd in ("CN -1", "OE 0"):
         try: gc(g, cmd)
         except: pass
     # Engage only the axes you use
@@ -567,21 +601,21 @@ def _decode_ts(ts: int) -> Dict[str, int]:
         "latch":            (ts >> 0) & 1,
     }
 
-def _set_profile(g, axis: str, sp: int, ac: int, dc: int) -> None:
+def _set_profile(g, axis: str, sp: int, ac: int, dc: int, validate_commands=False) -> None:
     # SP X=…, AC X=…, DC X=…
-    _cmd(g, f"SP{axis}={int(sp)}")
-    _cmd(g, f"AC{axis}={int(ac)}")
-    _cmd(g, f"DC{axis}={int(dc)}")
+    _cmd(g, f"SP{axis}={int(sp)}", validate_commands)
+    _cmd(g, f"AC{axis}={int(ac)}", validate_commands)
+    _cmd(g, f"DC{axis}={int(dc)}", validate_commands)
 
-def _nudge(g, axis: str, counts: int) -> None:
+def _nudge(g, axis: str, counts: int, validate_commands=False) -> None:
     # Wait for motor to be idle before issuing PR command
-    _wait_idle(g, axis, timeout_ms=1000)
+    _wait_idle(g, axis, timeout_ms=1000, validate_commands=validate_commands)
     # PR X=…, BGX, AMX
-    _cmd(g, f"PR{axis}={int(counts)}")
-    _cmd(g, f"BG{axis}")
+    _cmd(g, f"PR{axis}={int(counts)}", validate_commands)
+    _cmd(g, f"BG{axis}", validate_commands)
     # AM command might not be supported on DMC-4143, make it optional
     try:
-        _cmd(g, f"AM{axis}")
+        _cmd(g, f"AM{axis}", validate_commands)
     except:
         pass  # AM command not supported, continue anyway
 
@@ -617,7 +651,7 @@ def safe_probe(g, axis, sp=1500, ac=8000, dc=8000, nudge=16000):
     moved = abs(tp_pos) >= 10  # Very sensitive threshold - any significant movement
     return moved, f"tp_pos={tp_pos:.0f} tp_neg={tp_neg:.0f}"
 
-def probe_axis(g, axis: str, sp=1500, ac=8000, dc=8000, nudge_counts=32000, settle_back=False, amp_bits=None):
+def probe_axis(g, axis: str, sp=1500, ac=8000, dc=8000, nudge_counts=32000, settle_back=False, amp_bits=None, validate_commands=False):
     """Probe axis for hardware presence - attempts servo enable but continues even if servo fails."""
     ax = axis.upper()
     r = {"axis": ax, "present": False, "tp_after_pos": float("nan"), "tp_after_neg": float("nan"),
@@ -666,18 +700,18 @@ def probe_axis(g, axis: str, sp=1500, ac=8000, dc=8000, nudge_counts=32000, sett
             return r
 
     # Use the deterministic servo bring-up function
-    ok, note = enable_servo_or_explain(g, ax, autoscan=True)   # first successful run will "learn"
+    ok, note = enable_servo_or_explain(g, ax, autoscan=True, validate_commands=validate_commands)   # first successful run will "learn"
     print(f"[DISCOVERY] {ax}: {note}")
     if not ok:
         r["notes"] = note
         try:
-            ts_response = _cmd(g, f"MG _TS{ax}") or "0"
+            ts_response = _cmd(g, f"MG _TS{ax}", validate_commands) or "0"
             ts_response = ts_response.replace('\r', '').replace('\n', '').replace(':', '')
             r["ts"] = int(float(ts_response.split(",")[0]))
         except:
             pass
         try:
-            ta_response = _cmd(g, "MG _TA0") or "0"
+            ta_response = _cmd(g, "MG _TA0", validate_commands) or "0"
             ta_response = ta_response.replace('\r', '').replace('\n', '').replace(':', '')
             r["ta"] = int(float(ta_response.split(",")[0]))
         except:
@@ -707,36 +741,36 @@ def probe_axis(g, axis: str, sp=1500, ac=8000, dc=8000, nudge_counts=32000, sett
         return r  # refuse to nudge if _MOx!=0
 
     # gentle profile
-    _cmd(g, f"SP{ax}={int(sp)}")
-    _cmd(g, f"AC{ax}={int(ac)}")
-    _cmd(g, f"DC{ax}={int(dc)}")
+    _cmd(g, f"SP{ax}={int(sp)}", validate_commands)
+    _cmd(g, f"AC{ax}={int(ac)}", validate_commands)
+    _cmd(g, f"DC{ax}={int(dc)}", validate_commands)
 
     def _nudge(counts):
         # Wait for motor to be idle before issuing PR command
-        _wait_idle(g, ax, timeout_ms=1000)
-        _cmd(g, f"PR{ax}={int(counts)}")
-        _cmd(g, f"BG{ax}")
+        _wait_idle(g, ax, timeout_ms=1000, validate_commands=validate_commands)
+        _cmd(g, f"PR{ax}={int(counts)}", validate_commands)
+        _cmd(g, f"BG{ax}", validate_commands)
         # AM command might not be supported on DMC-4143, make it optional
         try:
-            _cmd(g, f"AM{ax}")
+            _cmd(g, f"AM{ax}", validate_commands)
         except:
             pass  # AM command not supported, continue anyway
 
     _nudge(+abs(nudge_counts))
-    tp_pos_response = _cmd(g, f"TP{ax}") or "0"
+    tp_pos_response = _cmd(g, f"TP{ax}", validate_commands) or "0"
     tp_pos_response = tp_pos_response.replace('\r', '').replace('\n', '').replace(':', '')
     tp_pos = float(tp_pos_response.split(",")[0])
     _nudge(-abs(nudge_counts))
-    tp_neg_response = _cmd(g, f"TP{ax}") or "0"
+    tp_neg_response = _cmd(g, f"TP{ax}", validate_commands) or "0"
     tp_neg_response = tp_neg_response.replace('\r', '').replace('\n', '').replace(':', '')
     tp_neg = float(tp_neg_response.split(",")[0])
 
     moved = abs(tp_pos) >= 10  # Very sensitive threshold - any significant movement
-    ts_response = _cmd(g, f"MG _TS{ax}") or "0"
+    ts_response = _cmd(g, f"MG _TS{ax}", validate_commands) or "0"
     ts_response = ts_response.replace('\r', '').replace('\n', '').replace(':', '')
     ts = int(float(ts_response.split(",")[0]))
     try:
-        ta_response = _cmd(g, "MG _TA0") or "0"
+        ta_response = _cmd(g, "MG _TA0", validate_commands) or "0"
         ta_response = ta_response.replace('\r', '').replace('\n', '').replace(':', '')
         ta = int(float(ta_response.split(",")[0]))
     except:
@@ -744,16 +778,16 @@ def probe_axis(g, axis: str, sp=1500, ac=8000, dc=8000, nudge_counts=32000, sett
 
     if settle_back:
         # Get current position and return to original position
-        current_pos_response = _cmd(g, f'MG _TP{ax}') or '0'
+        current_pos_response = _cmd(g, f'MG _TP{ax}', validate_commands) or '0'
         current_pos_response = current_pos_response.replace('\r', '').replace('\n', '').replace(':', '')
         current_pos = float(current_pos_response.split(',')[0])
         # Only move if the position change is significant (avoid very small moves that DMC-4143 might reject)
         if abs(current_pos) > 500:  # Only move if position change is more than 500 counts
-            _cmd(g, f"PR{ax}={int(-current_pos)}")
-            _cmd(g, f"BG{ax}")
+            _cmd(g, f"PR{ax}={int(-current_pos)}", validate_commands)
+            _cmd(g, f"BG{ax}", validate_commands)
             # AM command might not be supported on DMC-4143, make it optional
             try:
-                _cmd(g, f"AM{ax}")
+                _cmd(g, f"AM{ax}", validate_commands)
             except:
                 pass  # AM command not supported, continue anyway
 
@@ -780,21 +814,25 @@ def probe_axis(g, axis: str, sp=1500, ac=8000, dc=8000, nudge_counts=32000, sett
 
 def discover_axes(
     g,
-    axes: AxisList = ("A","B","C","D"),
+    axes: AxisList = ("A","B"),  # Only A and B exist on this hardware
     sp: int = 1500,      # gentler speed
     ac: int = 8000,      # gentler acceleration
     dc: int = 8000,      # gentler deceleration
     nudge_counts: int = 32000,  # bigger nudge (~1/2 turn)
     amp_bits: dict = None,
+    validate_commands: bool = False,
 ) -> Dict[str, Dict]:
     """
     Runs discovery over the specified axes using only:
       SHX, DP X=0, SP/AC/DC, PR X=…, BGX, AMX, TPX, MG _TSX, TAX
     Returns a dict keyed by axis with probe results and a convenience list of active axes.
     """
-    # Clear controller errors at phase boundary
-    try: gc(g, "TC 0")
-    except: pass
+    # Test connection first
+    try:
+        gc(g, "TC 0")  # Clear controller errors at phase boundary
+    except Exception as e:
+        print(f"Warning: Connection test failed at start of discovery: {e}")
+        # Continue anyway - individual axis tests will handle connection issues
     
     # Setup baseline config once and keep it
     setup_baseline(g)
@@ -836,7 +874,7 @@ def discover_axes(
 
     for ax in ax_list:
         try:
-            res = probe_axis(g, ax, sp=sp, ac=ac, dc=dc, nudge_counts=nudge_counts, settle_back=False, amp_bits=amp_bits)
+            res = probe_axis(g, ax, sp=sp, ac=ac, dc=dc, nudge_counts=nudge_counts, settle_back=False, amp_bits=amp_bits, validate_commands=validate_commands)
         except Exception as e:
             # Don't abort discovery; mark axis as absent and carry the reason.
             res = {
@@ -861,7 +899,7 @@ def discover_axes(
     if not active:
         for ax, res in results.items():
             try:
-                mo = _cmd(g, f"MG _MO{ax}")
+                mo = _cmd(g, f"MG _MO{ax}", validate_commands)
             except:
                 mo = "?"
             ts = res.get("ts", "?")

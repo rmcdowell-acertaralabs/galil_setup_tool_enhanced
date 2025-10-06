@@ -501,14 +501,14 @@ class VisualTestingInterface:
                 elif phase_id == "command_validation":
                     # Validate common motor setup commands
                     common_commands = [
-                        "MO A,B,C,D",  # Motor off
-                        "SH A,B,C,D",  # Servo here (enable)
-                        "AC A=1000,B=1000,C=1000,D=1000",  # Acceleration
-                        "DC A=1000,B=1000,C=1000,D=1000",  # Deceleration
-                        "SP A=5000,B=5000,C=5000,D=5000",  # Speed
-                        "PA A=1000,B=1000,C=1000,D=1000",  # Position absolute
-                        "BG A,B,C,D",  # Begin motion
-                        "AM A,B,C,D"   # After motion
+                        "MO ABCD",  # Motor off
+                        "SH ABCD",  # Servo here (enable)
+                        "ACA=1000;ACB=1000;ACC=1000;ACD=1000",  # Acceleration
+                        "DCA=1000;DCB=1000;DCC=1000;DCD=1000",  # Deceleration
+                        "SPA=5000;SPB=5000;SPC=5000;SPD=5000",  # Speed
+                        "PAA=1000;PAB=1000;PAC=1000;PAD=1000",  # Position absolute
+                        "BG ABCD",  # Begin motion
+                        "AM ABCD"   # After motion
                     ]
                     validation_results = self.validate_motor_setup_commands(common_commands)
                     valid_count = sum(1 for result in validation_results if result.valid)

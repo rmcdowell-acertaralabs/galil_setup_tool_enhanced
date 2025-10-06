@@ -4,14 +4,22 @@
   "axis_presets": {
     "A": {
       "jog_speed": 10000,
-      "kp": 10,
-      "ki": 0.1,
-      "kd": 50,
+      "kp": 6.0,
+      "ki": 0.0,
+      "kd": 64.0,
       "sp": 1024000,
       "ac": 2560000,
       "dc": 2560000,
-      "tl": 8.2,
-      "clicks_per_turn": 64000,
+      "tl": 5.0,
+      "tk": 9.99,
+      "ag": 2.0,
+      "au": 9.0,
+      "mt": -1,
+      "ce": 2,
+      "ba": 1,
+      "bm": 5000,
+      "bz_init": "BZ <1000>1500; BZA=3",
+      "clicks_per_turn": 20000,
       "turns_per_mm": 0.2
     },
     "B": {
