@@ -33,6 +33,13 @@ def cmd(gc, c: str, sleep_ms: int = 0) -> str:
             tc1 = gc.GCommand("TC1").strip()
         except Exception:
             tc1 = "TC1 unavailable"
+        
+        # Don't print errors for TP commands on disconnected axes to avoid flood
+        error_msg = str(e).lower()
+        if "device write error" in error_msg and any(c.startswith(f"TP{ax}") for ax in ["A", "B", "C", "D"]):
+            # Silently raise for TP commands on disconnected axes
+            raise RuntimeError(f"Command '{c}' failed: device write error")
+        
         raise RuntimeError(f"Command failed: {c} | {e} | {tc1}")
 
 

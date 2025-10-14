@@ -55,8 +55,8 @@ def apply_motor_configuration(g, axis: str = "A", config: Optional[Dict] = None)
         time.sleep(0.1)
         
         # Motor type and encoder configuration
-        mt = config.get('mt', -1)
-        ce = config.get('ce', 2)
+        mt = config.get('mt', 1)
+        ce = config.get('ce', 0)
         g.GCommand(f"MT{axis}={mt}")
         g.GCommand(f"CE{axis}={ce}")
         
@@ -82,10 +82,23 @@ def apply_motor_configuration(g, axis: str = "A", config: Optional[Dict] = None)
         g.GCommand(f"TK{axis}={tk}")
         
         # Amplifier settings
-        ag = config.get('ag', 2.0)
-        au = config.get('au', 9.0)
+        ag = config.get('ag', 1.0)
+        au = config.get('au', 0.0)
         g.GCommand(f"AG{axis}={ag}")
         g.GCommand(f"AU{axis}={au}")
+        
+        # Motion profile settings (Step 4)
+        er = config.get('er', 500000)  # Error limit
+        sp = config.get('sp', 1024000)  # Speed
+        ac = config.get('ac', 2560000)  # Acceleration
+        dc = config.get('dc', 2560000)  # Deceleration
+        jg = config.get('jog_speed', 128000)  # Jog speed
+        
+        g.GCommand(f"ER{axis}={er}")
+        g.GCommand(f"SP{axis}={sp}")
+        g.GCommand(f"AC{axis}={ac}")
+        g.GCommand(f"DC{axis}={dc}")
+        g.GCommand(f"JG{axis}={jg}")
         
         print(f"Motor configuration applied successfully for axis {axis}")
         return True
@@ -97,37 +110,32 @@ def apply_motor_configuration(g, axis: str = "A", config: Optional[Dict] = None)
 
 def initialize_brushless_commutation(g, axis: str = "A", voltage: float = 3.0):
     """
-    Initialize brushless commutation using BZ (voltage-based) method
+    Initialize brushless commutation using BI/BC (hall sensor-based) method
     
-    CRITICAL: This method is verified to work. Do NOT use BI/BC method
-    as it causes instability with Cymatix E017 motors.
+    This method uses dedicated hall sensors on AMP-43540 amplifier board
+    for more stable commutation across power cycles.
     
     Args:
         g: Galil controller connection object
         axis: Axis letter to initialize
-        voltage: Initialization voltage (3.0V recommended)
+        voltage: Not used in BI/BC method (kept for compatibility)
         
     Returns:
         bool: True if successful, False otherwise
     """
     try:
-        # Set BZ hold times (first=1500ms, second=1000ms)
-        g.GCommand("BZ <1000>1500")
+        # Initialize with hall sensors
+        g.GCommand(f"BI{axis}=-1")
         time.sleep(0.1)
         
-        # Initialize with specified voltage
-        g.GCommand(f"BZ{axis}={voltage}")
+        # Refine commutation from hall transition
+        g.GCommand(f"BC{axis}")
+        time.sleep(0.1)
         
-        # Wait for BZ to complete (~3 seconds)
-        print(f"Initializing brushless commutation for axis {axis}...")
-        time.sleep(3.5)
-        
-        # Verify initialization
-        bd_response = g.GCommand(f"MG _BD{axis}")
-        bz_response = g.GCommand(f"MG _BZ{axis}")
-        
-        print(f"Commutation angle (BD{axis}): {bd_response.strip()}")
-        print(f"BZ status (BZ{axis}): {bz_response.strip()}")
+        print(f"Initializing brushless commutation for axis {axis} using hall sensors...")
+        print(f"✓ BI{axis}=-1 (hall sensor initialization)")
+        print(f"✓ BC{axis} (commutation refinement)")
+        print(f"Note: Enable servo and jog until hall transition occurs")
         
         return True
         
@@ -168,7 +176,7 @@ def setup_motor_complete(g, axis: str = "A", config_file: str = "config.json"):
     time.sleep(0.2)
     
     # Step 2: Initialize brushless commutation
-    print("\nStep 2: Initializing brushless commutation (BZ method)...")
+    print("\nStep 2: Initializing brushless commutation (BI/BC method)...")
     if not initialize_brushless_commutation(g, axis, voltage=3.0):
         return False
     time.sleep(0.2)

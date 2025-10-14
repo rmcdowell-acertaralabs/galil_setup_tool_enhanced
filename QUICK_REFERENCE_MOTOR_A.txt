@@ -6,7 +6,7 @@ Galil DMC-4103 - VERIFIED WORKING - October 6, 2025
 COMPLETE INITIALIZATION SEQUENCE (Copy & Paste into Terminal):
 --------------------------------------------------------------------------------
 MOA
-MTA=-1
+MTA=1
 CEA=2
 BAA
 BMA=5000
@@ -48,7 +48,7 @@ CRITICAL SETTINGS (DO NOT CHANGE):
 MT = -1           (Brushless servo, reversed)
 CE = 2            (Encoder reversed)
 BM = 5000         (Brushless modulo)
-BZ method         (NOT BI/BC!)
+BI/BC method      (Hall sensor-based)
 Encoder: 20,000 counts/rev (NOT 64,000!)
 
 QUICK DIAGNOSTICS:
@@ -58,7 +58,7 @@ MG _TPA           ; Current position
 MG _TEA           ; Following error
 MG _TTA           ; Torque output
 MG _BDA           ; Commutation angle
-MG _BZA           ; BZ initialization status
+MG _BIA           ; BI initialization status
 
 TROUBLESHOOTING:
 --------------------------------------------------------------------------------

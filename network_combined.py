@@ -380,6 +380,61 @@ def discover_com_port_controllers() -> Dict[str, str]:
         print(f"Error discovering COM port controllers: {e}")
         return {}
 
+def query_controller_ip_via_serial(com_port: str) -> Optional[str]:
+    """
+    Connect to controller via COM port and query its IP address.
+    This is useful when the network interface isn't accessible for discovery.
+    
+    Args:
+        com_port: The COM port to connect to (e.g., "COM3")
+        
+    Returns:
+        The controller's IP address if successful, None otherwise
+    """
+    try:
+        # Try to connect via COM port
+        g = gclib.py()
+        
+        # Build COM port connection string with baud rate
+        baud_rates = [115200, 57600, 38400, 19200, 9600]
+        
+        for baud in baud_rates:
+            try:
+                open_str = f"{com_port} --direct --baud {baud}"
+                g.GOpen(open_str)
+                break  # Success
+            except:
+                # Try next baud rate
+                continue
+        else:
+            # All baud rates failed
+            return None
+        
+        # Query the controller's IP address
+        try:
+            # Try IP command
+            ip_response = g.GCommand("IP")
+            if ip_response and not ip_response.startswith('?'):
+                # Extract IP address from response
+                import re
+                m = re.search(r'(?<!\d)(?:\d{1,3}\.){3}\d{1,3}(?!\d)', ip_response)
+                if m:
+                    ip = m.group(0)
+                    # Validate IP address
+                    if all(0 <= int(p) <= 255 for p in ip.split(".")):
+                        g.GClose()
+                        return ip
+        except:
+            pass
+        
+        # Close connection
+        g.GClose()
+        return None
+        
+    except Exception as e:
+        print(f"Error querying controller IP via serial: {e}")
+        return None
+
 def check_com_port_availability(com_port: str) -> Dict[str, any]:
     """
     Check if a COM port is available and can be opened.

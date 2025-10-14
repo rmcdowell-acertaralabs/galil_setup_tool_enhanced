@@ -27,7 +27,7 @@ from network_combined import (
     reset_controller_network_to_dhcp, get_controller_network_status, comprehensive_network_test,
     force_save_network_settings_dmc4143, NetworkConfigurator,
     configure_controller_pid_settings, get_controller_pid_settings,
-    ControllerConnectionManager
+    ControllerConnectionManager, query_controller_ip_via_serial
 )
 from galil_combined import GalilController
 import galil_combined as galil_functions
@@ -205,8 +205,8 @@ class GalilSetupApp:
         if self.gui_framework:
             self.gui_framework.create_main_content()
         
-        # Show controller testing by default
-        self.show_controller_testing()
+        # Show motor tuning by default
+        self.show_motor_tuning()
         
     def _on_frame_configure(self, event=None):
         """Update canvas scroll region when frame size changes"""
@@ -573,27 +573,8 @@ class GalilSetupApp:
         # Refresh connection status display
         self.refresh_connection_status_display()
     
-    def show_settings_new(self):
-        """Show settings interface using GUI framework"""
-        self.clear_main_content()
-        self.gui_framework.create_settings_page(self)
-        
-        # Refresh connection status display
-        self.refresh_connection_status_display()
     
-    def show_controller_testing_new(self):
-        """Show controller testing interface using GUI framework"""
-        self.clear_main_content()
-        self.gui_framework.create_controller_testing_page(self)
-        
-        # Refresh connection status display
-        self.refresh_connection_status_display()
-        
-        # Set up page show/hide handlers
-        self.root.bind('<Visibility>', self._on_visibility_change)
-        
-        # Auto-start encoder position updates when page is shown
-        self._auto_start_encoder_updates()
+    
             
             
     
@@ -618,21 +599,10 @@ class GalilSetupApp:
         """Show network config interface"""
         self.show_network_config_new()
             
-    def show_settings(self):
-        """Show settings interface"""
-        self.show_settings_new()
             
-    def show_controller_testing(self):
-        """Show controller testing interface"""
-        self.show_controller_testing_new()
     
-    def show_visual_testing(self):
-        """Show visual testing interface"""
-        self.clear_main_content()
-        self.gui_framework.create_visual_testing_page(self)
-        
-        # Refresh connection status display
-        self.refresh_connection_status_display()
+    
+    
             
             
     def create_network_interface(self):
@@ -1053,9 +1023,8 @@ class GalilSetupApp:
                         self.root.after(0, lambda: self.update_com_port_status(f"Connected to {com_port}"))
                         # Update local references
                         self.root.after(0, lambda: self.update_controller_references())
-                        # Update IP entry field with COM port for reference
-                        self.root.after(0, lambda: self.ip_entry.delete(0, tk.END))
-                        # IP entry remains blank - no auto-fill
+                        # Query and display the controller's IP address
+                        self.root.after(100, lambda: self.query_and_display_controller_ip())
                     else:
                         self.root.after(0, lambda: self.append_test_log(f"Failed to connect to controller via {com_port}"))
                         self.root.after(0, lambda: self.update_com_port_status(f"Failed to connect to {com_port}"))
@@ -1070,6 +1039,35 @@ class GalilSetupApp:
         thread = threading.Thread(target=connect_thread, daemon=True)
         thread.start()
 
+    def query_and_display_controller_ip(self):
+        """Query the controller's IP address (works even when connected via COM port)"""
+        try:
+            if not self.controller:
+                self.append_test_log("No controller connected")
+                return
+            
+            self.append_test_log("Querying controller's IP address...")
+            
+            # Use the get_current_ip method which now queries via serial if needed
+            ip_address = self.controller.get_current_ip()
+            
+            if ip_address:
+                self.append_test_log(f"✓ Controller's IP address: {ip_address}")
+                # Update the IP entry field
+                self.ip_entry.delete(0, tk.END)
+                self.ip_entry.insert(0, ip_address)
+                self.update_com_port_status(f"Connected - IP: {ip_address}")
+            else:
+                self.append_test_log("⚠ Could not determine controller's IP address")
+                self.append_test_log("Possible reasons:")
+                self.append_test_log("  • Controller doesn't have an IP configured")
+                self.append_test_log("  • Network interface not initialized")
+                self.append_test_log("  • IP command not supported on this firmware")
+                self.update_com_port_status("Connected - IP not available")
+                
+        except Exception as e:
+            self.append_test_log(f"Error querying controller IP: {e}")
+    
     def diagnose_com_port(self):
         """Diagnose COM port issues - DISABLED TO PREVENT CONTROLLER CORRUPTION"""
         # COM PORT DIAGNOSTIC DISABLED - It was corrupting the controller
@@ -2514,8 +2512,12 @@ class GalilSetupApp:
             pass
 
     def update_encoder_positions(self):
-        """Update the encoder position display for all axes with real-time data"""
-        # Check if encoder labels exist (widgets might be destroyed)
+        """Update the encoder position display for all axes with real-time data - DISABLED to prevent TP command errors"""
+        # DISABLED: This function was causing massive "device write error" messages
+        # because it tries to send TP commands to axes that don't have motors connected
+        # The encoder position polling is now disabled to prevent these errors
+        
+        # Just show static status for all axes
         if not hasattr(self, 'encoder_labels') or not self.encoder_labels:
             return
             
@@ -2537,74 +2539,15 @@ class GalilSetupApp:
                         pass
             return
             
-        try:
-            # Update positions for all axes with real controller data
-            for axis in ["A", "B", "C", "D"]:
-                if axis in self.encoder_labels:
-                    try:
-                        # Use TP command to get real encoder position (TP = Tell Position)
-                        # This is the standard Galil command for getting axis position
-                        position_response = self.controller.send_command(f"TP{axis}")
-                        
-                        
-                        # Handle different response formats
-                        if position_response and position_response.strip():
-                            try:
-                                position = int(float(position_response.strip()))
-                                # Format the position nicely (remove trailing zeros)
-                                formatted_position = str(position)
-                                self.encoder_labels[axis].config(text=formatted_position, fg='black')
-                                
-                                # Only log position updates during motor direction test, not continuously
-                                # Initialize the flag if it doesn't exist
-                                if not hasattr(self, 'motor_direction_test_active'):
-                                    self.motor_direction_test_active = False
-                                    
-                                if self.motor_direction_test_active:
-                                    timestamp = time.strftime("%H:%M:%S")
-                                    self.log_message(f"[{timestamp}] Axis {axis}: {formatted_position}")
-                            except (ValueError, TypeError):
-                                # Invalid numeric response
-                                self.encoder_labels[axis].config(text="Invalid", fg='orange')
-                        else:
-                            # Empty response
-                            self.encoder_labels[axis].config(text="No Data", fg='orange')
-                            
-                    except Exception as e:
-                        # Handle communication errors
-                        try:
-                            error_text = "Comm Error"
-                            if "timeout" in str(e).lower():
-                                error_text = "Timeout"
-                            elif "connection" in str(e).lower():
-                                error_text = "No Connection"
-                            else:
-                                error_text = "Error"
-                                
-                            self.encoder_labels[axis].config(text=error_text, fg='red')
-                            
-                            # Log the error for debugging
-                            timestamp = time.strftime("%H:%M:%S")
-                            self.log_message(f"[{timestamp}] Axis {axis} error: {str(e)}")
-                                
-                        except tk.TclError:
-                            # Widget was destroyed, ignore
-                            pass
-                        
-        except Exception as e:
-            # If there's a general error, show error on all labels
-            for axis in ["A", "B", "C", "D"]:
-                if axis in self.encoder_labels:
-                    try:
-                        self.encoder_labels[axis].config(text="System Error", fg='red')
-                    except tk.TclError:
-                        # Widget was destroyed, ignore
-                        pass
-            
-            # Log the general error
-            if hasattr(self, 'motor_status_text'):
-                timestamp = time.strftime("%H:%M:%S")
-                self.log_message( f"[{timestamp}] General error: {str(e)}\n")
+        # Show static status instead of polling
+        for axis in ["A", "B", "C", "D"]:
+            if axis in self.encoder_labels:
+                try:
+                    # Show static status instead of polling TP commands
+                    self.encoder_labels[axis].config(text="Encoder Disabled", fg='gray')
+                except tk.TclError:
+                    # Widget was destroyed, ignore
+                    pass
     
     def update_all_encoder_positions(self, positions):
         """Update encoder position display with provided positions dict"""
@@ -4590,8 +4533,8 @@ Repeat these steps for axes B, C, and D as needed.
                             self.append_test_log(f"✓ Pole pairs: {pole_pairs} (from BM={bm})")
                         
                         if hasattr(self, 'motor_tuning_commutation_method_var'):
-                            # Set based on verified config or default to BZ
-                            method = "bz"  # BZ is verified working for Axis A
+                            # Set based on verified config or default to BI/BC
+                            method = "bi_bc"  # BI/BC is verified working for Axis A with hall sensors
                             self.motor_tuning_commutation_method_var.set(method)
                             self.append_test_log(f"✓ Commutation method: {method} (VERIFIED - do not change!)")
                         
@@ -5573,7 +5516,11 @@ SAFETY:
         
         # Bind mousewheel to canvas
         def _on_mousewheel(event):
-            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+            try:
+                canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+            except tk.TclError:
+                # Canvas was destroyed, ignore the error
+                pass
         canvas.bind_all("<MouseWheel>", _on_mousewheel)
         
         # Clean up binding when dialog closes
@@ -5798,39 +5745,62 @@ Subnet mask and gateway are handled by your system's network configuration.
             
             # Get controller model number with fallbacks
             model_info = "Unknown"
+            firmware = "Unknown"
+            
+            # FIRST: Try to get info from network discovery (most accurate for network connections)
             try:
-                # Use ID command to get controller information (bypass validation)
-                model_response = self.controller.send_command_unvalidated("ID")
-                if model_response and model_response.strip() != '?' and 'timeout' not in str(model_response).lower():
-                    # Parse the ID response to extract model information
-                    id_lines = model_response.strip().splitlines()
-                    for line in id_lines:
-                        line = line.strip()
-                        if line and not line.startswith((':', ';')):
-                            # Look for DMC model in various formats
-                            if 'DMC' in line.upper():
-                                # Extract DMC model from line
-                                import re
-                                match = re.search(r'DMC(\d+)', line.upper())
-                                if match:
-                                    model_info = f"DMC{match.group(1)}"
-                                    break
-                                # Try to extract any DMC reference
-                                parts = line.split(',')
-                                for part in parts:
-                                    if 'DMC' in part.upper():
-                                        model_info = part.strip().split(' Rev')[0].strip()
-                                        break
-                                if model_info != "Unknown":
-                                    break
-                    # If still unknown, try to parse as numeric
-                    if model_info == "Unknown":
-                        model_info_raw = model_response.strip()
-                        if model_info_raw.isdigit():
-                            model_info = f"DMC{model_info_raw}"
+                if hasattr(self, 'connection_manager') and getattr(self.connection_manager, 'connected_ip', None):
+                    connected_ip = self.connection_manager.connected_ip
+                    # Get network discovery info
+                    from network_combined import discover_galil_controllers
+                    network_controllers = discover_galil_controllers()
+                    if connected_ip in network_controllers:
+                        network_info = network_controllers[connected_ip]
+                        # Parse network info like "DMC4143 Rev 1.2e"
+                        import re
+                        match = re.search(r'(DMC\d+)\s+Rev\s+([^\s]+)', network_info, re.IGNORECASE)
+                        if match:
+                            model_info = match.group(1)  # e.g., "DMC4143"
+                            firmware = f"{match.group(1)} Rev {match.group(2)}"  # e.g., "DMC4143 Rev 1.2e"
             except Exception as e:
-                self.log_message(f"Error getting model info: {e}")
-                pass
+                self.append_test_log(f"Error getting network discovery info: {e}")
+            
+            # SECOND: If network discovery didn't work, fall back to ID command
+            if model_info == "Unknown" or firmware == "Unknown":
+                try:
+                    # Use ID command to get controller information (bypass validation)
+                    model_response = self.controller.send_command_unvalidated("ID")
+                    if model_response and model_response.strip() != '?' and 'timeout' not in str(model_response).lower():
+                        # Parse the ID response to extract model information
+                        id_lines = model_response.strip().splitlines()
+                        for line in id_lines:
+                            line = line.strip()
+                            if line and not line.startswith((':', ';')):
+                                # Look for DMC model in various formats
+                                if 'DMC' in line.upper():
+                                    # Extract DMC model from line
+                                    import re
+                                    match = re.search(r'DMC(\d+)', line.upper())
+                                    if match:
+                                        model_info = f"DMC{match.group(1)}"
+                                        break
+                                    # Try to extract any DMC reference
+                                    parts = line.split(',')
+                                    for part in parts:
+                                        if 'DMC' in part.upper():
+                                            model_info = part.strip().split(' Rev')[0].strip()
+                                            break
+                                    if model_info != "Unknown":
+                                        break
+                        # If still unknown, try to parse as numeric
+                        if model_info == "Unknown":
+                            model_info_raw = model_response.strip()
+                            if model_info_raw.isdigit():
+                                model_info = f"DMC{model_info_raw}"
+                except Exception as e:
+                    self.append_test_log(f"Error getting model info: {e}")
+                    pass
+            # Additional fallback for model info if still unknown
             if model_info in (None, "", "?", "Unknown"):
                 try:
                     # ^R^V not supported on DMC-4143, skip
@@ -5879,80 +5849,40 @@ Subnet mask and gateway are handled by your system's network configuration.
                                         break
                                 if model_info not in (None, "", "?", "Unknown"):
                                     break
-                except Exception:
+                except Exception as e:
+                    self.append_test_log(f"Error getting model info: {e}")
                     pass
             
-            # Get firmware version with fallbacks
-            firmware = "Unknown"
-            try:
-                # Use ID command to get firmware information (bypass validation)
-                fw_response = self.controller.send_command_unvalidated("ID")
-                if fw_response and fw_response.strip() != '?' and 'timeout' not in str(fw_response).lower():
-                    # Parse the ID response to extract firmware information
-                    id_lines = fw_response.strip().splitlines()
-                    for line in id_lines:
-                        line = line.strip()
-                        if line and not line.startswith((':', ';')):
-                            # Look for firmware version patterns
-                            if 'FW' in line.upper() or 'REV' in line.upper():
+            # THIRD: If still unknown, try ID command for firmware
+            if firmware == "Unknown":
+                try:
+                    # Use ID command - this is the correct command for DMC-4143/4103
+                    id_response = self.controller.send_command("ID")
+                    if id_response and id_response.strip() != '?':
+                        # ID returns response like: "DMC4103 rev 6\r\nSine Amplifier Board AMP-43540  rev 1"
+                        # Split by \r\n to get proper lines
+                        lines = id_response.replace('\r\n', '\n').strip().split('\n')
+                        for line in lines:
+                            line = line.strip()
+                            # Skip empty lines and prompts
+                            if not line or line.startswith(':'):
+                                continue
+                            # Look for DMC model with rev version (e.g., "DMC4103 rev 6")
+                            if 'DMC' in line.upper() and 'rev' in line.lower():
+                                # Extract the DMC model and rev version
                                 import re
-                                # Try to extract version number
-                                match = re.search(r'(?:FW|Rev)\s*[=:]?\s*([\w.\-]+)', line, re.IGNORECASE)
+                                match = re.search(r'(DMC\d+)\s+rev\s+([^\s\r\n]+)', line, re.IGNORECASE)
                                 if match:
-                                    firmware = match.group(1).strip()
+                                    model = match.group(1)
+                                    version = match.group(2)
+                                    firmware = f"{model} rev {version}"
                                     break
-                                # Try to extract from comma-separated values
-                                parts = line.split(',')
-                                for part in parts:
-                                    if 'REV' in part.upper() or 'FW' in part.upper():
-                                        # Extract version from part
-                                        version_match = re.search(r'([\w.\-]+)', part)
-                                        if version_match:
-                                            firmware = version_match.group(1).strip()
-                                            break
-                                if firmware != "Unknown":
-                                    break
-            except Exception as e:
-                self.log_message(f"Error getting firmware info: {e}")
-                pass
-            # If still unknown, try to parse firmware from ID output
-            if firmware in (None, "", "?", "Unknown"):
-                try:
-                    # ^R^V not supported on DMC-4143, use ID command instead
-                    rv = self.controller.send_command("ID")
-                    if rv and rv.strip() != '?' and 'timeout' not in str(rv).lower():
-                        rv_str = rv.strip()
-                        # Heuristic: extract something resembling a version number
-                        import re as _re
-                        m = _re.search(r"(\bFW\s*[=:]?\s*([\w.\-]+))|(Rev\s*[\w.\-]+)|(\b\d+\.\d+[a-z]?)", rv_str, _re.IGNORECASE)
-                        if m:
-                            firmware = m.group(0).replace('FW', '').replace('Rev', '').replace(':', '').strip()
-                        else:
-                            firmware = rv_str
-                except Exception:
-                    pass
-            if firmware in (None, "", "?", "Unknown"):
-                try:
-                    # Parse from ID response: FW, DMC4143 Rev 1.3a
-                    id_resp = self.controller.send_command("ID")
-                    if id_resp and id_resp.strip() != '?' and 'timeout' not in str(id_resp).lower():
-                        lines = [ln.strip() for ln in id_resp.strip().splitlines() if ln.strip()]
-                        for ln in lines:
-                            if ln.upper().startswith('FW'):
-                                # Grab text after the first comma
-                                parts = [p.strip() for p in ln.split(',', 1)]
-                                if len(parts) == 2:
-                                    fw_text = parts[1]
-                                    # Remove leading DMC model if present, keep Rev ...
-                                    import re as _re
-                                    m = _re.search(r"Rev\s*[\w.\-]+", fw_text, _re.IGNORECASE)
-                                    if m:
-                                        firmware = m.group(0).strip()
-                                    else:
-                                        firmware = fw_text
-                                break
-                except Exception:
-                    pass
+                        # If didn't find DMC rev pattern, use first non-empty line
+                        if firmware == "Unknown" and lines:
+                            firmware = lines[0].strip()
+                except Exception as e:
+                    self.append_test_log(f"Error getting firmware: {e}")
+                    firmware = "Error reading firmware"
 
             # Get serial number with fallbacks
             serial_num = "Unknown"
@@ -8246,12 +8176,7 @@ IP Address: Cannot read"""
             messagebox.showerror("Error", "Please connect to a controller first")
             return
         
-        # Check if we're on the visual testing page
-        if hasattr(self.gui_framework, 'visual_testing_interface') and self.gui_framework.visual_testing_interface:
-            # If on visual testing page, start the visual test
-            self.gui_framework.visual_testing_interface.start_test()
-        else:
-            # If on regular controller testing page, run the traditional test
+        # Run traditional comprehensive test
             self._run_traditional_comprehensive_test()
     
     def _run_traditional_comprehensive_test(self):
@@ -8770,6 +8695,83 @@ IP Address: Cannot read"""
         """Clear motor tuning command history"""
         if hasattr(self, 'motor_tuning_command_history_text'):
             self.motor_tuning_command_history_text.delete(1.0, tk.END)
+    
+    def update_test_axis_commands(self):
+        """Update all commands and guide text when axis selection changes"""
+        if not hasattr(self, 'selected_test_axis'):
+            return
+        
+        axis = self.selected_test_axis.get()
+        
+        # Update the testing guide text
+        if hasattr(self, 'motor_testing_guide_text') and hasattr(self, 'testing_guide_template'):
+            import re
+            # Replace axis-specific commands, but preserve commands like AB that aren't axis-specific
+            updated_guide = self.testing_guide_template
+            
+            # Replace ALL Galil command patterns that end with 'A' (the axis specifier)
+            # Pattern matches: 2+ uppercase letters followed by 'A', then either end-of-word or '='
+            # This handles: MOA, MTA=, CEA=, BAA, BMA=, KPA=, SHA, DPA=, SPA=, etc.
+            updated_guide = re.sub(r'\b([A-Z]{2,})A\b', r'\1' + axis, updated_guide)
+            updated_guide = re.sub(r'\b([A-Z]{2,})A=', r'\1' + axis + '=', updated_guide)
+            
+            # Replace underscore variables: _TPA, _MOA, _TEA, _BGA, _MTA, etc.
+            updated_guide = re.sub(r'\b(_[A-Z]{2,})A\b', r'\1' + axis, updated_guide)
+            
+            # Replace text references to axis
+            updated_guide = re.sub(r'\bAxis A\b', 'Axis ' + axis, updated_guide)
+            updated_guide = re.sub(r'\baxis A\b', 'axis ' + axis, updated_guide)
+            
+            # Update the text widget
+            self.motor_testing_guide_text.config(state='normal')
+            self.motor_testing_guide_text.delete(1.0, tk.END)
+            self.motor_testing_guide_text.insert('1.0', updated_guide)
+            self.motor_testing_guide_text.config(state='disabled')
+        
+        # Update command buttons
+        if hasattr(self, 'quick_cmd_frame') and hasattr(self, 'gui_framework'):
+            self.gui_framework._create_axis_command_buttons(self, self.quick_cmd_frame)
+        
+        # Update terminal welcome message
+        if hasattr(self, 'motor_tuning_command_history_text'):
+            # Store the current content except the welcome message
+            current_content = self.motor_tuning_command_history_text.get('1.0', tk.END)
+            
+            # Only update if we're looking at the welcome message (no commands sent yet)
+            if 'Ready for commands...' in current_content or current_content.strip() == '':
+                # Get IP from controller connection or use fallback
+                ip = 'Not connected'
+                if hasattr(self, 'controller') and self.controller:
+                    try:
+                        # Try to get IP from controller connection
+                        ip = getattr(self.controller, 'ip_address', 'Connected')
+                    except:
+                        ip = 'Connected'
+                elif hasattr(self, 'current_ip') and self.current_ip:
+                    ip = self.current_ip
+                welcome_msg = f"""╔══════════════════════════════════════════════════════════════╗
+║  GALIL DMC-4103 MOTOR TESTING TERMINAL                       ║
+║  Cymatix E017 Brushless Motor - Verified Configuration       ║
+╚══════════════════════════════════════════════════════════════╝
+
+Connected to: {ip}
+Motor: Axis {axis} (Cymatix E017)
+Configuration: Verified (prevents overheating)
+
+Instructions:
+  1. Follow steps in left panel
+  2. Click command buttons or type commands
+  3. Press Enter or click Send
+  4. Monitor output below
+
+Ready for commands...
+:"""
+                self.motor_tuning_command_history_text.delete(1.0, tk.END)
+                self.motor_tuning_command_history_text.insert('1.0', welcome_msg)
+        
+        # Log the axis change
+        if hasattr(self, 'gui_framework') and self.gui_framework:
+            self.gui_framework.log_message(f"Testing axis changed to: {axis}")
     
     def send_command_from_interface(self, command, interface_type='default'):
         """Send command from various interfaces"""

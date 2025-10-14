@@ -202,7 +202,7 @@ class MotorTuningPanel:
             "This will:\n"
             "1. Turn motor off\n"
             "2. Apply configuration\n"
-            "3. Initialize brushless commutation (BZ method)\n"
+            "3. Initialize brushless commutation (BI/BC method)\n"
             "4. Enable motor\n\n"
             "Continue?"):
             return
@@ -232,7 +232,7 @@ class MotorTuningPanel:
             self.log_status("✓ Configuration applied")
             
             # Initialize brushless commutation
-            self.log_status("Initializing brushless commutation (BZ method)...")
+            self.log_status("Initializing brushless commutation (BI/BC method)...")
             if not initialize_brushless_commutation(self.g, self.current_axis, voltage=3.0):
                 raise Exception("Brushless initialization failed")
             

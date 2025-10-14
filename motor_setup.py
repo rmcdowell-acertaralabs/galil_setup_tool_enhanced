@@ -430,7 +430,7 @@ class MotorSetup:
         except Exception as e:
             return SetupResult(False, f"Step 2 failed: {str(e)}")
     
-    def step_3_initialize_commutation(self, axis: str, method: CommutationMethod = CommutationMethod.BZ) -> SetupResult:
+    def step_3_initialize_commutation(self, axis: str, method: CommutationMethod = CommutationMethod.BC_BI) -> SetupResult:
         """
         Step 3: Initialize commutation using specified method
         
@@ -453,14 +453,14 @@ class MotorSetup:
             er_val = max(1000.0, bm_val)
             self.send_command(f"ER{ax}={er_val}")
             
-            if method == CommutationMethod.BZ:
-                return self._initialize_commutation_bz(ax)
-            elif method == CommutationMethod.BC_BI:
+            if method == CommutationMethod.BC_BI:
                 return self._initialize_commutation_bc_bi(ax)
-            elif method == CommutationMethod.BX:
-                # BX unsupported on 41x3; fall back to BZ
-                self.log("BX method unsupported on this controller; using BZ instead")
+            elif method == CommutationMethod.BZ:
                 return self._initialize_commutation_bz(ax)
+            elif method == CommutationMethod.BX:
+                # BX unsupported on 41x3; fall back to BI/BC
+                self.log("BX method unsupported on this controller; using BI/BC instead")
+                return self._initialize_commutation_bc_bi(ax)
             else:
                 return SetupResult(False, f"Unknown commutation method: {method}")
                 
@@ -545,50 +545,56 @@ class MotorSetup:
         except Exception as e:
             return SetupResult(False, f"BZ initialization failed: {str(e)}")
     
-    def _initialize_commutation_bc_bi(self, axis: str) -> SetupResult:
-        """Initialize commutation using BC/BI method (Hall-based)"""
+    def _initialize_commutation_bc_bi_manual(self, axis: str) -> SetupResult:
+        """Initialize commutation using BC/BI method (Hall-based) - MANUAL STEPS"""
         ax = self._ax(axis)
         if not getattr(self.motor_specs, "has_halls", False):
             return SetupResult(False, f"BC/BI requested but motor_specs.has_halls=False")
         
         try:
-            # Use AMP-43540's dedicated Hall inputs
+            # Step 1: Set Hall inputs
+            self.log(f"Step 1: Setting Hall inputs for axis {ax}...")
             success, response = self.send_command(f"BI{ax}=-1")
             if not success:
                 return SetupResult(False, f"Failed to set Hall inputs for axis {ax}: {response}")
+            self.log(f"✓ BI{ax}=-1 sent successfully")
             
-            # Enable hall-based calibration
+            # Step 2: Enable hall-based calibration
+            self.log(f"Step 2: Enabling hall-based calibration for axis {ax}...")
             success, response = self.send_command(f"BC{ax}")
             if not success:
                 return SetupResult(False, f"Failed to enable hall calibration for axis {ax}: {response}")
+            self.log(f"✓ BC{ax} sent successfully")
             
-            # Enable servo
+            # Step 3: Enable servo (user will manually jog after this)
+            self.log(f"Step 3: Enabling servo for axis {ax}...")
             success, response = self.send_command(f"SH{ax}")
             if not success:
                 return SetupResult(False, f"Failed to enable servo for axis {ax}: {response}")
+            self.log(f"✓ SH{ax} sent successfully")
             
-            # Small jog to trigger hall transition
+            # Step 4: Set jog speed (user will manually begin motion)
+            self.log(f"Step 4: Setting jog speed for axis {ax}...")
             success, response = self.send_command(f"JG{ax}=500")
             if not success:
                 return SetupResult(False, f"Failed to set jog for axis {ax}: {response}")
+            self.log(f"✓ JG{ax}=500 sent successfully")
             
-            success, response = self.send_command(f"BG{ax}")
-            if not success:
-                return SetupResult(False, f"Failed to begin jog for axis {ax}: {response}")
+            self.log(f"✓ Axis {ax} prepared for manual BI/BC initialization")
+            self.log(f"MANUAL STEPS REQUIRED:")
+            self.log(f"  1. Click 'BGA' button to begin jog motion")
+            self.log(f"  2. Watch for hall sensor transition (motor will move slowly)")
+            self.log(f"  3. Click 'STA' button to stop motion when ready")
+            self.log(f"  4. Commutation will be automatically calibrated by controller")
             
-            # Wait a moment for hall transition
-            time.sleep(0.5)
-            
-            # Stop motion
-            success, response = self.send_command(f"ST{ax}")
-            if not success:
-                return SetupResult(False, f"Failed to stop motion for axis {ax}: {response}")
-            
-            self.log(f"✓ Axis {ax} commutation initialized using BC/BI method")
-            return SetupResult(True, f"Axis {ax} commutation initialized (BC/BI method)")
+            return SetupResult(True, f"Axis {ax} prepared for manual BI/BC initialization")
             
         except Exception as e:
-            return SetupResult(False, f"BC/BI initialization failed: {str(e)}")
+            return SetupResult(False, f"BC/BI initialization preparation failed: {str(e)}")
+    
+    def _initialize_commutation_bc_bi(self, axis: str) -> SetupResult:
+        """Initialize commutation using BC/BI method (Hall-based) - calls manual version"""
+        return self._initialize_commutation_bc_bi_manual(axis)
     
     def _relax_axis(self, axis: str, deep: bool = False):
         """Relax the axis to prevent heating at rest by reducing gains and bias"""
@@ -726,7 +732,7 @@ class MotorSetup:
         ax = self._ax(axis)
         self.log(f"Step 5: Verifying commutation for axis {ax}...")
         try:
-            hall_status = "Skipped (BZ method)"
+            hall_status = "Skipped (BI/BC method)"
 
             # Optional: electrical angle
             ok, resp = self.send_command(f"MG _BD{ax}")
@@ -819,7 +825,7 @@ class MotorSetup:
             return SetupResult(False, f"Step 6 failed: {str(e)}")
     
     def run_complete_setup(self, axis: str, motor_specs: MotorSpecs, 
-                          commutation_method: CommutationMethod = CommutationMethod.BZ) -> Dict[str, SetupResult]:
+                          commutation_method: CommutationMethod = CommutationMethod.BC_BI) -> Dict[str, SetupResult]:
         """
         Run complete motor setup process for specified axis
         
@@ -955,12 +961,7 @@ class MotorSetup:
         # Note: Runtime uses ER=max(_BM,1000), validator uses ER=1000 for simplicity
         commands.extend([f"OE{ax}=0", f"MG _BM{ax}", f"ER{ax}=1000", f"TK{ax}=0", f"OF{ax}=0"])
 
-        if commutation_method == CommutationMethod.BX:
-            # 41x3 doesn't support BX reliably; validate BZ instead
-            commands.extend([f"BZ<200>100", f"BZ{ax}=-3"])
-        elif commutation_method == CommutationMethod.BZ:
-            commands.extend([f"BZ<200>100", f"BZ{ax}=-3"])
-        elif commutation_method == CommutationMethod.BC_BI:
+        if commutation_method == CommutationMethod.BC_BI:
             commands.extend([f"BI{ax}=-1", f"BC{ax}", f"SH{ax}",
                              f"JG{ax}=500", f"BG{ax}", f"ST{ax}"])
 

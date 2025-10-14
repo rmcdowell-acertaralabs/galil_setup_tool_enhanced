@@ -117,7 +117,7 @@ class MotorPresetManager:
                 has_index=True,
                 has_halls=True
             ),
-            commutation_method=CommutationMethod.BZ,
+            commutation_method=CommutationMethod.BC_BI,
             initialization_commands=[
                 "MOA",           # Motor off
                 "BAA",           # Enable sine-drive mode

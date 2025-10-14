@@ -237,7 +237,7 @@ class GalilController:
             return None
 
     def get_current_ip(self) -> Optional[str]:
-        """Best-effort: return the controller IP if we connected over Ethernet."""
+        """Best-effort: return the controller IP if we connected over Ethernet, or query it via serial."""
         if not self.g:
             return None
         # 1) what we connected to
@@ -250,6 +250,36 @@ class GalilController:
             if ip:
                 self.last_ip = ip
                 return ip
+        except Exception:
+            pass
+        # 3) If connected via COM port, query the controller's IP address directly
+        try:
+            # Try to read the controller's configured IP address using the IA ? command
+            # This works even when connected via COM port
+            # IA ? returns IP in comma-separated format (e.g., "192,168,1,100")
+            ip_response = self.send_command("IA ?")
+            if ip_response and not ip_response.startswith('?'):
+                # Convert comma-separated format to dot-separated (192,168,1,100 -> 192.168.1.100)
+                ip_response = ip_response.strip().replace(',', '.')
+                ip = self._extract_ip(ip_response)
+                if ip:
+                    self.last_ip = ip
+                    return ip
+        except Exception:
+            pass
+        # 4) Alternative: Try TH command which also shows IP
+        try:
+            th_response = self.send_command("TH")
+            if th_response and not th_response.startswith('?'):
+                # TH returns: "CONTROLLER IP ADDRESS 10,51,0,87 ETHERNET ADDRESS 00-50-4C-08-01-1F"
+                # Extract IP from the response
+                ip_match = re.search(r'IP ADDRESS\s+([\d,]+)', th_response)
+                if ip_match:
+                    ip_str = ip_match.group(1).replace(',', '.')
+                    ip = self._extract_ip(ip_str)
+                    if ip:
+                        self.last_ip = ip
+                        return ip
         except Exception:
             pass
         return None

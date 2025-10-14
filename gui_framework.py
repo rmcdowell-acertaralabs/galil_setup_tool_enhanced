@@ -98,33 +98,37 @@ class GUIFramework:
     
     def _on_mousewheel(self, event):
         """Handle mouse wheel scrolling for all text widgets"""
-        # Find the widget under the mouse cursor
-        widget = event.widget.winfo_containing(event.x_root, event.y_root)
-        
-        # If it's a text widget, scroll it
-        if isinstance(widget, (tk.Text, scrolledtext.ScrolledText)):
-            # Determine scroll direction
-            if event.delta:
-                # Windows
-                delta = -1 if event.delta > 0 else 1
-            else:
-                # Linux
-                delta = -1 if event.num == 4 else 1
+        try:
+            # Find the widget under the mouse cursor
+            widget = event.widget.winfo_containing(event.x_root, event.y_root)
             
-            # Scroll the text widget
-            widget.yview_scroll(delta, "units")
-        
-        # If it's a canvas, scroll it
-        elif isinstance(widget, tk.Canvas):
-            if event.delta:
-                # Windows
-                delta = -1 if event.delta > 0 else 1
-            else:
-                # Linux
-                delta = -1 if event.num == 4 else 1
+            # If it's a text widget, scroll it
+            if isinstance(widget, (tk.Text, scrolledtext.ScrolledText)):
+                # Determine scroll direction
+                if event.delta:
+                    # Windows
+                    delta = -1 if event.delta > 0 else 1
+                else:
+                    # Linux
+                    delta = -1 if event.num == 4 else 1
+                
+                # Scroll the text widget
+                widget.yview_scroll(delta, "units")
             
-            # Scroll the canvas
-            widget.yview_scroll(delta, "units")
+            # If it's a canvas, scroll it
+            elif isinstance(widget, tk.Canvas):
+                if event.delta:
+                    # Windows
+                    delta = -1 if event.delta > 0 else 1
+                else:
+                    # Linux
+                    delta = -1 if event.num == 4 else 1
+                
+                # Scroll the canvas
+                widget.yview_scroll(delta, "units")
+        except tk.TclError:
+            # Widget was destroyed, ignore the error
+            pass
         
         # Fallback: scroll the main canvas if no specific widget found
         else:
@@ -155,10 +159,7 @@ class GUIFramework:
         # Navigation buttons
         nav_buttons = [
             ("Motor Tuning", self.main_app.show_motor_tuning if self.main_app else None),
-            ("Network Config", self.main_app.show_network_config if self.main_app else None),
-            ("Controller Testing", self.main_app.show_controller_testing if self.main_app else None),
-            ("Visual Testing", self.main_app.show_visual_testing if self.main_app else None),
-            ("Settings", self.main_app.show_settings if self.main_app else None)
+            ("Network Config", self.main_app.show_network_config if self.main_app else None)
         ]
         
         for text, command in nav_buttons:
@@ -805,13 +806,8 @@ class GUIFramework:
         """Show network config page - placeholder for main app method"""
         self.log("Show network config method called - implement in main app")
     
-    def show_controller_testing(self):
-        """Show controller testing page - placeholder for main app method"""
-        self.log("Show controller testing method called - implement in main app")
     
-    def show_settings(self):
-        """Show settings page - placeholder for main app method"""
-        self.log("Show settings method called - implement in main app")
+    
     
     def clear_main_content(self):
         """Clear the main content area"""
@@ -1037,11 +1033,11 @@ class GUIFramework:
         tk.Label(comm_frame, text="Commutation Method:", font=("Arial", 10, "bold"),
                bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(anchor='w')
         
-        main_app.motor_tuning_commutation_method_var = tk.StringVar(value="bz")
+        main_app.motor_tuning_commutation_method_var = tk.StringVar(value="bi_bc")
         
-        # Display only - BZ method is VERIFIED working
+        # Display only - BI/BC method is VERIFIED working with hall sensors
         method_label = tk.Label(comm_frame, 
-                             text="BZ (Voltage-based) - VERIFIED WORKING ✓",
+                             text="BI/BC (Hall Sensor-based) - VERIFIED WORKING ✓",
                              font=("Arial", 10, "bold"), bg=self.colors['success_green'], 
                              fg='white', padx=10, pady=5, relief='solid', bd=1)
         method_label.pack(anchor='w', pady=(5, 0))
@@ -1087,6 +1083,29 @@ class GUIFramework:
                                     relief='solid', bd=1)
         command_frame.pack(fill='both', expand=True, pady=(20, 20), padx=10)
         
+        # Axis selector at the top
+        axis_selector_frame = tk.Frame(command_frame, bg=self.colors['main_bg'])
+        axis_selector_frame.pack(fill='x', padx=15, pady=(10, 5))
+        
+        tk.Label(axis_selector_frame, text="Test Axis:", font=("Arial", 11, "bold"),
+                bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left', padx=(0, 10))
+        
+        # Store selected axis in main_app
+        main_app.selected_test_axis = tk.StringVar(value='A')
+        
+        # Create radio buttons for axis selection
+        axis_options = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']
+        for axis in axis_options:
+            rb = tk.Radiobutton(axis_selector_frame, text=f"Axis {axis}", 
+                              variable=main_app.selected_test_axis, value=axis,
+                              font=("Arial", 10, "bold"),
+                              bg=self.colors['main_bg'], fg=self.colors['main_fg'],
+                              selectcolor=self.colors['accent_blue'],
+                              activebackground=self.colors['main_bg'],
+                              activeforeground=self.colors['accent_green'],
+                              command=lambda: main_app.update_test_axis_commands())
+            rb.pack(side='left', padx=5)
+        
         # Terminal interface with two-column layout
         terminal_container = tk.Frame(command_frame, bg=self.colors['main_bg'])
         terminal_container.pack(fill='both', expand=True, padx=15, pady=15)
@@ -1102,12 +1121,12 @@ class GUIFramework:
                 padx=10, pady=5).pack(fill='x')
         
         # Testing steps guide
-        guide_text = scrolledtext.ScrolledText(guide_frame, font=("Courier", 9),
+        main_app.motor_testing_guide_text = scrolledtext.ScrolledText(guide_frame, font=("Courier", 9),
                                               bg='#1e1e1e', fg='#00ff00',
                                               wrap='word', height=25)
-        guide_text.pack(fill='both', expand=True, pady=(5, 0))
+        main_app.motor_testing_guide_text.pack(fill='both', expand=True, pady=(5, 0))
         
-        # Insert testing guide
+        # Insert testing guide (will be updated by axis selector)
         testing_guide = """MOTOR TESTING PROCEDURE
 Cymatix E017 Brushless Motor
 Verified Working Configuration
@@ -1116,30 +1135,38 @@ Verified Working Configuration
 STEP 1: APPLY VERIFIED CONFIGURATION
 ═══════════════════════════════════════
 MOA
-MTA=-1
-CEA=2
+MTA=1
+CEA=0
 BAA
 BMA=5000
 KPA=6
 KDA=64
-KIA=0
+KIA=0.1
 TLA=5
 TKA=9.99
-AGA=2
-AUA=9
+AGA=1
+AUA=0
 
 ═══════════════════════════════════════
-STEP 2: INITIALIZE BRUSHLESS (BZ METHOD)
+STEP 2: INITIALIZE BRUSHLESS (BI/BC METHOD)
 ═══════════════════════════════════════
-BZ <1000>1500
-BZA=3
-(Wait ~3 seconds for init to complete)
+BIA=-1                  (Initialize with hall sensors)
+BCA                     (Enable hall-based calibration)
+SHA                     (Enable servo)
+JGA=500                 (Set slow jog speed)
+
+MANUAL STEPS REQUIRED:
+1. Click 'BGA' button to begin jog motion
+2. Watch for hall sensor transition (motor moves slowly)
+3. Click 'STA' button to stop motion when ready
+4. Controller automatically calibrates commutation
+
+NOTE: You control when to start and stop the jog motion!
 
 ═══════════════════════════════════════
-STEP 3: ENABLE SERVO & ZERO POSITION
+STEP 3: ZERO POSITION
 ═══════════════════════════════════════
-SHA
-DPA=0
+DPA=0                   (Zero position)
 
 Verify:
 MG _MOA     (should be 0 = ON)
@@ -1148,20 +1175,28 @@ MG _TPA     (should be ~0)
 ═══════════════════════════════════════
 STEP 4: SET MOTION PROFILE
 ═══════════════════════════════════════
-SPA=500
-ACA=2000
-DCA=2000
+ERA=500000  (Increase error limit to prevent shutdown)
+SPA=1024000
+ACA=2560000
+DCA=2560000
+JGA=128000
 
 ═══════════════════════════════════════
 STEP 5: TEST SMALL MOVE
 ═══════════════════════════════════════
-PRA=1000
-BGA
 
-Wait ~3 seconds, then check:
+IMPORTANT: Power cycle controller first if error light is on!
+
+DPA=0       (Reset position to zero)
+MG _TAA     (Check amplifier status - should be 0)
+SHA         (Enable motor A)
+PRA=10000   (Small test move - 10,000 counts)
+BGA         (Begin motion)
+
+Wait for motion to complete, then check:
 MG _BGA     (should be 0 = done)
-MG _TPA     (should be ~940-986)
-MG _TEA     (should be <100)
+MG _TPA     (actual position - should be ~10,000)
+MG _TEA     (following error - should be low, <100)
 
 ✓ EXPECTED: Motor cool, ~94% accuracy
 
@@ -1172,12 +1207,12 @@ PAA=0
 BGA
 
 Wait, then check:
-MG _TPA     (should be ~70-80)
+MG _TPA     (should be near zero)
 
 ═══════════════════════════════════════
 STEP 7: TEST LARGER MOVE
 ═══════════════════════════════════════
-PRA=5000
+PRA=2500000
 BGA
 
 Wait ~5 seconds, then:
@@ -1189,10 +1224,51 @@ MG _TEA     (should be <50)
 ═══════════════════════════════════════
 STEP 8: SAVE TO EEPROM (CRITICAL!)
 ═══════════════════════════════════════
-BN
+⚠️  WARNING: BN is a GLOBAL command that saves ALL axes!
+⚠️  Disconnected axes will revert to defaults when BN is executed!
 
-Wait ~5 seconds for completion.
+MOA         (motor off - REQUIRED before BN)
+BN           (save to EEPROM - affects ALL axes)
+MG _BN       (verify burn completed - should show serial number)
+
+Wait for colon (:) response from BN
+Wait additional 10-15 seconds for EEPROM write completion
 Settings now persist on power cycle!
+
+IMPORTANT: If you have multiple axes, configure ALL axes 
+before doing BN, or accept that disconnected axes will revert.
+
+═══════════════════════════════════════
+UNDERSTANDING BN COMMAND BEHAVIOR
+═══════════════════════════════════════
+The BN (Burn) command is GLOBAL and saves the current state of ALL axes:
+
+✅ CORRECT APPROACH - Multiple Axes:
+1. Connect and configure Axis A → BN (saves A only)
+2. Connect and configure Axis B → BN (saves A + B)  
+3. Connect and configure Axis C → BN (saves A + B + C)
+
+❌ PROBLEMATIC APPROACH:
+1. Configure A → BN → Disconnect A
+2. Configure B → BN → A settings revert to defaults!
+3. Configure C → BN → A and B settings revert!
+
+SOLUTION: Either configure all axes in one session, or 
+reconfigure disconnected axes after each BN.
+
+═══════════════════════════════════════
+STEP 9: VERIFY SETTINGS PERSISTED (After Power Cycle)
+═══════════════════════════════════════
+After power cycling the controller, reconnect and verify:
+
+MG _MTA     (should be -1)
+MG _CEA     (should be 2) 
+MG _BMA     (should be 5000)
+MG _KPA     (should be 6)
+MG _KDA     (should be 64)
+MG _TLA     (should be 5)
+
+If any values are wrong, repeat the setup sequence.
 
 ═══════════════════════════════════════
 DIAGNOSTICS (If problems occur)
@@ -1214,9 +1290,55 @@ AB 1        (abort all)
 MOA         (motor off - safe state)
 
 ═══════════════════════════════════════
+25 MOST USED MOVEMENT COMMANDS
+═══════════════════════════════════════
+Type these commands manually in the Command field:
+
+BASIC MOTION:
+SPA=1000000     (set speed)
+ACA=2000000     (set acceleration)
+DCA=2000000     (set deceleration)
+JGA=50000       (set jog speed)
+PRA=1000000     (position relative move)
+PAA=0           (position absolute move)
+BGA             (begin motion)
+STA             (stop motion)
+
+POSITIONING:
+DPA=0           (define position)
+PHA=0           (position home)
+SHA             (servo on)
+MOA             (motor off)
+PAA=1000000     (move to absolute position)
+PRA=500000      (move relative distance)
+
+JOGGING:
+JGA=100000      (set jog speed)
+JGA=-50000      (set reverse jog speed)
+BGA             (begin jog)
+STA             (stop jog)
+
+LIMITS & SAFETY:
+SDA=1000000     (limit switch deceleration)
+LMA=10000000    (software limit max)
+LNA=-10000000   (software limit min)
+CLA             (clear limits)
+
+ADVANCED MOTION:
+FRA=1000        (feed rate)
+VEA=50000       (velocity)
+TLA=5           (torque limit)
+KPA=6           (proportional gain)
+KDA=64          (derivative gain)
+KIA=0.1         (integral gain)
+
+═══════════════════════════════════════
 """
-        guide_text.insert('1.0', testing_guide)
-        guide_text.config(state='disabled')
+        main_app.motor_testing_guide_text.insert('1.0', testing_guide)
+        main_app.motor_testing_guide_text.config(state='disabled')
+        
+        # Store the base testing guide template for axis substitution
+        main_app.testing_guide_template = testing_guide
         
         # RIGHT COLUMN: Terminal and command buttons
         terminal_frame = tk.Frame(terminal_container, bg=self.colors['main_bg'])
@@ -1247,99 +1369,12 @@ MOA         (motor off - safe state)
                                               command=main_app.clear_motor_tuning_command_history)
         main_app.clear_motor_tuning_commands_btn.pack(side='left')
         
-        # Quick Commands Section
-        quick_cmd_frame = tk.Frame(terminal_frame, bg=self.colors['main_bg'])
-        quick_cmd_frame.pack(fill='x', pady=(5, 5))
+        # Quick Commands Section (store frame for updating)
+        main_app.quick_cmd_frame = tk.Frame(terminal_frame, bg=self.colors['main_bg'])
+        main_app.quick_cmd_frame.pack(fill='x', pady=(5, 5))
         
-        tk.Label(quick_cmd_frame, text="Quick Commands (Step 1-3):", font=("Arial", 9, "bold"),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(anchor='w', pady=(0, 3))
-        
-        # Configuration commands (Step 1)
-        config_row1 = tk.Frame(quick_cmd_frame, bg=self.colors['main_bg'])
-        config_row1.pack(fill='x', pady=2)
-        
-        config_cmds_1 = [
-            "MOA", "MTA=-1", "CEA=2", "BAA", "BMA=5000"
-        ]
-        for cmd in config_cmds_1:
-            btn = tk.Button(config_row1, text=cmd, font=("Courier", 8), width=10,
-                          bg='#4a4a4a', fg='white',
-                          command=lambda c=cmd: main_app.insert_motor_tuning_command(c))
-            btn.pack(side='left', padx=2)
-        
-        config_row2 = tk.Frame(quick_cmd_frame, bg=self.colors['main_bg'])
-        config_row2.pack(fill='x', pady=2)
-        
-        config_cmds_2 = [
-            "KPA=6", "KDA=64", "KIA=0", "TLA=5", "TKA=9.99"
-        ]
-        for cmd in config_cmds_2:
-            btn = tk.Button(config_row2, text=cmd, font=("Courier", 8), width=10,
-                          bg='#4a4a4a', fg='white',
-                          command=lambda c=cmd: main_app.insert_motor_tuning_command(c))
-            btn.pack(side='left', padx=2)
-        
-        config_row3 = tk.Frame(quick_cmd_frame, bg=self.colors['main_bg'])
-        config_row3.pack(fill='x', pady=2)
-        
-        config_cmds_3 = [
-            "AGA=2", "AUA=9", "BZ <1000>1500", "BZA=3", "SHA", "DPA=0"
-        ]
-        for cmd in config_cmds_3:
-            btn = tk.Button(config_row3, text=cmd, font=("Courier", 8), width=12,
-                          bg='#4a4a4a', fg='white',
-                          command=lambda c=cmd: main_app.insert_motor_tuning_command(c))
-            btn.pack(side='left', padx=2)
-        
-        # Separator
-        tk.Label(quick_cmd_frame, text="Motion Testing (Step 4-7):", font=("Arial", 9, "bold"),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(anchor='w', pady=(8, 3))
-        
-        # Motion commands
-        motion_row1 = tk.Frame(quick_cmd_frame, bg=self.colors['main_bg'])
-        motion_row1.pack(fill='x', pady=2)
-        
-        motion_cmds = [
-            "SPA=500", "ACA=2000", "DCA=2000", "PRA=1000", "BGA", "PAA=0"
-        ]
-        for cmd in motion_cmds:
-            btn = tk.Button(motion_row1, text=cmd, font=("Courier", 8), width=10,
-                          bg='#2d5a2d', fg='white',
-                          command=lambda c=cmd: main_app.insert_motor_tuning_command(c))
-            btn.pack(side='left', padx=2)
-        
-        # Separator
-        tk.Label(quick_cmd_frame, text="Diagnostics:", font=("Arial", 9, "bold"),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(anchor='w', pady=(8, 3))
-        
-        # Diagnostic commands
-        diag_row = tk.Frame(quick_cmd_frame, bg=self.colors['main_bg'])
-        diag_row.pack(fill='x', pady=2)
-        
-        diag_cmds = [
-            "MG _TPA", "MG _TEA", "MG _BGA", "MG _MOA", "MG _TTA", "MG _BDA"
-        ]
-        for cmd in diag_cmds:
-            btn = tk.Button(diag_row, text=cmd, font=("Courier", 8), width=10,
-                          bg='#2a4a7f', fg='white',
-                          command=lambda c=cmd: main_app.insert_motor_tuning_command(c))
-            btn.pack(side='left', padx=2)
-        
-        # Emergency commands
-        emergency_row = tk.Frame(quick_cmd_frame, bg=self.colors['main_bg'])
-        emergency_row.pack(fill='x', pady=2)
-        
-        tk.Label(emergency_row, text="Emergency:", font=("Arial", 9, "bold"),
-               bg=self.colors['main_bg'], fg=self.colors['error_red']).pack(side='left', padx=(0, 10))
-        
-        emerg_cmds = [
-            ("STA", "Stop"), ("AB 1", "Abort"), ("MOA", "Motor Off"), ("BN", "Save")
-        ]
-        for cmd, label in emerg_cmds:
-            btn = tk.Button(emergency_row, text=f"{cmd}\n({label})", font=("Courier", 7), width=12,
-                          bg='#7f2a2a', fg='white',
-                          command=lambda c=cmd: main_app.insert_motor_tuning_command(c))
-            btn.pack(side='left', padx=2)
+        # Create initial command buttons (will be regenerated on axis change)
+        self._create_axis_command_buttons(main_app, main_app.quick_cmd_frame)
         
         # Terminal output
         cmd_history_frame = tk.Frame(terminal_frame, bg=self.colors['main_bg'])
@@ -1775,409 +1810,10 @@ Ready for commands...
         # Update scroll region
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
     
-    def create_settings_page(self, main_app):
-        """Create the Settings page GUI"""
-        # Title
-        title = tk.Label(self.scrollable_frame, text="Settings", 
-                        font=("Arial", 24, "bold"), 
-                        bg=self.colors['main_bg'], fg=self.colors['main_fg'])
-        title.pack(anchor='w', pady=(0, 20))
-        
-        # Settings content
-        settings_frame = tk.Frame(self.scrollable_frame, bg=self.colors['main_bg'])
-        settings_frame.pack(fill='both', expand=True)
-        
-        # General Settings Section
-        general_frame = tk.LabelFrame(settings_frame, text="General Settings", 
-                                    font=("Arial", 12, "bold"),
-                                    bg=self.colors['main_bg'], fg=self.colors['main_fg'],
-                                    relief='solid', bd=1)
-        general_frame.pack(fill='x', pady=(0, 20), padx=10)
-        
-        # General settings content
-        general_content = tk.Frame(general_frame, bg=self.colors['main_bg'])
-        general_content.pack(fill='x', padx=15, pady=15)
-        
-        # Auto-connect setting
-        auto_connect_frame = tk.Frame(general_content, bg=self.colors['main_bg'])
-        auto_connect_frame.pack(fill='x', pady=(0, 10))
-        
-        main_app.auto_connect_var = tk.BooleanVar(value=True)
-        auto_connect_check = tk.Checkbutton(auto_connect_frame, text="Auto-connect to controller on startup", 
-                                           font=("Arial", 10),
-                                           bg=self.colors['main_bg'], fg=self.colors['main_fg'],
-                                           variable=main_app.auto_connect_var)
-        auto_connect_check.pack(anchor='w')
-        
-        # Default IP setting
-        default_ip_frame = tk.Frame(general_content, bg=self.colors['main_bg'])
-        default_ip_frame.pack(fill='x', pady=(0, 10))
-        
-        tk.Label(default_ip_frame, text="Default IP Address:", font=("Arial", 10, "bold"),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
-        
-        main_app.default_ip_entry = tk.Entry(default_ip_frame, font=("Arial", 10), width=15)
-        main_app.default_ip_entry.pack(side='left', padx=(10, 0))
-        main_app.default_ip_entry.insert(0, "10.1.0.21")
-        
-        # Save settings button
-        save_settings_btn = tk.Button(general_content, text="💾 Save Settings", 
-                                     font=("Arial", 10, "bold"),
-                                     bg=self.colors['success_green'], fg='white',
-                                     command=main_app.save_settings)
-        save_settings_btn.pack(anchor='w', pady=(10, 0))
-        
-        # Controller Settings Section
-        controller_frame = tk.LabelFrame(settings_frame, text="Controller Settings", 
-                                       font=("Arial", 12, "bold"),
-                                       bg=self.colors['main_bg'], fg=self.colors['main_fg'],
-                                       relief='solid', bd=1)
-        controller_frame.pack(fill='x', pady=(0, 20), padx=10)
-        
-        # Controller settings content
-        controller_content = tk.Frame(controller_frame, bg=self.colors['main_bg'])
-        controller_content.pack(fill='x', padx=15, pady=15)
-        
-        # Default motion parameters
-        motion_params_frame = tk.Frame(controller_content, bg=self.colors['main_bg'])
-        motion_params_frame.pack(fill='x', pady=(0, 10))
-        
-        tk.Label(motion_params_frame, text="Default Speed:", font=("Arial", 10, "bold"),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
-        
-        main_app.default_speed_entry = tk.Entry(motion_params_frame, font=("Arial", 10), width=10)
-        main_app.default_speed_entry.pack(side='left', padx=(10, 20))
-        main_app.default_speed_entry.insert(0, "5000")
-        
-        tk.Label(motion_params_frame, text="Default Acceleration:", font=("Arial", 10, "bold"),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
-        
-        main_app.default_accel_entry = tk.Entry(motion_params_frame, font=("Arial", 10), width=10)
-        main_app.default_accel_entry.pack(side='left', padx=(10, 20))
-        main_app.default_accel_entry.insert(0, "1000")
-        
-        tk.Label(motion_params_frame, text="Default Deceleration:", font=("Arial", 10, "bold"),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
-        
-        main_app.default_decel_entry = tk.Entry(motion_params_frame, font=("Arial", 10), width=10)
-        main_app.default_decel_entry.pack(side='left', padx=(10, 0))
-        main_app.default_decel_entry.insert(0, "2000")
-        
-        # Apply controller settings button
-        apply_controller_btn = tk.Button(controller_content, text="⚙️ Apply Controller Settings", 
-                                        font=("Arial", 10, "bold"),
-                                        bg=self.colors['accent_blue'], fg='white',
-                                        command=main_app.apply_controller_settings)
-        apply_controller_btn.pack(anchor='w', pady=(10, 0))
-        
-        # Settings page complete
-        # Update scroll region
-        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
     
-    def create_controller_testing_page(self, main_app):
-        """Create the Controller Testing page GUI"""
-        # Title
-        title = tk.Label(self.scrollable_frame, text="Controller Testing", 
-                        font=("Arial", 24, "bold"), 
-                        bg=self.colors['main_bg'], fg=self.colors['main_fg'])
-        title.pack(anchor='w', pady=(0, 20))
-        
-        # Main content frame
-        main_frame = tk.Frame(self.scrollable_frame, bg=self.colors['main_bg'])
-        main_frame.pack(fill='both', expand=True)
-        
-        # 1. ENCODER POSITION DISPLAY (TOP)
-        encoder_frame = tk.LabelFrame(main_frame, text="Real-time Encoder Positions", 
-                                    font=("Arial", 12, "bold"),
-                                    bg=self.colors['main_bg'], fg=self.colors['main_fg'],
-                                    relief='solid', bd=1)
-        encoder_frame.pack(fill='x', pady=(0, 10))
-        
-        # Encoder position display
-        encoder_display_frame = tk.Frame(encoder_frame, bg=self.colors['main_bg'])
-        encoder_display_frame.pack(fill='x', padx=15, pady=10)
-        
-        # Create labels for each axis position
-        main_app.encoder_labels = {}
-        axes = ["A", "B", "C", "D"]
-        
-        for i, axis in enumerate(axes):
-            # Axis label
-            axis_label = tk.Label(encoder_display_frame, text=f"Axis {axis}:", 
-                                font=("Arial", 10, "bold"),
-                                bg=self.colors['main_bg'], fg=self.colors['main_fg'],
-                                width=8)
-            axis_label.grid(row=i, column=0, padx=(0, 5), pady=5, sticky='w')
-            
-            # Position value label
-            pos_label = tk.Label(encoder_display_frame, text="0", 
-                               font=("Consolas", 12, "bold"),
-                               bg='white', fg='black', relief='sunken', bd=1,
-                               width=12)
-            pos_label.grid(row=i, column=1, padx=(0, 10), pady=5, sticky='w')
-            main_app.encoder_labels[axis] = pos_label
-        
-        # Update button
-        update_btn = tk.Button(encoder_frame, text="🔄 Update Positions", 
-                             font=("Arial", 10, "bold"),
-                             bg=self.colors['accent_blue'], fg='white',
-                             command=main_app.update_encoder_positions)
-        update_btn.pack(pady=(0, 10))
-        
-        # Test connection button
-        test_btn = tk.Button(encoder_frame, text="🔍 Test Connection", 
-                           font=("Arial", 10, "bold"),
-                           bg=self.colors['success_green'], fg='white',
-                           command=main_app.test_controller_connection)
-        test_btn.pack(pady=(0, 10))
-        
-        # Comprehensive motor test button
-        comprehensive_test_btn = tk.Button(encoder_frame, text="🧪 Comprehensive Motor Test", 
-                                         font=("Arial", 12, "bold"),
-                                         bg=self.colors['error_red'], fg='white',
-                                         command=main_app.run_comprehensive_motor_test)
-        comprehensive_test_btn.pack(pady=(0, 10))
-        
-        # Auto-update checkbox - HIDDEN per user requirements (encoder always visible, no toggle)
-        # main_app.auto_update_var = tk.BooleanVar(value=True)
-        # auto_update_check = tk.Checkbutton(encoder_frame, text="Auto-update positions every 0.5 seconds", 
-        #                                  font=("Arial", 9),
-        #                                  bg=self.colors['main_bg'], fg=self.colors['main_fg'],
-        #                                  variable=main_app.auto_update_var,
-        #                                  command=main_app.toggle_auto_update)
-        # auto_update_check.pack(pady=(0, 10))
-        
-        # Auto-update is always enabled - no toggle needed
-        auto_update_label = tk.Label(encoder_frame, text="Auto-update enabled (always visible)", 
-                                   font=("Arial", 9),
-                                   bg=self.colors['main_bg'], fg=self.colors['secondary_fg'])
-        auto_update_label.pack(pady=(0, 10))
-        
-        # 2. JOG CONTROLS SECTION
-        jog_frame = tk.LabelFrame(main_frame, text="Jog Controls", 
-                                font=("Arial", 12, "bold"),
-                                bg=self.colors['main_bg'], fg=self.colors['main_fg'],
-                                relief='solid', bd=1)
-        jog_frame.pack(fill='x', pady=(0, 10))
-        
-        # Axis selection for jog
-        jog_axis_frame = tk.Frame(jog_frame, bg=self.colors['main_bg'])
-        jog_axis_frame.pack(fill='x', padx=15, pady=10)
-        
-        tk.Label(jog_axis_frame, text="Axis:", font=("Arial", 10, "bold"),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
-        
-        main_app.jog_axis_var = tk.StringVar(value="A")
-        jog_axis_combo = ttk.Combobox(jog_axis_frame, textvariable=main_app.jog_axis_var, 
-                                     values=["A", "B", "C"], width=10)
-        jog_axis_combo.pack(side='left', padx=(10, 20))
-        
-        # Jog distance
-        tk.Label(jog_axis_frame, text="Distance:", font=("Arial", 10, "bold"),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
-        
-        main_app.jog_distance_entry = tk.Entry(jog_axis_frame, font=("Arial", 10), width=10)
-        main_app.jog_distance_entry.pack(side='left', padx=(10, 20))
-        main_app.jog_distance_entry.insert(0, "1000")
-        
-        # Jog buttons
-        jog_buttons_frame = tk.Frame(jog_frame, bg=self.colors['main_bg'])
-        jog_buttons_frame.pack(fill='x', padx=15, pady=(0, 10))
-        
-        jog_neg_btn = tk.Button(jog_buttons_frame, text="← Jog -", 
-                               font=("Arial", 10, "bold"),
-                               bg=self.colors['warning_orange'], fg='white',
-                               command=main_app.jog_negative)
-        jog_neg_btn.pack(side='left', padx=(0, 10))
-        
-        jog_pos_btn = tk.Button(jog_buttons_frame, text="Jog + →", 
-                               font=("Arial", 10, "bold"),
-                               bg=self.colors['success_green'], fg='white',
-                               command=main_app.jog_positive)
-        jog_pos_btn.pack(side='left')
-        
-        # Stop button
-        stop_btn = tk.Button(jog_buttons_frame, text="⏹ Stop", 
-                            font=("Arial", 10, "bold"),
-                            bg=self.colors['error_red'], fg='white',
-                            command=main_app.stop_all_motion)
-        stop_btn.pack(side='right')
-        
-        # 3. MOTION PARAMETERS SECTION
-        params_frame = tk.LabelFrame(main_frame, text="Motion Parameters", 
-                                   font=("Arial", 12, "bold"),
-                                   bg=self.colors['main_bg'], fg=self.colors['main_fg'],
-                                   relief='solid', bd=1)
-        params_frame.pack(fill='x', pady=(0, 10))
-        
-        # Speed and acceleration
-        motion_params_frame = tk.Frame(params_frame, bg=self.colors['main_bg'])
-        motion_params_frame.pack(fill='x', padx=15, pady=10)
-        
-        # Speed
-        tk.Label(motion_params_frame, text="Speed:", font=("Arial", 10),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).grid(row=0, column=0, sticky='w')
-        main_app.speed_entry = tk.Entry(motion_params_frame, font=("Arial", 10), width=15)
-        main_app.speed_entry.grid(row=0, column=1, padx=(10, 20))
-        main_app.speed_entry.insert(0, "5000")
-        
-        # Acceleration
-        tk.Label(motion_params_frame, text="Acceleration:", font=("Arial", 10),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).grid(row=0, column=2, sticky='w')
-        main_app.accel_entry = tk.Entry(motion_params_frame, font=("Arial", 10), width=15)
-        main_app.accel_entry.grid(row=0, column=3, padx=(10, 20))
-        main_app.accel_entry.insert(0, "1000")
-        
-        # Deceleration
-        tk.Label(motion_params_frame, text="Deceleration:", font=("Arial", 10),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).grid(row=0, column=4, sticky='w')
-        main_app.decel_entry = tk.Entry(motion_params_frame, font=("Arial", 10), width=15)
-        main_app.decel_entry.grid(row=0, column=5, padx=(10, 0))
-        main_app.decel_entry.insert(0, "2000")
-        
-        # Apply button
-        apply_btn = tk.Button(params_frame, text="Apply Parameters", 
-                            font=("Arial", 10, "bold"),
-                            bg=self.colors['accent_blue'], fg='white',
-                            command=main_app.apply_motion_params)
-        apply_btn.pack(pady=(0, 10))
-        
-        # 4. MOTION TESTING SECTION
-        motion_frame = tk.LabelFrame(main_frame, text="Motion Testing", 
-                                   font=("Arial", 12, "bold"),
-                                   bg=self.colors['main_bg'], fg=self.colors['main_fg'],
-                                   relief='solid', bd=1)
-        motion_frame.pack(fill='x', pady=(0, 10))
-        
-        # Motion controls
-        motion_controls_frame = tk.Frame(motion_frame, bg=self.colors['main_bg'])
-        motion_controls_frame.pack(fill='x', padx=15, pady=10)
-        
-        # Axis selection
-        tk.Label(motion_controls_frame, text="Axis:", font=("Arial", 10, "bold"),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
-        
-        main_app.test_axis_var = tk.StringVar(value="A")
-        test_axis_combo = ttk.Combobox(motion_controls_frame, textvariable=main_app.test_axis_var, 
-                                      values=["A", "B", "C"], width=10)
-        test_axis_combo.pack(side='left', padx=(10, 20))
-        
-        # Distance input
-        tk.Label(motion_controls_frame, text="Distance:", font=("Arial", 10, "bold"),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
-        
-        main_app.test_distance_entry = tk.Entry(motion_controls_frame, font=("Arial", 10), width=10)
-        main_app.test_distance_entry.pack(side='left', padx=(10, 20))
-        main_app.test_distance_entry.insert(0, "1000")
-        
-        # Motion buttons
-        motion_buttons_frame = tk.Frame(motion_frame, bg=self.colors['main_bg'])
-        motion_buttons_frame.pack(fill='x', padx=15, pady=(0, 10))
-        
-        move_neg_btn = tk.Button(motion_buttons_frame, text="← Move -", 
-                                font=("Arial", 10, "bold"),
-                                bg=self.colors['warning_orange'], fg='white',
-                                command=main_app.test_move_negative)
-        move_neg_btn.pack(side='left', padx=(0, 10))
-        
-        move_pos_btn = tk.Button(motion_buttons_frame, text="Move + →", 
-                                font=("Arial", 10, "bold"),
-                                bg=self.colors['success_green'], fg='white',
-                                command=main_app.test_move_positive)
-        move_pos_btn.pack(side='left', padx=(0, 10))
-        
-        stop_btn = tk.Button(motion_buttons_frame, text="⏹ Stop", 
-                            font=("Arial", 10, "bold"),
-                            bg=self.colors['error_red'], fg='white',
-                            command=main_app.stop_all_motion)
-        stop_btn.pack(side='left')
-        
-        # 3. COMMAND TESTING SECTION
-        command_frame = tk.LabelFrame(main_frame, text="Command Testing", 
-                                    font=("Arial", 12, "bold"),
-                                    bg=self.colors['main_bg'], fg=self.colors['main_fg'],
-                                    relief='solid', bd=1)
-        command_frame.pack(fill='x', pady=(0, 10))
-        
-        # Command input
-        command_input_frame = tk.Frame(command_frame, bg=self.colors['main_bg'])
-        command_input_frame.pack(fill='x', padx=15, pady=10)
-        
-        tk.Label(command_input_frame, text="Command:", font=("Arial", 10, "bold"),
-               bg=self.colors['main_bg'], fg=self.colors['main_fg']).pack(side='left')
-        
-        main_app.command_entry = tk.Entry(command_input_frame, font=("Arial", 10), width=20)
-        main_app.command_entry.pack(side='left', padx=(10, 10))
-        main_app.command_entry.insert(0, "TP")
-        
-        # Add real-time command validation
-        def validate_test_command(*args):
-            command = main_app.command_entry.get().strip()
-            if command:
-                validation = self.validate_command(command)
-                self.show_command_validation_feedback(validation, main_app.command_entry)
-            else:
-                self.clear_command_validation_feedback(main_app.command_entry)
-        
-        main_app.command_entry.bind('<KeyRelease>', validate_test_command)
-        main_app.command_entry.bind('<FocusOut>', validate_test_command)
-        
-        # Send command button
-        send_btn = tk.Button(command_input_frame, text="Send Command", 
-                            font=("Arial", 10, "bold"),
-                            bg=self.colors['accent_blue'], fg='white',
-                            command=main_app.send_test_command)
-        send_btn.pack(side='left', padx=(0, 5))
-        
-        # Add help button for command validation
-        def show_test_command_help():
-            command = main_app.command_entry.get().strip()
-            if command:
-                help_text = self.get_command_help(command)
-                if help_text:
-                    messagebox.showinfo("Command Help", help_text)
-                else:
-                    messagebox.showinfo("Command Help", f"No help available for command: {command}")
-            else:
-                messagebox.showinfo("Command Help", "Enter a command to see help information")
-        
-        help_btn = tk.Button(command_input_frame, text="?", 
-                           font=("Arial", 10, "bold"),
-                           bg=self.colors['accent_green'], fg='white',
-                           command=show_test_command_help)
-        help_btn.pack(side='left')
-        
-        # Controller testing page complete
-        # Update scroll region
-        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
     
-    def create_visual_testing_page(self, main_app):
-        """Create the Visual Testing page GUI"""
-        # Title
-        title = tk.Label(self.scrollable_frame, text="Visual Motor Testing", 
-                        font=("Arial", 24, "bold"), 
-                        bg=self.colors['main_bg'], fg=self.colors['main_fg'])
-        title.pack(anchor='w', pady=(0, 20))
-        
-        # Description
-        desc = tk.Label(self.scrollable_frame, 
-                       text="Interactive visual testing with real-time progress tracking and detailed step-by-step monitoring.",
-                       font=("Arial", 12),
-                       bg=self.colors['main_bg'], fg=self.colors['secondary_fg'],
-                       wraplength=800)
-        desc.pack(anchor='w', pady=(0, 20))
-        
-        # Main content frame for visual testing interface
-        visual_frame = tk.Frame(self.scrollable_frame, bg=self.colors['main_bg'])
-        visual_frame.pack(fill='both', expand=True)
-        
-        # Create visual testing interface
-        from visual_testing_interface import VisualTestingInterface
-        self.visual_testing_interface = VisualTestingInterface(visual_frame, self.colors, main_app)
-        
-        # Visual testing page complete
-        # Update scroll region
-        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+    
+    
     
     def create_persistent_log(self):
         """Create a persistent log that stays at the bottom of the window across all pages"""
@@ -2309,3 +1945,147 @@ Ready for commands...
         """Clear validation feedback styling from entry widget"""
         if entry_widget:
             entry_widget.configure(bg='white')
+    
+    def _create_axis_command_buttons(self, main_app, parent_frame):
+        """Create command buttons with dynamic axis substitution, arranged in vertical columns"""
+        # Clear existing widgets
+        for widget in parent_frame.winfo_children():
+            widget.destroy()
+        
+        # Get the selected axis
+        axis = main_app.selected_test_axis.get()
+        
+        # Helper function to replace A with the selected axis
+        def axis_cmd(cmd):
+            import re
+            # AB is Abort command, not axis-specific - don't change it
+            if cmd.startswith('AB'):
+                return cmd
+            # BZ without axis is brushless initialization - no axis parameter
+            if cmd.startswith('BZ ') and '<' in cmd:
+                return cmd  # BZ <1000>1500 has no axis
+            
+            # For axis-specific commands, replace the axis identifier (the 'A' that represents the axis)
+            # Pattern 1: Commands with axis suffix: MOA, SHA, BGA, etc. (command + axis)
+            # Pattern 2: Commands with axis in assignment: MTA=, KPA=, etc. (command + axis + =)
+            # Pattern 3: Commands with axis prefix for variables: _TPA, _MOA, etc.
+            
+            # Handle commands ending with just axis: MOA, SHA, BGA, BAA, etc.
+            # The axis is typically the LAST character (not followed by = or other chars)
+            if re.search(r'[A-Z]{2,}A$', cmd):  # Commands like MOA, SHA, BGA, BAA
+                return cmd[:-1] + axis
+            
+            # Handle commands with axis before =: MTA=, KPA=, PAA=, etc.
+            if re.search(r'[A-Z]{2,}A=', cmd):
+                return re.sub(r'A=', axis + '=', cmd)
+            
+            # Handle MG commands with _XXA variables: _TPA, _MOA, _TEA, etc.
+            if cmd.startswith('MG _') and cmd.endswith('A'):
+                return cmd[:-1] + axis
+            
+            # Default: no replacement needed
+            return cmd
+        
+        # Create main container for all columns
+        main_container = tk.Frame(parent_frame, bg=self.colors['main_bg'])
+        main_container.pack(fill='both', expand=True)
+        
+        # Configure columns
+        main_container.grid_columnconfigure(0, weight=1)  # Quick Commands
+        main_container.grid_columnconfigure(1, weight=1)  # BI/BC Initialization
+        main_container.grid_columnconfigure(2, weight=1)  # Motion Testing
+        main_container.grid_columnconfigure(3, weight=1)  # Diagnostics
+        main_container.grid_columnconfigure(4, weight=1)  # Emergency
+        
+        # Helper to create a column with title and buttons
+        def create_column(column, title, commands, bg_color, width=12, two_cols=False):
+            # Column frame
+            col_frame = tk.Frame(main_container, bg=self.colors['main_bg'])
+            col_frame.grid(row=0, column=column, padx=5, pady=5, sticky='nsew')
+            
+            # Title
+            title_label = tk.Label(col_frame, text=title, font=("Arial", 9, "bold"),
+                                 bg=self.colors['main_bg'], fg=self.colors['main_fg'])
+            title_label.pack(anchor='w', pady=(0, 5))
+            
+            if two_cols:
+                # Create two sub-columns for Quick Commands
+                left_col = tk.Frame(col_frame, bg=self.colors['main_bg'])
+                left_col.pack(side='left', fill='both', expand=True, padx=(0, 2))
+                right_col = tk.Frame(col_frame, bg=self.colors['main_bg'])
+                right_col.pack(side='right', fill='both', expand=True, padx=(2, 0))
+                
+                # Split commands into two groups
+                mid_point = len(commands) // 2
+                left_cmds = commands[:mid_point]
+                right_cmds = commands[mid_point:]
+                
+                # Left column buttons
+                for cmd in left_cmds:
+                    btn = tk.Button(left_col, text=axis_cmd(cmd), font=("Courier", 8), width=width,
+                                  bg=bg_color, fg='white',
+                                  command=lambda c=cmd: main_app.send_command_from_interface(axis_cmd(c), 'motor_tuning'))
+                    btn.pack(fill='x', pady=2)
+                
+                # Right column buttons
+                for cmd in right_cmds:
+                    btn = tk.Button(right_col, text=axis_cmd(cmd), font=("Courier", 8), width=width,
+                                  bg=bg_color, fg='white',
+                                  command=lambda c=cmd: main_app.send_command_from_interface(axis_cmd(c), 'motor_tuning'))
+                    btn.pack(fill='x', pady=2)
+            else:
+                # Single column layout
+                for cmd in commands:
+                    if isinstance(cmd, tuple):  # Emergency commands with labels
+                        cmd_text, label = cmd
+                        btn_text = f"{axis_cmd(cmd_text)}\n({label})"
+                        btn = tk.Button(col_frame, text=btn_text, font=("Courier", 7), width=width,
+                                      bg=bg_color, fg='white',
+                                      command=lambda c=cmd_text: main_app.send_command_from_interface(axis_cmd(c), 'motor_tuning'))
+                    else:
+                        btn = tk.Button(col_frame, text=axis_cmd(cmd), font=("Courier", 8), width=width,
+                                      bg=bg_color, fg='white',
+                                      command=lambda c=cmd: main_app.send_command_from_interface(axis_cmd(c), 'motor_tuning'))
+                    btn.pack(fill='x', pady=2)
+        
+        # Quick Commands (Step 1-3) - Basic configuration
+        quick_cmds = [
+            "MOA", "MTA=1", "CEA=0", "BAA", "BMA=5000", "KPA=6", "KDA=64", "KIA=0.1",
+            "TLA=5", "TKA=9.99", "AGA=1", "AUA=0", "DPA=0"
+        ]
+        create_column(0, "Quick Commands\n(Step 1-3)", quick_cmds, '#4a4a4a', 12, two_cols=True)
+        
+        # BI/BC Initialization (Step 2) - Manual control
+        bi_bc_cmds = [
+            "BIA=-1", "BCA", "SHA", "JGA=500", "BGA", "STA"
+        ]
+        create_column(1, "BI/BC Initialization\n(Step 2 - Manual)", bi_bc_cmds, '#5a3a2a', 12)
+        
+        # Motion Profile (Step 4)
+        profile_cmds = [
+            "ERA=500000", "SPA=1024000", "ACA=2560000", "DCA=2560000", "JGA=128000", "PRA=2500000", "BGA"
+        ]
+        
+        # Motion Testing (Step 5-7)
+        motion_cmds = [
+            "DPA=0", "MG _TAA", "SHA", "PRA=10000", "BGA", "MG _BGA", "MG _TPA", "MG _TEA"
+        ]
+        create_column(2, "Motion Profile\n(Step 4)", profile_cmds, '#4a2d4a', 12)
+        create_column(3, "Motion Testing\n(Step 5-7)", motion_cmds, '#2d5a2d', 14)
+        
+        # Diagnostics - add missing MG commands and render in two columns
+        diag_cmds = [
+            # Existing diagnostics
+            "MG _TPA", "MG _TEA", "MG _BGA", "MG _MOA",
+            # Requested additions (ensure included)
+            "MG _MTA", "MG _CEA", "MG _BMA", "MG _KPA", "MG _KDA", "MG _TLA",
+            # Already present in list but keep near the end for balance
+            "MG _TTA", "MG _BDA"
+        ]
+        create_column(3, "Diagnostics\n(Messages)", diag_cmds, '#2a4a7f', 12, two_cols=True)
+        
+        # Emergency
+        emerg_cmds = [
+            ("STA", "Stop"), ("AB 1", "Abort"), ("MOA", "Motor Off"), ("BN", "Save")
+        ]
+        create_column(4, "Emergency\n(Alert)", emerg_cmds, '#7f2a2a', 14)
