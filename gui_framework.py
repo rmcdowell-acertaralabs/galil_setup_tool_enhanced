@@ -11,7 +11,7 @@ import threading
 import time
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple, Any
-from command_validator import DMC4103CommandValidator, CommandValidation
+from command_validator_proper import DMC4103CommandValidator, CommandValidation
 
 class GUIFramework:
     """Class containing all GUI framework functions"""

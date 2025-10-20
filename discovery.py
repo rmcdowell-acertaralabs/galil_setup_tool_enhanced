@@ -3,8 +3,11 @@
 
 import threading
 from typing import Dict, Iterable, Tuple, Union
-from command_validator import CommandValidation, DMC4103CommandValidator
-from galil_connection import SUPPORTED_AXES, MAX_DI, MAX_DO
+from command_validator_proper import CommandValidation, DMC4103CommandValidator
+# Hardware configuration constants
+SUPPORTED_AXES = ("A", "B")  # C and D not present on this DMC-4143
+MAX_DI = 8  # Digital inputs 1..8
+MAX_DO = 8  # Digital outputs 1..8 (not 16)
 
 # Global command validator instance
 _command_validator = DMC4103CommandValidator()

@@ -4,12 +4,13 @@ import os
 import math
 from tkinter import messagebox
 from typing import List, Dict, Any
-from command_validator import (
-    LoggingUtils,
-    estimate_bm_from_movement,
-    calculate_motion_parameters,
-    validate_motion_parameters,
-)
+# Note: These functions are defined in main.py, not command_validator
+# from command_validator import (
+#     LoggingUtils,
+#     estimate_bm_from_movement,
+#     calculate_motion_parameters,
+#     validate_motion_parameters,
+# )
 
 def install_gclib_dll():
     """Install gclib.dll to System32 directory."""

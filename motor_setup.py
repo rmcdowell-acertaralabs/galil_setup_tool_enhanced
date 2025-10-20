@@ -9,7 +9,7 @@ import time
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 from enum import Enum
-from command_validator import DMC4103CommandValidator, CommandValidation
+from command_validator_proper import DMC4103CommandValidator, CommandValidation
 
 class SetupStep(Enum):
     """Enumeration of motor setup steps"""

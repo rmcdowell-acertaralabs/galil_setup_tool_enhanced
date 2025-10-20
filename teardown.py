@@ -4,7 +4,7 @@
 # Uses command_validator.py for command validation
 
 from typing import Iterable, Tuple, Union
-from command_validator import DMC4103CommandValidator
+from command_validator_proper import DMC4103CommandValidator
 
 AxisList = Union[Iterable[str], str]
 

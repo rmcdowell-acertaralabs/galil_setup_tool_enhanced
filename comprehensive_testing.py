@@ -16,12 +16,40 @@ from pass_fail import run_pf_checks, move_and_pf
 # controller_servo_maintenance provides helper functions (not a class)
 from errors_status import collect_error_status, format_status_report, az_clear_latched
 from teardown import teardown_axes
-from command_validator import DMC4103CommandValidator
-from galil_connection import (
-    SUPPORTED_AXES, MAX_DI, MAX_DO, 
-    get_galil_connection, gsend, num, wait_bg, 
-    clear_errors_and_rebaseline, motion_profile, quiet_phase
-)
+from command_validator_proper import DMC4103CommandValidator
+# Hardware configuration constants
+SUPPORTED_AXES = ("A", "B")  # C and D not present on this DMC-4143
+MAX_DI = 8  # Digital inputs 1..8
+MAX_DO = 8  # Digital outputs 1..8 (not 16)
+
+# Mock functions for development (these would be replaced with real implementations)
+def get_galil_connection(address=None):
+    """Mock function - replace with real implementation"""
+    return None
+
+def gsend(s):
+    """Mock function - replace with real implementation"""
+    return ""
+
+def num(cmd):
+    """Mock function - replace with real implementation"""
+    return 0.0
+
+def wait_bg(g, axes, timeout=10.0):
+    """Mock function - replace with real implementation"""
+    pass
+
+def clear_errors_and_rebaseline(g, axes):
+    """Mock function - replace with real implementation"""
+    pass
+
+def motion_profile(g, axis, sp, ac, dc):
+    """Mock function - replace with real implementation"""
+    pass
+
+def quiet_phase(g, axes):
+    """Mock function - replace with real implementation"""
+    pass
 from galil_helpers import (
     cmd, read_scalar, read_vector, is_servo_on, ensure_servo_on,
     wait_motion_complete, set_motion_profile, zero_position,

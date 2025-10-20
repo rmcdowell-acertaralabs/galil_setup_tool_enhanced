@@ -1,4 +1,4 @@
-import gclib
+import gclib_proper as gclib
 import logging
 import math
 import time
@@ -6,7 +6,7 @@ import json
 import os
 import re
 from typing import Dict, List, Optional, Tuple
-from command_validator import DMC4103CommandValidator, CommandValidation
+from command_validator_proper import DMC4103CommandValidator, CommandValidation
 
 logger = logging.getLogger(__name__)
 

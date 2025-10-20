@@ -3,7 +3,7 @@ Network Configuration and Utilities Module for Windows
 Handles reading and setting network adapter configurations, controller discovery, and network testing
 """
 
-import gclib
+import gclib_proper as gclib
 import socket
 import struct
 import subprocess
@@ -15,7 +15,7 @@ from typing import Dict, List, Optional, Tuple
 from tkinter import messagebox
 from galil_combined import GalilController
 from controller_commands import ControllerCommands
-from command_validator import DMC4103CommandValidator
+from command_validator_proper import DMC4103CommandValidator
 
 # Validator-backed command sender
 _VALIDATOR_INSTANCE = None

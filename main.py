@@ -34,7 +34,8 @@ import galil_combined as galil_functions
 from command_compatibility_checker import GalilCommandChecker
 from controller_commands import ControllerCommands
 from gui_framework import GUIFramework
-from utils import LoggingUtils, estimate_bm_from_movement, calculate_motion_parameters, validate_motion_parameters
+from logging_utils_proper import LoggingUtils
+# Note: estimate_bm_from_movement, calculate_motion_parameters, validate_motion_parameters are defined in main.py itself
 from comprehensive_testing import ComprehensiveTester
 
 def _parse_first_number(s: str) -> Optional[int]:
@@ -157,7 +158,7 @@ class GalilSetupApp:
         }
         
         # Initialize managers
-        self.logging_utils = LoggingUtils(None)  # No callback to avoid circular dependency
+        self.logging_utils = LoggingUtils(self.append_test_log)
         self.connection_manager = ControllerConnectionManager(self.append_test_log)
         self.gui_framework = GUIFramework(self.root, self.colors, self.append_test_log, self)
         
