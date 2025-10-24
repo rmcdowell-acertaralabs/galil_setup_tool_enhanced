@@ -1,4 +1,4 @@
-import gclib_proper as gclib
+import gclib
 import logging
 import math
 import time

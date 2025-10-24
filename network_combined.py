@@ -3,7 +3,7 @@ Network Configuration and Utilities Module for Windows
 Handles reading and setting network adapter configurations, controller discovery, and network testing
 """
 
-import gclib_proper as gclib
+import gclib
 import socket
 import struct
 import subprocess
