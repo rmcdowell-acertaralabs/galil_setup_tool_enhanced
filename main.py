@@ -84,15 +84,51 @@ class EncoderPanelUpdater:
             # Controller not available, stop the loop
             self._after_id = None
             return
+        
+        # Track last values to prevent unnecessary updates
+        if not hasattr(self, '_last_values'):
+            self._last_values = {}
+        
+        # Track consecutive errors per axis to avoid spamming
+        if not hasattr(self, '_error_counts'):
+            self._error_counts = {}
             
         for ax in ("A", "B", "C", "D"):
             try:
+                # Skip axes that have too many errors (likely not connected)
+                if ax in self._error_counts and self._error_counts[ax] >= 3:
+                    continue
+                    
                 # use direct TP{ax} command for DMC-4143 compatibility
-                val = _parse_first_number(self.controller.send_command(f"TP{ax}"))
-                if val is not None:
-                    self.set_field(ax, str(val))
-            except Exception:
-                # don't crash the loop
+                try:
+                    response = self.controller.send_command(f"TP{ax}")
+                    # Handle "?" response (unsupported axis)
+                    if response and response.strip() == "?":
+                        self._error_counts[ax] = self._error_counts.get(ax, 0) + 1
+                        continue
+                    val = _parse_first_number(response)
+                    if val is not None:
+                        # Only update if value has changed to prevent blinking
+                        if ax not in self._last_values or self._last_values[ax] != val:
+                            self._last_values[ax] = val
+                            self.set_field(ax, str(val))
+                        # Reset error count on success
+                        if ax in self._error_counts:
+                            self._error_counts[ax] = 0
+                except ValueError as ve:
+                    # "?" responses raised as ValueError - skip this axis silently
+                    if "?" in str(ve) or "unsupported" in str(ve).lower():
+                        self._error_counts[ax] = self._error_counts.get(ax, 0) + 1
+                        continue
+                    raise
+            except Exception as e:
+                # Track errors - if 3 consecutive errors, stop trying this axis
+                error_str = str(e).lower()
+                if "device write error" in error_str or "device read error" in error_str:
+                    self._error_counts[ax] = self._error_counts.get(ax, 0) + 1
+                elif "question mark" in error_str or "unsupported" in error_str:
+                    self._error_counts[ax] = self._error_counts.get(ax, 0) + 1
+                # don't crash the loop, don't log expected errors
                 pass
         self._after_id = self.root.after(self._period_ms, self._tick)
 
@@ -580,6 +616,14 @@ class GalilSetupApp:
             
     
         
+    
+    def show_step_by_step(self):
+        """Show step-by-step motor configuration interface"""
+        self.clear_main_content()
+        self.gui_framework.create_step_by_step_page(self)
+        
+        # Refresh connection status display
+        self.refresh_connection_status_display()
     
     def show_motor_tuning(self):
         """Show motor tuning interface"""
@@ -1284,13 +1328,18 @@ class GalilSetupApp:
         """Display discovered controllers in the UI"""
         try:
             if not controllers:
+                self.append_test_log("No controllers to display")
                 return
+            
+            self.append_test_log(f"Displaying {len(controllers)} discovered controller(s)...")
             
             # Create a simple dialog to show discovered controllers
             dialog = tk.Toplevel(self.root)
             dialog.title("Discovered Controllers")
-            dialog.geometry("400x300")
+            dialog.geometry("500x400")
             dialog.configure(bg=self.colors['main_bg'])
+            dialog.transient(self.root)  # Make dialog modal
+            dialog.grab_set()  # Make dialog modal
             
             # Title
             title_label = tk.Label(dialog, text="🎯 Discovered Controllers", 
@@ -1298,47 +1347,99 @@ class GalilSetupApp:
                                 bg=self.colors['main_bg'], fg=self.colors['main_fg'])
             title_label.pack(pady=10)
             
-            # Controller list
-            list_frame = tk.Frame(dialog, bg=self.colors['main_bg'])
-            list_frame.pack(fill='both', expand=True, padx=20, pady=10)
+            # Scrollable frame for controllers
+            canvas = tk.Canvas(dialog, bg=self.colors['main_bg'], highlightthickness=0)
+            scrollbar = tk.Scrollbar(dialog, orient="vertical", command=canvas.yview)
+            list_frame = tk.Frame(canvas, bg=self.colors['main_bg'])
+            
+            list_frame.bind(
+                "<Configure>",
+                lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+            )
+            
+            canvas.create_window((0, 0), window=list_frame, anchor="nw")
+            canvas.configure(yscrollcommand=scrollbar.set)
+            
+            canvas.pack(side="left", fill="both", expand=True, padx=(20, 0), pady=10)
+            scrollbar.pack(side="right", fill="y", pady=10)
             
             for i, (ip, name) in enumerate(controllers.items(), 1):
-                controller_frame = tk.Frame(list_frame, bg=self.colors['card_bg'], relief='solid', bd=1)
-                controller_frame.pack(fill='x', pady=2)
+                controller_frame = tk.Frame(list_frame, bg=self.colors['card_bg'], relief='solid', bd=2)
+                controller_frame.pack(fill='x', pady=5, padx=10)
                 
-                # Controller info
+                # Make the entire frame clickable
+                def make_click_handler(controller_ip):
+                    def on_click(event):
+                        try:
+                            self.append_test_log(f"Selected controller: {controller_ip}")
+                            self.connect_to_discovered_controller(controller_ip, dialog)
+                        except Exception as e:
+                            self.append_test_log(f"Error connecting: {e}")
+                            import traceback
+                            traceback.print_exc()
+                    
+                    def on_enter(event):
+                        event.widget.config(bg=self.colors['accent_blue'])
+                        event.widget.master.config(bg=self.colors['accent_blue'])
+                    
+                    def on_leave(event):
+                        event.widget.config(bg=self.colors['card_bg'])
+                        event.widget.master.config(bg=self.colors['card_bg'])
+                    
+                    return on_click, on_enter, on_leave
+                
+                click_handler, enter_handler, leave_handler = make_click_handler(ip)
+                
+                # Controller info - make it clickable
+                info_text = f"{i}. IP: {ip}\n   {name}"
                 info_label = tk.Label(controller_frame, 
-                                    text=f"{i}. IP: {ip} | Name: {name}",
+                                    text=info_text,
                                     font=("Arial", 10), 
-                                    bg=self.colors['card_bg'], fg=self.colors['main_fg'])
-                info_label.pack(side='left', padx=10, pady=5)
+                                    bg=self.colors['card_bg'], fg=self.colors['main_fg'],
+                                    justify='left', anchor='w', wraplength=350,
+                                    cursor='hand2')
+                info_label.pack(fill='both', expand=True, padx=15, pady=10)
                 
-                # Connect button
-                connect_btn = tk.Button(controller_frame, text="Connect", 
-                                      font=("Arial", 9, "bold"),
-                                      bg=self.colors['success_green'], fg='white',
-                                      command=lambda ip=ip: self.connect_to_discovered_controller(ip, dialog))
-                connect_btn.pack(side='right', padx=10, pady=5)
+                # Bind click and hover events to both label and frame
+                for widget in [info_label, controller_frame]:
+                    widget.bind('<Button-1>', click_handler)
+                    widget.bind('<Enter>', enter_handler)
+                    widget.bind('<Leave>', leave_handler)
             
             # Close button
             close_btn = tk.Button(dialog, text="Close", 
                                 font=("Arial", 10, "bold"),
                                 bg=self.colors['accent_blue'], fg='white',
-                                command=dialog.destroy)
+                                command=dialog.destroy,
+                                width=15)
             close_btn.pack(pady=10)
             
+            # Make dialog visible
+            dialog.focus_set()
+            dialog.lift()
+            
+            self.append_test_log(f"Discovery dialog displayed with {len(controllers)} controller(s)")
+            
         except Exception as e:
-            self.append_test_log(f"Error displaying discovered controllers: {e}")
+            error_msg = f"Error displaying discovered controllers: {e}"
+            self.append_test_log(error_msg)
+            import traceback
+            traceback.print_exc()
+            messagebox.showerror("Error", error_msg)
     
     def connect_to_discovered_controller(self, ip_address, dialog):
         """Connect to a discovered controller"""
         try:
-            self.append_test_log(f"Connecting to discovered controller at {ip_address}")
+            if not ip_address:
+                self.append_test_log("Error: Empty IP address provided")
+                return
+            
+            self.append_test_log(f"Attempting to connect to {ip_address}")
             
             # Update the IP entry field
             if hasattr(self, 'ip_entry') and self.ip_entry.winfo_exists():
                 self.ip_entry.delete(0, tk.END)
-                # IP entry remains blank - no auto-fill
+                self.ip_entry.insert(0, ip_address)
             
             # Close the discovery dialog
             dialog.destroy()
@@ -1351,7 +1452,7 @@ class GalilSetupApp:
                 else:
                     self.append_test_log(f"Failed to connect to {ip_address}")
             else:
-                self.append_test_log("Connection manager not initialized")
+                self.append_test_log("Error: Connection manager not initialized")
                 
         except Exception as e:
             self.append_test_log(f"Error connecting to discovered controller: {e}")

@@ -529,62 +529,172 @@ def check_com_port_availability(com_port: str) -> Dict[str, any]:
     
     return result
 
-def discover_controllers_network_scan() -> Dict[str, str]:
+def discover_controllers_network_scan(log_callback=None) -> Dict[str, str]:
     """
-    Alternative discovery method that scans common network ranges for Galil controllers.
-    This method tries to connect to potential IP addresses directly.
+    Discovery method that finds controllers by detecting physical connections (COM ports or Ethernet),
+    then queries each connection to get the controller's IP address and information.
+    Does NOT scan network ranges - only queries actual detected connections.
+    
+    Args:
+        log_callback: Optional callback function for logging messages
     
     Returns:
         Dictionary mapping controller IP addresses to their information
     """
-    discovered_controllers = {}
-    
-    try:
-        import socket
-        import threading
-        import time
-        
-        # Get local network info
-        hostname = socket.gethostname()
-        local_ip = socket.gethostbyname(hostname)
-        local_network = '.'.join(local_ip.split('.')[:-1])
-        
-        # Common IP ranges to scan
-        ip_ranges_to_scan = [
-            f"{local_network}.",  # Local network
-            "10.1.0.",           # Common Galil default
-            "192.168.1.",        # Common home network
-            "192.168.0.",        # Alternative home network
-        ]
-        
-        def test_ip(ip_address):
-            """Test if a specific IP address has a Galil controller"""
+    def log(message):
+        """Internal logging function"""
+        if log_callback:
             try:
-                # Test with gclib connection
-                g = gclib.py()
-                g.GOpen(f"{ip_address}")
-                # Try a simple command to verify it's a Galil controller
-                response = g.GCommand("TPA")
-                g.GClose()
-                
-                if response is not None:
-                    discovered_controllers[ip_address] = "Galil Controller"
-                    return True
+                log_callback(message)
             except:
                 pass
-            return False
+        print(message)
+    
+    try:
+        import re
         
-        # Scan each range
-        for network_base in ip_ranges_to_scan:
-            # Scan IPs 1-50 in each range (limit to avoid long scan times)
-            for i in range(1, 51):
-                ip_address = f"{network_base}{i}"
-                test_ip(ip_address)
+        discovered_controllers = {}
+        
+        log("Detecting physical connections to Galil controllers...")
+        
+        # Step 1: Use gclib to find all available connections
+        try:
+            g = gclib.py()
+            addresses = g.GAddresses()
+            
+            if not addresses:
+                log("No controllers detected via GAddresses()")
+                return {}
+            
+            log(f"Found {len(addresses)} potential connection(s): {list(addresses.keys())}")
+            
+        except Exception as e:
+            log(f"Error getting controller addresses: {e}")
+            return {}
+        
+        # Step 2: For each connection found, query its IP address
+        for address, info in addresses.items():
+            controller_ip = None
+            connection_type = None
+            
+            try:
+                # Determine connection type
+                if address.upper().startswith('COM'):
+                    connection_type = "COM Port"
+                    log(f"Found {connection_type}: {address}")
+                    
+                    # Connect via COM port and query IP address
+                    try:
+                        test_g = gclib.py()
+                        
+                        # Try different baud rates
+                        baud_rates = [115200, 57600, 38400, 19200, 9600]
+                        connected = False
+                        
+                        for baud in baud_rates:
+                            try:
+                                open_str = f"{address} --direct --baud {baud}"
+                                test_g.GOpen(open_str)
+                                connected = True
+                                log(f"Connected to {address} at {baud} baud")
+                                break
+                            except:
+                                continue
+                        
+                        if not connected:
+                            log(f"Could not connect to {address}")
+                            continue
+                        
+                        # Query the controller's IP address using IP command
+                        try:
+                            ip_response = test_g.GCommand("IP")
+                            if ip_response and not ip_response.strip().startswith('?'):
+                                # Extract IP address from response
+                                m = re.search(r'(?<!\d)(?:\d{1,3}\.){3}\d{1,3}(?!\d)', ip_response)
+                                if m:
+                                    controller_ip = m.group(0)
+                                    # Validate IP address
+                                    if all(0 <= int(p) <= 255 for p in controller_ip.split(".")):
+                                        log(f"Controller on {address} has IP: {controller_ip}")
+                                    else:
+                                        controller_ip = None
+                        except Exception as e:
+                            log(f"IP command failed, trying IA command")
+                        
+                        # Try alternative: IA ? command (returns IP in comma format)
+                        if not controller_ip:
+                            try:
+                                ia_response = test_g.GCommand("IA ?")
+                                if ia_response and not ia_response.strip().startswith('?'):
+                                    # Convert comma-separated to dot-separated (192,168,1,100 -> 192.168.1.100)
+                                    ip_str = ia_response.strip().replace(',', '.')
+                                    m = re.search(r'(?<!\d)(?:\d{1,3}\.){3}\d{1,3}(?!\d)', ip_str)
+                                    if m:
+                                        controller_ip = m.group(0)
+                                        if all(0 <= int(p) <= 255 for p in controller_ip.split(".")):
+                                            log(f"Controller on {address} has IP: {controller_ip} (via IA)")
+                                        else:
+                                            controller_ip = None
+                            except:
+                                pass
+                        
+                        test_g.GClose()
+                        
+                    except Exception as e:
+                        log(f"Error connecting to {address}: {e}")
+                        continue
+                    
+                else:
+                    # Network connection - extract IP from address string
+                    connection_type = "Ethernet"
+                    
+                    # Extract IP address from string (might have options like "-d", "--direct", etc.)
+                    # IP addresses are in format like "10.1.0.21" or "10.1.0.21 -d" or "10.1.0.21 --direct"
+                    try:
+                        # Split by spaces and take first part (the IP)
+                        ip_candidate = address.split()[0] if address else address
+                        
+                        # Validate it's a proper IP address
+                        parts = ip_candidate.split('.')
+                        if len(parts) == 4 and all(part.isdigit() and 0 <= int(part) <= 255 for part in parts):
+                            controller_ip = ip_candidate
+                            log(f"Found {connection_type} connection: {address} (IP: {controller_ip})")
+                        else:
+                            log(f"Invalid IP format in address: {address}")
+                            continue
+                    except Exception as e:
+                        log(f"Could not parse IP address from '{address}': {e}")
+                        continue
+                
+                # If we found an IP, add it to discovered controllers
+                if controller_ip:
+                    discovered_controllers[controller_ip] = f"Galil Controller (connected via {connection_type}: {address})"
+                else:
+                    # Still add the connection even if IP query failed
+                    if connection_type == "COM Port":
+                        discovered_controllers[address] = f"Galil Controller on {address} (IP query failed)"
+                    else:
+                        # For network connections, we should have the IP
+                        pass
+                        
+            except Exception as e:
+                log(f"Error processing connection {address}: {e}")
+                continue
+        
+        if discovered_controllers:
+            log(f"Discovery complete: Found {len(discovered_controllers)} controller(s)")
+            for ip_or_port, info in discovered_controllers.items():
+                log(f"  - {ip_or_port}: {info}")
+        else:
+            log("Discovery complete: No controllers found")
         
         return discovered_controllers
         
     except Exception as e:
-        print(f"Error in network scan discovery: {e}")
+        error_msg = f"Error in connection-based discovery: {e}"
+        log(error_msg)
+        import traceback
+        traceback.print_exc()
         return {}
 
 def ping_controller(ip_address: str, timeout: float = 1.0) -> bool:
@@ -2065,9 +2175,9 @@ class ControllerConnectionManager:
             controllers.update(network_controllers)
 
             if not network_controllers and not com_controllers:
-                # If gclib discovery fails, try network scan for network controllers only
-                self.log("gclib discovery found no controllers, trying network scan...")
-                network_controllers = discover_controllers_network_scan()
+                # If gclib discovery fails, try connection-based discovery
+                self.log("gclib discovery found no controllers, querying physical connections...")
+                network_controllers = discover_controllers_network_scan(log_callback=self.log)
                 controllers.update(network_controllers)
 
             if controllers:

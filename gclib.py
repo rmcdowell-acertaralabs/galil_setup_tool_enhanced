@@ -14,50 +14,104 @@ if platform.system() == 'Windows':
     # Use local DLLs in the same directory as the script
     script_dir = os.path.dirname(os.path.abspath(__file__))
     
-    if '64 bit' in platform.python_compiler():
+    # Detect 64-bit architecture
+    is_64bit = platform.architecture()[0] == '64bit'
+    
+    if is_64bit:
         # Try to load crypto DLLs from local directory first, then fall back to system
-        try:
-            WinDLL(os.path.join(script_dir, 'libcrypto-3.dll'))
-        except:
+        crypto_paths = [
+            os.path.join(script_dir, 'libcrypto-3.dll'),
+            r'C:\Program Files (x86)\Galil\gclib\dll\x64\libcrypto-3.dll',
+            r'C:\Program Files\Galil\gclib\dll\x64\libcrypto-3.dll'
+        ]
+        for crypto_path in crypto_paths:
             try:
-                WinDLL(r'C:\Program Files (x86)\Galil\gclib\dll\x64\libcrypto-3.dll')
+                if os.path.exists(crypto_path):
+                    WinDLL(crypto_path)
+                    break
             except:
-                pass  # Continue without crypto DLL if not available
+                pass
         
-        try:
-            WinDLL(os.path.join(script_dir, 'libssl-3.dll'))
-        except:
+        ssl_paths = [
+            os.path.join(script_dir, 'libssl-3.dll'),
+            r'C:\Program Files (x86)\Galil\gclib\dll\x64\libssl-3.dll',
+            r'C:\Program Files\Galil\gclib\dll\x64\libssl-3.dll'
+        ]
+        for ssl_path in ssl_paths:
             try:
-                WinDLL(r'C:\Program Files (x86)\Galil\gclib\dll\x64\libssl-3.dll')
+                if os.path.exists(ssl_path):
+                    WinDLL(ssl_path)
+                    break
             except:
-                pass  # Continue without ssl DLL if not available
+                pass
         
         _gclib_path = os.path.join(script_dir, 'gclib.dll')
         _gclibo_path = os.path.join(script_dir, 'gclibo.dll')
-        _gclib = WinDLL(_gclib_path)
-        _gclibo = WinDLL(_gclibo_path)
+        
+        # Add script directory to DLL search path (Python 3.8+)
+        try:
+            os.add_dll_directory(script_dir)
+        except AttributeError:
+            # For older Python versions, set PATH environment variable
+            import sys
+            dll_path = os.environ.get('PATH', '')
+            if script_dir not in dll_path:
+                os.environ['PATH'] = script_dir + os.pathsep + dll_path
+        
+        # Try to load the DLLs
+        try:
+            _gclib = WinDLL(_gclib_path)
+            _gclibo = WinDLL(_gclibo_path)
+        except OSError as e:
+            raise OSError(f"Failed to load gclib DLLs. Make sure libcrypto-3.dll and libssl-3.dll are available. Error: {e}")
     else:
-        # Try to load crypto DLLs from local directory first, then fall back to system
-        try:
-            WinDLL(os.path.join(script_dir, 'libcrypto-3.dll'))
-        except:
+        # 32-bit architecture
+        crypto_paths = [
+            os.path.join(script_dir, 'libcrypto-3.dll'),
+            r'C:\Program Files (x86)\Galil\gclib\dll\x86\libcrypto-3.dll',
+            r'C:\Program Files\Galil\gclib\dll\x86\libcrypto-3.dll'
+        ]
+        for crypto_path in crypto_paths:
             try:
-                WinDLL(r'C:\Program Files (x86)\Galil\gclib\dll\x86\libcrypto-3.dll')
+                if os.path.exists(crypto_path):
+                    WinDLL(crypto_path)
+                    break
             except:
-                pass  # Continue without crypto DLL if not available
+                pass
         
-        try:
-            WinDLL(os.path.join(script_dir, 'libssl-3.dll'))
-        except:
+        ssl_paths = [
+            os.path.join(script_dir, 'libssl-3.dll'),
+            r'C:\Program Files (x86)\Galil\gclib\dll\x86\libssl-3.dll',
+            r'C:\Program Files\Galil\gclib\dll\x86\libssl-3.dll'
+        ]
+        for ssl_path in ssl_paths:
             try:
-                WinDLL(r'C:\Program Files (x86)\Galil\gclib\dll\x86\libssl-3.dll')
+                if os.path.exists(ssl_path):
+                    WinDLL(ssl_path)
+                    break
             except:
-                pass  # Continue without ssl DLL if not available
+                pass
         
         _gclib_path = os.path.join(script_dir, 'gclib.dll')
         _gclibo_path = os.path.join(script_dir, 'gclibo.dll')
-        _gclib = WinDLL(_gclib_path)
-        _gclibo = WinDLL(_gclibo_path)
+        
+        # Add script directory to DLL search path (Python 3.8+)
+        try:
+            os.add_dll_directory(script_dir)
+        except AttributeError:
+            # For older Python versions, set PATH environment variable
+            import sys
+            dll_path = os.environ.get('PATH', '')
+            if script_dir not in dll_path:
+                os.environ['PATH'] = script_dir + os.pathsep + dll_path
+        
+        # Try to load the DLLs
+        try:
+            _gclib = WinDLL(_gclib_path)
+            _gclibo = WinDLL(_gclibo_path)
+        except OSError as e:
+            raise OSError(f"Failed to load gclib DLLs. Make sure libcrypto-3.dll and libssl-3.dll are available. Error: {e}")
+        
         #Reassign symbol name, Python doesn't like @ in function names
         #gclib calls
         setattr(_gclib, 'GArrayDownload', getattr(_gclib, '_GArrayDownload@20'))

@@ -9,6 +9,8 @@
 # External dependencies
 pyserial>=3.5      # For serial port communication (latest: 5.4)
 psutil>=5.8.0      # For process management (GDK launch feature, latest: 6.0)
+numpy>=1.19.0      # For numerical operations and graph data
+matplotlib>=3.3.0  # For tuning results graph display
 
 # Development/Build dependencies (optional)
 pyinstaller>=4.0   # For building executables (recommended: 5.0+)

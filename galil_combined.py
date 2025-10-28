@@ -174,10 +174,25 @@ class GalilController:
         try:
             # Send command and return response
             response = self.g.GCommand(command)
+            # Check for "?" response silently for expected cases
+            if response and response.strip() == "?":
+                # For MG _* internal commands, suppress errors (expected on unsupported controllers)
+                if command.startswith("MG _"):
+                    return "?"
+                raise ValueError(f"Command '{command}' returned '?' - unsupported")
             return response
         except Exception as e:
-            # Log the error for debugging
-            print(f"Command '{command}' failed: {e}")
+            error_str = str(e).lower()
+            # Suppress logging for expected/known unsupported commands
+            if ("question mark" in error_str or "?" in error_str) and command.startswith("MG _"):
+                # MG _* commands often not supported - suppress
+                return "?"
+            # Suppress TP errors for unconfigured axes
+            if command.startswith("TP") and ("question mark" in error_str or "?" in error_str):
+                return "0"  # Return default position
+            # Only log unexpected errors
+            if "question mark" not in error_str and "?" not in error_str:
+                print(f"Command '{command}' failed: {e}")
             # Check if this is a connection error
             if "not connected" in str(e).lower() or "connection" in str(e).lower():
                 # Connection lost
@@ -203,14 +218,34 @@ class GalilController:
         try:
             # Send command and return response without validation
             response = self.g.GCommand(command)
+            # Check if controller returned "?" indicating unsupported command
+            if response and response.strip() == "?":
+                # For MG _* internal commands, suppress errors (expected on unsupported controllers)
+                if command.startswith("MG _"):
+                    return "?"
+                raise ValueError(f"Command '{command}' not supported by controller")
             return response
         except Exception as e:
-            # Log the error for debugging
-            print(f"Command '{command}' failed: {e}")
+            error_str = str(e).lower()
+            # Suppress logging for expected/known unsupported commands
+            if ("question mark" in error_str or "?" in error_str):
+                # MG _* commands often not supported - suppress
+                if command.startswith("MG _"):
+                    return "?"
+                # TP errors for unconfigured axes - return default
+                if command.startswith("TP"):
+                    return "0"
+            # Only log unexpected errors (not question mark errors)
+            if "question mark" not in error_str and "?" not in error_str:
+                print(f"Command '{command}' failed: {e}")
             # Check if this is a connection error
             if "not connected" in str(e).lower() or "connection" in str(e).lower():
                 # Connection lost
                 self.g = None
+                raise
+            # For suppressed errors, return None to indicate failure
+            if "question mark" in error_str or "?" in error_str:
+                return None
             raise
 
     def validate_command(self, command: str) -> CommandValidation:

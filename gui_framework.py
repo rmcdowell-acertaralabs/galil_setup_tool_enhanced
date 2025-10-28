@@ -12,6 +12,7 @@ import time
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple, Any
 from command_validator_proper import DMC4103CommandValidator, CommandValidation
+from step_by_step_motor_gui import StepByStepMotorGUI
 
 class GUIFramework:
     """Class containing all GUI framework functions"""
@@ -158,6 +159,7 @@ class GUIFramework:
         
         # Navigation buttons
         nav_buttons = [
+            ("Step by Step", self.main_app.show_step_by_step if self.main_app else None),
             ("Motor Tuning", self.main_app.show_motor_tuning if self.main_app else None),
             ("Network Config", self.main_app.show_network_config if self.main_app else None)
         ]
@@ -167,8 +169,14 @@ class GUIFramework:
                            font=("Arial", 12), bg=self.colors['accent_blue'], 
                            fg='white', relief='flat', padx=20, pady=10)
             btn.pack(fill='x', padx=20, pady=5)
-            btn.bind("<Enter>", lambda e, b=btn: b.config(bg=self.colors['success_green']))
-            btn.bind("<Leave>", lambda e, b=btn: b.config(bg=self.colors['accent_blue']))
+            # Highlight on hover instead of turning green
+            def on_hover_enter(e, b=btn):
+                original_bg = b.cget('bg')
+                b.config(relief='raised', bd=2)
+            def on_hover_leave(e, b=btn):
+                b.config(relief='flat', bd=1)
+            btn.bind("<Enter>", on_hover_enter)
+            btn.bind("<Leave>", on_hover_leave)
     
     def create_header(self):
         """Create the header with connection status"""
@@ -2089,3 +2097,17 @@ Ready for commands...
             ("STA", "Stop"), ("AB 1", "Abort"), ("MOA", "Motor Off"), ("BN", "Save")
         ]
         create_column(4, "Emergency\n(Alert)", emerg_cmds, '#7f2a2a', 14)
+    
+    def create_step_by_step_page(self, main_app):
+        """Create the Step-by-Step Motor Configuration page"""
+        # Clear any existing content
+        for widget in self.scrollable_frame.winfo_children():
+            widget.destroy()
+        
+        # Create the step-by-step interface
+        step_by_step = StepByStepMotorGUI(self.scrollable_frame, self.colors, main_app)
+        
+        # Store reference so dialogs can access preferences
+        self.step_by_step_gui = step_by_step
+        if main_app:
+            main_app.step_by_step_gui = step_by_step
