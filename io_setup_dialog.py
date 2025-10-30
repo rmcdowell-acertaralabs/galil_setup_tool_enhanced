@@ -20,8 +20,9 @@ class IOSetupDialog:
         self.update_running = False
         self.update_thread = None
         self.switch_status = {}  # {axis: {type: bool}}
-        self.last_switch_values = {}  # For debouncing
+        self.last_switch_values = {}  # For debouncing - last displayed state
         self.switch_stability_count = {}  # Count consecutive stable readings
+        self.pending_switch_states = {}  # Track which state we're currently counting towards
         
         # Create dialog
         self.dialog = tk.Toplevel(parent)
@@ -32,6 +33,10 @@ class IOSetupDialog:
         self.dialog.grab_set()
         self.dialog.resizable(True, True)
         
+        # Detect which axes are present to avoid monitoring floating/unwired inputs
+        self.axes_to_monitor = self._detect_present_axes()
+        if self.main_app:
+            self.main_app.append_test_log(f"[IO Setup] Monitoring axes: {', '.join(self.axes_to_monitor)}")
         self.create_widgets()
         self.start_switch_updates()
         
@@ -181,8 +186,8 @@ class IOSetupDialog:
         # Switch indicators storage
         self.switch_indicators = {}
         
-        # Create rows for each axis
-        for row, axis in enumerate(['A', 'B', 'C', 'D'], 1):
+        # Create rows for each present axis only
+        for row, axis in enumerate(self.axes_to_monitor, 1):
             row_frame = tk.Frame(grid_frame, bg=self.colors['card_bg'])
             row_frame.pack(fill='x', padx=10, pady=8)
             
@@ -267,26 +272,33 @@ class IOSetupDialog:
     
     def update_switch_loop(self):
         """Update switch status in real-time with debouncing"""
-        DEBOUNCE_COUNT = 3  # Require 3 consecutive readings to change state
+        DEBOUNCE_COUNT = 2  # Require 2 consecutive readings (~0.1s) for stability
         
         while self.update_running:
             try:
                 if self.main_app and self.main_app.controller:
-                    for axis in ['A', 'B', 'C', 'D']:
+                    for axis in self.axes_to_monitor:
                         try:
                             # Initialize tracking for this axis if needed
                             if axis not in self.last_switch_values:
                                 self.last_switch_values[axis] = {'negative': False, 'home': False, 'positive': False}
                                 self.switch_stability_count[axis] = {'negative': 0, 'home': 0, 'positive': 0}
+                                self.pending_switch_states[axis] = {'negative': False, 'home': False, 'positive': False}
                             
                             # Read axis switch status using TS command (try both validated and unvalidated)
                             ts_response = None
+                            ts_error = None
                             try:
                                 ts_response = self.main_app.controller.send_command_unvalidated(f"MG _TS{axis}")
-                            except:
+                            except Exception as e:
+                                ts_error = str(e)
                                 try:
                                     ts_response = self.main_app.controller.send_command(f"MG _TS{axis}")
-                                except:
+                                except Exception as e2:
+                                    ts_error = str(e2)
+                                    # Log errors for C axis specifically
+                                    if axis == 'C' and self.main_app:
+                                        self.main_app.append_test_log(f"[DEBUG] C axis TS command failed: {ts_error}")
                                     pass
                             
                             if ts_response and ts_response.strip() != '?' and not ts_response.strip().startswith('?'):
@@ -317,6 +329,23 @@ class IOSetupDialog:
                                     negative_active = not bool((ts_value >> 2) & 1)  # 0 when inactive
                                     home_active = bool((ts_value >> 1) & 1)  # 1 when active
                                     
+                                    # Debug: log switch states for C axis when they change (for debugging)
+                                    if axis == 'C':  # Debug C axis specifically
+                                        if not hasattr(self, '_c_debug_states'):
+                                            self._c_debug_states = {'negative': None, 'home': None, 'positive': None}
+                                        
+                                        # Log when C axis switch states change
+                                        if (negative_active != self._c_debug_states.get('negative') or 
+                                            positive_active != self._c_debug_states.get('positive') or 
+                                            home_active != self._c_debug_states.get('home')):
+                                            if self.main_app:
+                                                self.main_app.append_test_log(f"[DEBUG] C axis switch changed: TS={ts_value} (pos={positive_active}, neg={negative_active}, home={home_active})")
+                                            self._c_debug_states = {
+                                                'negative': negative_active,
+                                                'positive': positive_active,
+                                                'home': home_active
+                                            }
+                                    
                                     # Debug: log switch states on first axis only to avoid spam
                                     if axis == 'A' and hasattr(self, '_debug_counter'):
                                         self._debug_counter += 1
@@ -330,23 +359,42 @@ class IOSetupDialog:
                                     for switch_type, current_state in [('negative', negative_active), 
                                                                        ('home', home_active), 
                                                                        ('positive', positive_active)]:
-                                        last_state = self.last_switch_values[axis][switch_type]
+                                        # Initialize pending_state on first read if not set
+                                        if axis not in self.pending_switch_states or switch_type not in self.pending_switch_states.get(axis, {}):
+                                            if axis not in self.pending_switch_states:
+                                                self.pending_switch_states[axis] = {}
+                                            self.pending_switch_states[axis][switch_type] = current_state
+                                            self.switch_stability_count[axis][switch_type] = DEBOUNCE_COUNT  # Start at threshold so first state displays immediately
                                         
-                                        if current_state == last_state:
-                                            # State is stable, increment counter
-                                            self.switch_stability_count[axis][switch_type] += 1
-                                            # Only update if state is stable for DEBOUNCE_COUNT readings
-                                            if self.switch_stability_count[axis][switch_type] == DEBOUNCE_COUNT:
+                                        last_displayed_state = self.last_switch_values[axis][switch_type]
+                                        pending_state = self.pending_switch_states[axis][switch_type]
+                                        
+                                        # If current reading differs from what's displayed, start tracking the new state
+                                        if current_state != last_displayed_state:
+                                            # If this is a different state than we were tracking, reset counter
+                                            if current_state != pending_state:
+                                                self.pending_switch_states[axis][switch_type] = current_state
+                                                self.switch_stability_count[axis][switch_type] = 1
+                                            else:
+                                                # Same pending state, increment counter
+                                                self.switch_stability_count[axis][switch_type] += 1
+                                            
+                                            # If we've seen enough stable readings, update UI
+                                            if self.switch_stability_count[axis][switch_type] >= DEBOUNCE_COUNT:
                                                 # Update UI (must be in main thread)
                                                 if self.dialog.winfo_exists():
                                                     self.dialog.after(0, lambda a=axis, t=switch_type, s=current_state:
                                                                      self.update_switch_indicator(a, t, s))
-                                                # Update last_state after confirming stability
+                                                # Update displayed state
                                                 self.last_switch_values[axis][switch_type] = current_state
+                                                # Keep counter at threshold to avoid re-triggering
+                                                self.switch_stability_count[axis][switch_type] = DEBOUNCE_COUNT
                                         else:
-                                            # State changed, reset counter
-                                            self.switch_stability_count[axis][switch_type] = 0
-                                            # Don't update last_state yet - wait for stability
+                                            # State matches displayed - reset counter immediately to prevent stale updates
+                                            if self.switch_stability_count[axis][switch_type] != DEBOUNCE_COUNT:
+                                                self.switch_stability_count[axis][switch_type] = DEBOUNCE_COUNT
+                                                # Reset pending state to match displayed
+                                                self.pending_switch_states[axis][switch_type] = current_state
                                 
                                 except (ValueError, IndexError, TypeError) as e:
                                     # Skip this reading if parsing fails
@@ -362,7 +410,27 @@ class IOSetupDialog:
             except Exception as e:
                 pass
             
-            time.sleep(0.1)  # Update 10 times per second for better debouncing
+            time.sleep(0.05)  # Update 20 times per second for faster response
+
+    def _detect_present_axes(self):
+        """Probe controller to determine which axes are present/responding.
+        Prefers A-D, includes an axis if TP{axis} returns a non-error response."""
+        axes = []
+        try:
+            if not self.main_app or not self.main_app.controller:
+                return ['A', 'B', 'C', 'D']  # fallback
+            for ax in ['A', 'B', 'C', 'D']:
+                try:
+                    resp = self.main_app.controller.send_command(f"TP{ax}")
+                    if resp and resp.strip() and not resp.strip().startswith('?'):
+                        axes.append(ax)
+                except Exception:
+                    pass
+        except Exception:
+            # On any detection issue, fall back to all
+            axes = ['A', 'B', 'C', 'D']
+        # Ensure at least one axis is shown
+        return axes or ['A']
     
     def limit_action(self):
         """Handle Limit button click - invert limit switch polarity"""

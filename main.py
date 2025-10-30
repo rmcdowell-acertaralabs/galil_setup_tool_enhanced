@@ -10,7 +10,18 @@ import json
 import subprocess
 import socket
 import re
+import importlib
 from typing import Dict, List, Optional, Tuple, Any
+
+# Try to import watchdog for automatic file watching
+try:
+    from watchdog.observers import Observer
+    from watchdog.events import FileSystemEventHandler
+    WATCHDOG_AVAILABLE = True
+except ImportError:
+    WATCHDOG_AVAILABLE = False
+    Observer = None
+    FileSystemEventHandler = None
 
 def safe_join(t, timeout=None):
     """Thread join guard to kill the 'cannot join current thread' error"""
@@ -19,6 +30,57 @@ def safe_join(t, timeout=None):
         return
     try: t.join(timeout=timeout)
     except: pass
+
+class CodeReloadHandler(FileSystemEventHandler):
+    """File system event handler for automatic code reloading"""
+    def __init__(self, app_instance, debounce_time=0.5):
+        if not WATCHDOG_AVAILABLE:
+            raise ImportError("watchdog not available")
+        super().__init__()
+        self.app = app_instance
+        self.debounce_time = debounce_time
+        self.last_reload_time = {}
+        self.pending_files = set()
+        self.reload_timer = None
+        
+    def on_modified(self, event):
+        """Called when a file is modified"""
+        if event.is_directory:
+            return
+        
+        file_path = event.src_path
+        # Only watch Python files
+        if not file_path.endswith('.py'):
+            return
+        
+        # Skip __pycache__ and other generated files
+        if '__pycache__' in file_path or '.pyc' in file_path:
+            return
+        
+        # Get just the filename without path
+        filename = os.path.basename(file_path)
+        module_name = filename.replace('.py', '')
+        
+        # Debounce rapid file changes
+        current_time = time.time()
+        if module_name in self.last_reload_time:
+            if current_time - self.last_reload_time[module_name] < self.debounce_time:
+                return
+        
+        self.last_reload_time[module_name] = current_time
+        self.pending_files.add(module_name)
+        
+        # Schedule reload after a short delay to batch multiple changes
+        if self.reload_timer:
+            self.app.root.after_cancel(self.reload_timer)
+        
+        self.reload_timer = self.app.root.after(int(self.debounce_time * 1000), self._do_reload)
+    
+    def _do_reload(self):
+        """Perform the actual reload after debouncing"""
+        if self.pending_files:
+            self.app._auto_reload_modules(list(self.pending_files))
+            self.pending_files.clear()
 
 # Import our custom modules
 from network_combined import (
@@ -167,10 +229,19 @@ class GalilSetupApp:
         self.connection_manager = None  # Will be initialized after colors are set
         self.logging_utils = None  # Will be initialized after colors are set
         
+        # Initialize file watcher for automatic hot reload
+        self.file_observer = None
+        self._start_file_watcher()
+        
         # Bind mouse wheel events to the root window
         self.root.bind("<MouseWheel>", self._on_mousewheel)
         self.root.bind("<Button-4>", self._on_mousewheel)  # Linux scroll up
         self.root.bind("<Button-5>", self._on_mousewheel)  # Linux scroll down
+        
+        # Bind hot reload shortcuts (Ctrl+R or F5)
+        self.root.bind("<Control-r>", lambda e: self.reload_modules())
+        self.root.bind("<Control-R>", lambda e: self.reload_modules())
+        self.root.bind("<F5>", lambda e: self.reload_modules())
         
         # Color scheme matching Acertara
         self.colors = {
@@ -199,6 +270,14 @@ class GalilSetupApp:
         self.gui_framework = GUIFramework(self.root, self.colors, self.append_test_log, self)
         
         self.setup_ui()
+        
+        # Display startup message with hot reload info
+        self.root.after(100, lambda: self.append_test_log("=== Galil Setup Tool Started ==="))
+        if WATCHDOG_AVAILABLE:
+            self.root.after(150, lambda: self.append_test_log("Auto-Reload: Watching for file changes (automatic reload enabled)"))
+        else:
+            self.root.after(150, lambda: self.append_test_log("Hot Reload: Press Ctrl+R or F5 to reload code changes"))
+        self.root.after(200, lambda: self.append_test_log("Note: Close and reopen dialogs to see changes after reload"))
         
         # Auto-detect and connect to controller on startup (delay to ensure UI is ready)
         self.root.after(1000, self.auto_connect_to_controller)
@@ -8454,9 +8533,170 @@ IP Address: Cannot read"""
         self.append_test_log(f"ERROR: {error_msg}")
         messagebox.showerror("Servo Error", error_msg)
             
+    def _start_file_watcher(self):
+        """Start the file system watcher for automatic code reloading"""
+        if not WATCHDOG_AVAILABLE:
+            return
+        
+        try:
+            # Get the directory where the script is located
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            
+            # Create event handler
+            event_handler = CodeReloadHandler(self, debounce_time=0.5)
+            
+            # Create observer
+            self.file_observer = Observer()
+            self.file_observer.schedule(event_handler, script_dir, recursive=False)
+            
+            # Start watching in a separate thread
+            self.file_observer.start()
+            
+            print(f"[Hot Reload] Started watching {script_dir} for file changes")
+            
+        except Exception as e:
+            print(f"[Hot Reload] Failed to start file watcher: {e}")
+            self.file_observer = None
+    
+    def _auto_reload_modules(self, changed_modules):
+        """Automatically reload modules when files change (called by file watcher)"""
+        if not changed_modules:
+            return
+        
+        try:
+            # Map of common module names (file names without .py)
+            module_map = {
+                'io_setup_dialog': 'io_setup_dialog',
+                'encoder_setup_dialog': 'encoder_setup_dialog',
+                'motor_setup_dialog': 'motor_setup_dialog',
+                'tuning_setup_dialog': 'tuning_setup_dialog',
+                'save_configuration_dialog': 'save_configuration_dialog',
+                'controller_info_dialog': 'controller_info_dialog',
+                'controller_servo_maintenance': 'controller_servo_maintenance',
+                'galil_combined': 'galil_combined',
+                'network_combined': 'network_combined',
+                'gui_framework': 'gui_framework',
+                'command_compatibility_checker': 'command_compatibility_checker',
+                'controller_commands': 'controller_commands',
+                'comprehensive_testing': 'comprehensive_testing',
+            }
+            
+            reloaded_count = 0
+            failed_modules = []
+            
+            for module_name in changed_modules:
+                # Check if this is a module we care about
+                if module_name in module_map:
+                    actual_module_name = module_map[module_name]
+                    try:
+                        if actual_module_name in sys.modules:
+                            module = sys.modules[actual_module_name]
+                            importlib.reload(module)
+                            reloaded_count += 1
+                            self.append_test_log(f"[Auto-Reload] ✓ Reloaded: {actual_module_name}")
+                        else:
+                            # Module not imported yet, try to import it
+                            try:
+                                __import__(actual_module_name)
+                                reloaded_count += 1
+                                self.append_test_log(f"[Auto-Reload] ✓ Imported: {actual_module_name}")
+                            except ImportError:
+                                pass  # Module doesn't exist or can't be imported
+                    except Exception as e:
+                        failed_modules.append(f"{actual_module_name}: {str(e)}")
+                        self.append_test_log(f"[Auto-Reload] ✗ Failed to reload {actual_module_name}: {e}")
+            
+            if reloaded_count > 0:
+                self.append_test_log(f"[Auto-Reload] Automatically reloaded {reloaded_count} module(s)")
+                if failed_modules:
+                    self.append_test_log(f"[Auto-Reload] Failed: {', '.join(failed_modules)}")
+            
+        except Exception as e:
+            self.append_test_log(f"[Auto-Reload] Error: {e}")
+    
+    def reload_modules(self, event=None):
+        """Hot reload common modules without restarting the app.
+        Press Ctrl+R or F5 to reload code changes."""
+        try:
+            self.append_test_log("=" * 60)
+            self.append_test_log("Hot Reload: Reloading modules...")
+            
+            # List of modules to reload (most commonly modified)
+            modules_to_reload = [
+                'io_setup_dialog',
+                'encoder_setup_dialog',
+                'motor_setup_dialog',
+                'tuning_setup_dialog',
+                'save_configuration_dialog',
+                'controller_info_dialog',
+                'controller_servo_maintenance',
+                'galil_combined',
+                'network_combined',
+                'gui_framework',
+                'command_compatibility_checker',
+                'controller_commands',
+                'comprehensive_testing',
+            ]
+            
+            reloaded_count = 0
+            failed_modules = []
+            
+            for module_name in modules_to_reload:
+                try:
+                    if module_name in sys.modules:
+                        module = sys.modules[module_name]
+                        importlib.reload(module)
+                        reloaded_count += 1
+                        self.append_test_log(f"  ✓ Reloaded: {module_name}")
+                    else:
+                        # Module not imported yet, try to import it
+                        try:
+                            __import__(module_name)
+                            reloaded_count += 1
+                            self.append_test_log(f"  ✓ Imported: {module_name}")
+                        except ImportError:
+                            pass  # Module doesn't exist or can't be imported
+                except Exception as e:
+                    failed_modules.append(f"{module_name}: {str(e)}")
+                    self.append_test_log(f"  ✗ Failed to reload {module_name}: {e}")
+            
+            # Reload main.py itself if possible (this is tricky, so we'll skip it)
+            # The best approach is to reload the modules that import main.py uses
+            
+            self.append_test_log(f"Hot Reload complete: {reloaded_count} modules reloaded")
+            if failed_modules:
+                self.append_test_log(f"Failed modules: {', '.join(failed_modules)}")
+            
+            # Note: Some changes may require closing/reopening dialogs or restarting the app
+            # Especially changes to class definitions or __init__ methods
+            self.append_test_log("Note: Some changes may require closing/reopening dialogs")
+            self.append_test_log("Press Ctrl+R or F5 anytime to reload modules")
+            self.append_test_log("=" * 60)
+            
+            # Show a brief notification
+            messagebox.showinfo("Hot Reload", 
+                              f"Reloaded {reloaded_count} module(s).\n\n"
+                              f"Note: Some changes (especially to class __init__ methods) may require "
+                              f"reopening dialogs or restarting the app.",
+                              parent=self.root)
+            
+        except Exception as e:
+            error_msg = f"Hot reload failed: {e}"
+            self.append_test_log(error_msg)
+            messagebox.showerror("Hot Reload Error", error_msg, parent=self.root)
+            
     def cleanup(self):
         """Clean up resources when application is closing"""
         try:
+            # Stop file watcher
+            if self.file_observer:
+                try:
+                    self.file_observer.stop()
+                    self.file_observer.join(timeout=1.0)
+                except:
+                    pass
+                self.file_observer = None
+            
             # Stop auto-connect thread
             self.auto_connect_running = False
             if hasattr(self, 'auto_connect_thread') and self.auto_connect_thread.is_alive():

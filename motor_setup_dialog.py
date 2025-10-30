@@ -7,6 +7,14 @@ import tkinter as tk
 from tkinter import messagebox
 import threading
 import time
+from statistics import median, pstdev
+
+try:
+    from matplotlib.figure import Figure
+    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+except Exception:
+    Figure = None
+    FigureCanvasTkAgg = None
 
 class MotorSetupDialog:
     """Dialog for configuring motor with safety warnings"""
@@ -48,6 +56,13 @@ class MotorSetupDialog:
         self.initial_hall_state = None
         self.hall_transition_detected = False
         self.hall_direction_verified = False
+        # Sampling buffers for commutation validation and graphing
+        self.sample_times = []
+        self.sample_positions = []
+        self.sample_halls = []
+        self.cycle_boundaries = []  # (t, pos) at hall transitions
+        self.cycle_spans = []       # encoder counts per electrical cycle
+        self.validation_result = None
     
     def show_motion_warning(self):
         """Show motion warning dialog"""
@@ -561,6 +576,89 @@ class MotorSetupDialog:
                                         pass
                             except:
                                 pass
+
+                        # Record samples and estimate BM over multiple cycles
+                        try:
+                            # Read current hall state (best-effort)
+                            hall_val = None
+                            try:
+                                qh = self.main_app.controller.send_command(f"MG _QH{self.axis}")
+                                if qh and qh.strip() != "?":
+                                    hv = int(float(qh.split(',')[0].strip()))
+                                    hall_val = hv if 1 <= hv <= 6 else None
+                            except:
+                                hall_val = None
+                            now = time.time()
+                            self.sample_times.append(now)
+                            self.sample_positions.append(position)
+                            self.sample_halls.append(hall_val if hall_val is not None else (self.sample_halls[-1] if self.sample_halls else None))
+
+                            # Detect transitions and accumulate cycle spans
+                            if len(self.sample_halls) >= 2:
+                                prev_h = self.sample_halls[-2]
+                                cur_h = self.sample_halls[-1]
+                                if prev_h is not None and cur_h is not None and prev_h != cur_h:
+                                    self.cycle_boundaries.append((now, position))
+                                    if len(self.cycle_boundaries) >= 7:
+                                        span = abs(self.cycle_boundaries[-1][1] - self.cycle_boundaries[-7][1])
+                                        if 100 <= span <= 200000:
+                                            self.cycle_spans.append(span)
+                                            if len(self.cycle_spans) > 20:
+                                                self.cycle_spans.pop(0)
+                                            # Accept only after enough cycles AND minimum duration
+                                            elapsed = time.time() - self.attempt_start_time if self.attempt_start_time else 0
+                                            if (len(self.cycle_spans) >= self.min_cycles_required and
+                                                elapsed >= self.min_duration_s and
+                                                self.validation_result is None):
+                                                m = median(self.cycle_spans)
+                                                s = pstdev(self.cycle_spans)
+                                                cv = (s / m) if m else 1.0
+                                                if cv <= 0.05:  # <=5% variation
+                                                    self.estimated_modulo = int(round(m))
+                                                    self.validation_result = {"bm": self.estimated_modulo, "cv": cv, "cycles": list(self.cycle_spans[-self.min_cycles_required:])}
+                                                    try:
+                                                        self.main_app.controller.send_command(f"BM{self.axis}={self.estimated_modulo}")
+                                                        if self.main_app:
+                                                            self.main_app.append_test_log(f"[COMM] Attempt {self.comm_attempt}: BM{self.axis}={self.estimated_modulo} accepted (CV={cv*100:.1f}%, cycles={len(self.cycle_spans)})")
+                                                    except:
+                                                        pass
+                        except:
+                            pass
+
+                        # Attempt timeout and adaptive retry
+                        try:
+                            if (self.validation_result is None and self.attempt_start_time and
+                                time.time() - self.attempt_start_time > self.attempt_timeout_s):
+                                if self.comm_attempt < self.max_comm_attempts:
+                                    # Stop, adapt, and retry
+                                    try:
+                                        self.main_app.controller.send_command(f"ST{self.axis}")
+                                        time.sleep(0.2)
+                                    except:
+                                        pass
+                                    # Reduce speed and flip direction
+                                    self.jog_direction *= -1
+                                    base = max(300, int(self.jog_speed_base * (0.8 ** (self.comm_attempt))))
+                                    self.current_jog_speed = base * self.jog_direction
+                                    try:
+                                        self.main_app.controller.send_command(f"JG{self.axis}={self.current_jog_speed}")
+                                        self.main_app.controller.send_command(f"BG{self.axis}")
+                                    except:
+                                        pass
+                                    # Reset buffers and timers
+                                    self.sample_times, self.sample_positions, self.sample_halls = [], [], []
+                                    self.cycle_boundaries, self.cycle_spans = [], []
+                                    self.attempt_start_time = time.time()
+                                    self.comm_attempt += 1
+                                    if self.main_app:
+                                        self.main_app.append_test_log(f"[COMM] Retry attempt {self.comm_attempt}: JG={self.current_jog_speed}")
+                                else:
+                                    if self.main_app:
+                                        self.main_app.append_test_log("[COMM] Max attempts reached; proceeding without BM acceptance yet")
+                                    # avoid spamming
+                                    self.attempt_start_time = time.time()
+                        except:
+                            pass
                         
                         # Check for index pulse and hall transition
                         if not self.index_pulse_found:
@@ -667,13 +765,22 @@ class MotorSetupDialog:
             # Set slow jog speed for precise commutation angle detection
             # Use estimated BM/4 to ensure at least one hall transition
             jog_speed = max(500, int(self.estimated_modulo / 4))
-            self.main_app.controller.send_command(f"JG{self.axis}={jog_speed}")
+            self.jog_speed_base = jog_speed
+            self.current_jog_speed = jog_speed
+            self.jog_direction = 1
+            self.main_app.controller.send_command(f"JG{self.axis}={self.current_jog_speed}")
             
             # Begin jog
             self.main_app.controller.send_command(f"BG{self.axis}")
             
             # Mark that motor has been driven
             self.motor_driven = True
+            # Initialize multi-pass attempt tracking and buffers
+            self.comm_attempt = 1
+            self.attempt_start_time = time.time()
+            self.sample_times, self.sample_positions, self.sample_halls = [], [], []
+            self.cycle_boundaries, self.cycle_spans = [], []
+            self.validation_result = None
             
             # Start position tracking now that motor is being driven
             if not self.position_update_running:
@@ -692,7 +799,7 @@ class MotorSetupDialog:
                 pass
             
             if self.main_app:
-                self.main_app.append_test_log(f"Motor jogging at {jog_speed} counts/sec. Waiting for hall transition and index pulse...")
+                self.main_app.append_test_log(f"Motor jogging at {self.current_jog_speed} counts/sec. Waiting for hall transition and index pulse...")
                 
             # Update UI text
             if hasattr(self, 'instructions_label'):
@@ -823,12 +930,58 @@ class MotorSetupDialog:
                     
                     # Update instructions to show completion
                     self.update_instructions_for_completion()
+                    # Show commutation graph (if plotting available)
+                    self.show_commutation_graph_safe()
                 
                 if self.main_app:
                     self.main_app.append_test_log(f"Index pulse found for Axis {self.axis}, final modulo: {self.final_modulo}")
         except Exception as e:
             if self.main_app:
                 self.main_app.append_test_log(f"Error calculating modulo: {e}")
+
+    def show_commutation_graph_safe(self):
+        """Show a diagnostic graph of commutation sampling."""
+        if Figure is None or FigureCanvasTkAgg is None:
+            if self.main_app:
+                self.main_app.append_test_log("[COMMUTATION] Matplotlib not available; skipping graph")
+            return
+        try:
+            if not self.sample_times or not self.sample_positions:
+                return
+            t0 = self.sample_times[0]
+            times = [t - t0 for t in self.sample_times]
+            positions = list(self.sample_positions)
+            halls = [h if h is not None else 0 for h in self.sample_halls]
+            fig = Figure(figsize=(7, 4), dpi=100)
+            ax = fig.add_subplot(111)
+            ax.plot(times, positions, 'g-', label='Position (counts)')
+            if any(halls):
+                # scale halls to overlay
+                span = max(positions) - min(positions) if positions else 1
+                offset = min(positions)
+                h_scaled = [offset + (h * span / 8.0) for h in halls]
+                ax.plot(times, h_scaled, 'b--', alpha=0.6, label='Hall state (scaled)')
+            if self.cycle_boundaries:
+                for tb, _ in self.cycle_boundaries[-36:]:
+                    ax.axvline(tb - t0, color='orange', alpha=0.2, linewidth=1)
+            title = f"Axis {self.axis} Commutation"
+            if self.validation_result:
+                title += f" | BM≈{self.validation_result['bm']} (CV={self.validation_result['cv']*100:.1f}%)"
+            ax.set_title(title)
+            ax.set_xlabel('Time (s)')
+            ax.set_ylabel('Encoder Counts')
+            ax.legend(loc='best')
+            ax.grid(True, alpha=0.2)
+
+            win = tk.Toplevel(self.dialog)
+            win.title(f"Axis {self.axis}: Commutation Diagnostics")
+            win.configure(bg=self.colors['main_bg'])
+            canvas = FigureCanvasTkAgg(fig, master=win)
+            canvas.draw()
+            canvas.get_tk_widget().pack(fill='both', expand=True)
+        except Exception as e:
+            if self.main_app:
+                self.main_app.append_test_log(f"[COMMUTATION] Graph error: {e}")
     
     def update_instructions_for_completion(self):
         """Update instructions section to show completion message"""
