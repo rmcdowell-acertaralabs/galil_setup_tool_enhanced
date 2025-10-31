@@ -36,8 +36,30 @@ class GalilController:
 
     def connect(self, address):
         try:
+            # Check if this is an emulator connection
+            addr_str = str(address).split()[0] if address else ""
+            is_emulator = (
+                addr_str in ("127.0.0.1", "localhost") or 
+                ":2323" in addr_str or
+                "127.0.0.1:2323" in str(address)
+            )
+            
+            # Get appropriate gclib module (emulator or real)
+            if is_emulator:
+                try:
+                    from dmc4143_emulator import FakeGclib
+                    gclib_module = FakeGclib
+                    print(f"[GalilController] Using emulator for {address}")
+                except ImportError:
+                    # Fall back to real gclib if emulator not available
+                    import gclib
+                    gclib_module = gclib
+            else:
+                import gclib
+                gclib_module = gclib
+            
             # Creating gclib instance
-            self.g = gclib.py()
+            self.g = gclib_module.py()
             # Store connection address
             self.connection_addr = address
             # Attempting connection

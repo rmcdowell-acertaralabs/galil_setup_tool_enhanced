@@ -2383,9 +2383,24 @@ class GalilSetupApp:
     def auto_connect_to_controller(self):
         """Automatically detect and connect to the Galil controller on startup"""
         if self.connection_manager:
+            # Try emulator first if it's available
+            import socket
+            try:
+                test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                test_socket.settimeout(0.5)
+                result = test_socket.connect_ex(("127.0.0.1", 2323))
+                test_socket.close()
+                if result == 0:
+                    # Emulator is available, try to connect
+                    self.append_test_log("Emulator server detected, attempting connection...")
+                    if self.connection_manager.connect_to_controller("127.0.0.1:2323", self.update_connection_status):
+                        self.append_test_log("✓ Connected to emulator at 127.0.0.1:2323")
+                        return
+            except:
+                pass  # Emulator not available, continue with normal auto-connect
+            
             # Auto-connect disabled - no default IP address
             # self.connection_manager.auto_connect_to_controller("", self.update_connection_status)
-            pass
         else:
             self.append_test_log("ERROR: Connection manager not initialized")
 

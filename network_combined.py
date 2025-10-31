@@ -723,12 +723,16 @@ def validate_ip_address(ip_address: str) -> bool:
     Validate an IP address format.
     
     Args:
-        ip_address: IP address to validate
+        ip_address: IP address to validate (can include port like 127.0.0.1:2323)
         
     Returns:
         True if valid, False otherwise
     """
     try:
+        # Handle port format (e.g., "127.0.0.1:2323")
+        if ':' in ip_address:
+            ip_address = ip_address.split(':')[0]
+        
         parts = ip_address.split('.')
         if len(parts) != 4:
             return False
@@ -2372,14 +2376,59 @@ class ControllerConnectionManager:
         self.log(f"Testing basic connectivity to {ip_address}...")
         
         try:
-            # Test with ping first
-            from network_combined import ping_controller
-            if ping_controller(ip_address):
-                self.log(f"✓ Ping to {ip_address} successful")
-                return True
+            # Check if this is an emulator address - be more explicit
+            addr_str = str(ip_address).strip()
+            # Debug: log what we're checking
+            self.log(f"Checking address: '{addr_str}' (type: {type(addr_str)})")
+            
+            # Check for port or localhost patterns - be very explicit
+            has_port_2323 = ':2323' in addr_str
+            starts_with_127 = addr_str.startswith('127.0.0.1')
+            is_localhost = addr_str == "localhost" or addr_str.startswith('localhost:')
+            
+            is_emulator = has_port_2323 or starts_with_127 or is_localhost
+            
+            self.log(f"Emulator check: port_2323={has_port_2323}, starts_127={starts_with_127}, localhost={is_localhost}, is_emulator={is_emulator}")
+            
+            if is_emulator:
+                # Test TCP port instead of ping for emulator
+                import socket
+                try:
+                    host, port = "127.0.0.1", 2323
+                    if ':' in addr_str:
+                        parts = addr_str.split(':')
+                        host = parts[0].strip()
+                        try:
+                            port = int(parts[1].strip())
+                        except (ValueError, IndexError):
+                            port = 2323  # Default emulator port
+                    
+                    self.log(f"Testing TCP connection to emulator at {host}:{port}...")
+                    test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    test_socket.settimeout(1.0)
+                    result = test_socket.connect_ex((host, port))
+                    test_socket.close()
+                    
+                    if result == 0:
+                        self.log(f"✓ Emulator server at {host}:{port} is reachable")
+                        return True
+                    else:
+                        self.log(f"✗ Emulator server at {host}:{port} is not reachable")
+                        return False
+                except Exception as e:
+                    self.log(f"✗ Emulator connectivity test failed: {e}")
+                    return False
             else:
-                self.log(f"✗ Ping to {ip_address} failed")
-                return False
+                # Extract IP without port for ping (ping can't handle ports)
+                ping_addr = addr_str.split(':')[0] if ':' in addr_str else addr_str
+                # Test with ping for real controllers
+                from network_combined import ping_controller
+                if ping_controller(ping_addr):
+                    self.log(f"✓ Ping to {ping_addr} successful")
+                    return True
+                else:
+                    self.log(f"✗ Ping to {ping_addr} failed")
+                    return False
         except Exception as e:
             self.log(f"✗ Connectivity test failed: {e}")
             return False

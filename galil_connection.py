@@ -5,7 +5,31 @@ Implements single command pipe with serialization lock
 
 import threading
 import time
-import gclib
+
+# Auto-detect and use emulator for localhost connections
+def _get_gclib_module(address):
+    """
+    Get gclib module - use emulator if connecting to localhost/emulator.
+    """
+    # Check if this is an emulator connection
+    addr_str = str(address).split()[0] if address else ""
+    is_emulator = (
+        addr_str in ("127.0.0.1", "localhost") or 
+        ":2323" in addr_str or
+        "127.0.0.1:2323" in str(address)
+    )
+    
+    if is_emulator:
+        try:
+            from dmc4143_emulator import FakeGclib
+            return FakeGclib
+        except ImportError:
+            # Fall back to real gclib if emulator not available
+            pass
+    
+    # Use real gclib
+    import gclib
+    return gclib
 
 # Hardware configuration - ONLY A and B axes are fitted on this DMC-4143
 SUPPORTED_AXES = ("A", "B")  # C and D not present
@@ -27,7 +51,9 @@ class GalilConnection:
         with self.lock:
             if self.connected:
                 return
-            self.g = gclib.py()
+            # Get appropriate gclib module (emulator or real)
+            gclib_module = _get_gclib_module(self.address)
+            self.g = gclib_module.py()
             self.g.GOpen(f"{self.address} -s ALL")
             self.connected = True
             print(f"[Galil] Connected to {self.address}")
