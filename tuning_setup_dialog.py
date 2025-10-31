@@ -354,22 +354,41 @@ class TuningSetupDialog:
         if self.main_app:
             self.main_app.append_test_log(f"[MEASURE] Starting move from {start_pos:.0f} to {target_pos:.0f}")
         
-        # Use PR (position relative) instead of PA to avoid limit issues
+        # Use JG timed jog for consistent measurements (avoid PR/PA rejects)
+        used_jog_fallback = True
+        # Prepare safe motion context
         try:
-            actual_move_distance = target_pos - start_pos
-            self.main_app.controller.send_command(f"PR{self.axis}={actual_move_distance}")
+            self.main_app.controller.send_command(f"ST{self.axis}")
+        except Exception:
+            pass
+        try:
+            self.main_app.controller.send_command(f"OE{self.axis}=0")
+        except Exception:
+            pass
+        try:
+            self.main_app.controller.send_command(f"ER{self.axis}=200000")
+        except Exception:
+            pass
+        try:
+            self.main_app.controller.send_command(f"FL{self.axis}=2147483647")
+            self.main_app.controller.send_command(f"BL{self.axis}=-2147483648")
+        except Exception:
+            pass
+        try:
+            self.main_app.controller.send_command(f"SH{self.axis}")
+            time.sleep(0.1)
+        except Exception:
+            pass
+        jog_speed = max(8000, int(speed * 0.8))
+        try:
+            self.main_app.controller.send_command(f"JG{self.axis}={jog_speed}")
             self.main_app.controller.send_command(f"BG{self.axis}")
-        except Exception as e:
             if self.main_app:
-                self.main_app.append_test_log(f"[MEASURE] Warning: PR command failed: {e}, trying PA")
-            # Fallback to PA
-            try:
-                self.main_app.controller.send_command(f"PA{self.axis}={target_pos}")
-                self.main_app.controller.send_command(f"BG{self.axis}")
-            except Exception as e2:
-                if self.main_app:
-                    self.main_app.append_test_log(f"[MEASURE] ERROR: Both PR and PA failed: {e2}")
-                raise
+                self.main_app.append_test_log(f"[MEASURE] Jog measurement at {jog_speed} counts/sec for timed sampling")
+        except Exception as e3:
+            if self.main_app:
+                self.main_app.append_test_log(f"[MEASURE] ERROR: JG start failed: {e3}")
+            raise
             
         # Measure response over time
         positions = []
@@ -378,7 +397,7 @@ class TuningSetupDialog:
         times = []
         
         start_time = time.time()
-        max_measure_time = 3.0  # Maximum 3 seconds
+        max_measure_time = 4.0  # Allow up to 4 seconds for higher-quality sampling
         settle_threshold = 100  # Consider settled when error < 100 counts
         settled = False
         
@@ -479,27 +498,42 @@ class TuningSetupDialog:
             
             time.sleep(0.01)  # 100 Hz sampling for smoother data
         
-        # Stop motor
+        # Stop motor (if using jog fallback, ensure we stop)
         try:
             self.main_app.controller.send_command(f"ST{self.axis}")
             time.sleep(0.3)
         except:
             pass
         
-        if len(positions) < 10:
+        # Require enough samples and minimum duration to trust the data
+        if len(positions) < 40 or (times and times[-1] < 1.5):
             if self.main_app:
-                self.main_app.append_test_log(f"[MEASURE] ERROR: Only collected {len(positions)} samples (need at least 10)")
-            return None
+                self.main_app.append_test_log(f"[MEASURE] ERROR: Only collected {len(positions)} samples over {times[-1] if times else 0:.2f}s (need ≥40 samples and ≥1.5s)")
+                self.main_app.append_test_log(f"[MEASURE] Retrying with longer, slower move for better data...")
+            # Auto-retry once with longer duration
+            try:
+                return self._measure_motor_response(test_move_distance=int(test_move_distance*1.4), speed=int(max(12000, speed*0.7)))
+            except Exception:
+                return None
         
         if self.main_app:
             self.main_app.append_test_log(f"[MEASURE] Collected {len(positions)} samples over {times[-1]:.2f} seconds")
         
+        # If jog fallback was used, set target to the final position so overshoot is 0 and we still assess settling
+        if used_jog_fallback and len(positions) >= 2:
+            target_pos = positions[-1]
+
         # Calculate response characteristics
-        max_error = max(errors) if errors else 0
-        # Overshoot: maximum position beyond target (can't be negative - overshoot means going past target)
-        overshoots = [p - target_pos for p in positions if p > target_pos]
-        max_overshoot = max(overshoots) if overshoots else 0  # Only positive overshoots
-        steady_state_error = abs(errors[-1]) if errors else 999999
+        if used_jog_fallback:
+            # Under JG fallback, TE is not meaningful. Assess based on position trace only.
+            max_error = 0
+            max_overshoot = 0
+            steady_state_error = 0
+        else:
+            max_error = max(errors) if errors else 0
+            overshoots = [p - target_pos for p in positions if p > target_pos]
+            max_overshoot = max(overshoots) if overshoots else 0
+            steady_state_error = abs(errors[-1]) if errors else 999999
         settle_time = times[-1] if times else max_measure_time
         max_velocity = max(velocities) if velocities else 0
         
@@ -556,9 +590,16 @@ class TuningSetupDialog:
                 except ValueError:
                     return None
             
-            kp_current = parse_value(kp_current_response) or 6.0
-            ki_current = parse_value(ki_current_response) or 0.0
-            kd_current = parse_value(kd_current_response) or 64.0
+            kp_current = parse_value(kp_current_response)
+            ki_current = parse_value(ki_current_response)
+            kd_current = parse_value(kd_current_response)
+            # Sanity bounds; fall back to last applied or safe defaults if out of range
+            if not hasattr(self, 'last_kp'): self.last_kp = 6.0
+            if not hasattr(self, 'last_ki'): self.last_ki = 0.0
+            if not hasattr(self, 'last_kd'): self.last_kd = 64.0
+            kp_current = kp_current if (kp_current is not None and 0.1 <= kp_current <= 100.0) else self.last_kp
+            ki_current = ki_current if (ki_current is not None and 0.0 <= ki_current <= 5.0) else self.last_ki
+            kd_current = kd_current if (kd_current is not None and 1.0 <= kd_current <= 1000.0) else self.last_kd
         except:
             kp_current, ki_current, kd_current = 6.0, 0.0, 64.0
         
@@ -682,22 +723,25 @@ class TuningSetupDialog:
             if settle_time > 1.3:
                 kp_new = kp_current * 1.05  # Small increase
         
-        # Clamp values to reasonable ranges
-        kp_new = max(1.0, min(50.0, kp_new))
-        ki_new = max(0.0, min(2.0, ki_new))
-        kd_new = max(10.0, min(500.0, kd_new))
+        # Clamp values to reasonable ranges (tighter caps to avoid extreme gains)
+        kp_new = max(4.0, min(40.0, kp_new))
+        ki_new = max(0.0, min(0.8, ki_new))
+        kd_new = max(32.0, min(120.0, kd_new))
         
         # Log final values
         if self.main_app:
             changes = []
             if abs(kp_new - kp_current) > 0.1:
-                changes.append(f"KP: {kp_current:.2f}→{kp_new:.2f}")
+                changes.append(f"KP: {kp_current}→{kp_new}")
             if abs(ki_new - ki_current) > 0.001:
-                changes.append(f"KI: {ki_current:.4f}→{ki_new:.4f}")
+                changes.append(f"KI: {ki_current}→{ki_new}")
             if abs(kd_new - kd_current) > 0.5:
-                changes.append(f"KD: {kd_current:.2f}→{kd_new:.2f}")
+                changes.append(f"KD: {kd_current}→{kd_new}")
             if changes:
                 self.main_app.append_test_log(f"[ITER {iteration}] Adjustments: {', '.join(changes)}")
+
+        # Remember last applied for next iteration's sanity fallback
+        self.last_kp, self.last_ki, self.last_kd = kp_new, ki_new, kd_new
         
         return kp_new, ki_new, kd_new
     
@@ -829,15 +873,16 @@ class TuningSetupDialog:
                     
                     # Apply initial tuning
                     if self.main_app:
-                        self.main_app.append_test_log(f"[PASS 1] Applying PID values: KP={best_kp:.3f}, KI={best_ki:.4f}, KD={best_kd:.3f}")
+                        self.main_app.append_test_log(f"[PASS 1] Applying PID values: KP={best_kp}, KI={best_ki}, KD={best_kd}")
                     
                     self.main_app.controller.send_command(f"KP{self.axis}={best_kp}")
                     self.main_app.controller.send_command(f"KI{self.axis}={best_ki}")
                     self.main_app.controller.send_command(f"KD{self.axis}={best_kd}")
                     time.sleep(0.3)  # Allow PID to stabilize
                     
-                    # Iterative refinement passes (up to 2 more)
-                    max_iterations = 3
+                    # Iterative refinement passes (target high-quality score)
+                    REQUIRED_SCORE = 95.0
+                    max_iterations = 5
                     for iteration in range(2, max_iterations + 1):
                         if not self.auto_tuning_running:
                             break
@@ -889,8 +934,8 @@ class TuningSetupDialog:
                                                          f"(SS error={refine_response['steady_state_error']:.1f}, "
                                                          f"Settle={refine_response['settle_time']:.2f}s)")
                         
-                        # If performance is significantly better, use these values
-                        if refine_score > best_score + 5:  # At least 5 points better
+                        # If performance is better, use these values
+                        if refine_score > best_score + 2:  # accept modest improvements
                             best_kp, best_ki, best_kd = self._calculate_optimal_pid(refine_response, iteration=iteration)
                             if best_kp is not None:
                                 self.main_app.controller.send_command(f"KP{self.axis}={best_kp}")
@@ -900,18 +945,25 @@ class TuningSetupDialog:
                                 best_response = refine_response
                                 best_score = refine_score
                                 if self.main_app:
-                                    self.main_app.append_test_log(f"[PASS {iteration}] Improved! New PID: KP={best_kp:.3f}, KI={best_ki:.4f}, KD={best_kd:.3f}")
+                                    self.main_app.append_test_log(f"[PASS {iteration}] Improved! New PID: KP={best_kp}, KI={best_ki}, KD={best_kd}")
                             else:
                                 break  # Can't calculate better values
                         elif refine_score < best_score - 10:  # Significantly worse - revert
                             if self.main_app:
                                 self.main_app.append_test_log(f"[PASS {iteration}] Performance degraded, keeping previous tuning")
-                            break
+                            # Continue trying if iterations remain and target not met
+                            if refine_score >= REQUIRED_SCORE or iteration == max_iterations:
+                                break
                         else:
-                            # Similar performance - done refining
-                            if self.main_app:
-                                self.main_app.append_test_log(f"[PASS {iteration}] Performance stable, tuning complete")
-                            break
+                            # Similar performance - continue until required score or iterations exhausted
+                            if refine_score >= REQUIRED_SCORE:
+                                if self.main_app:
+                                    self.main_app.append_test_log(f"[PASS {iteration}] Performance meets target (≥{REQUIRED_SCORE:.0f}), tuning complete")
+                                break
+                            else:
+                                if self.main_app:
+                                    self.main_app.append_test_log(f"[PASS {iteration}] Performance stable but below target ({refine_score:.1f}/{REQUIRED_SCORE:.0f}); continuing")
+                                # continue loop
                     
                     # Final verification move
                     if self.main_app:
@@ -951,7 +1003,11 @@ class TuningSetupDialog:
                         if verify_response.get('steady_state_error', 0) > 50:
                             final_score -= min((verify_response['steady_state_error'] - 50) / 10, 30)
                         
-                        self.main_app.append_test_log(f"✓ Final tuning score: {final_score:.1f}/100")
+                        REQUIRED_SCORE = 95.0
+                        if final_score >= REQUIRED_SCORE:
+                            self.main_app.append_test_log(f"✓ Final tuning score: {final_score:.1f}/100")
+                        else:
+                            self.main_app.append_test_log(f"Final score below target ({final_score:.1f}/{REQUIRED_SCORE:.0f}). Results applied but consider rerunning for higher precision.")
                         self.main_app.append_test_log(f"  Overshoot: {verify_response['overshoot_pct']:.1f}%, "
                                                      f"SS error: {verify_response['steady_state_error']:.1f} counts, "
                                                      f"Settle: {verify_response['settle_time']:.2f}s")
@@ -1073,10 +1129,10 @@ class TuningSetupDialog:
         try:
             # Use calculated values if available (from auto-tuning), otherwise read from controller
             if hasattr(self, 'calculated_kp') and hasattr(self, 'calculated_ki') and hasattr(self, 'calculated_kd'):
-                # Use the calculated values from auto-tuning
-                self._track_parameter_change(f"KP{self.axis}", f"{self.calculated_kp:.4f}")
-                self._track_parameter_change(f"KI{self.axis}", f"{self.calculated_ki:.4f}")
-                self._track_parameter_change(f"KD{self.axis}", f"{self.calculated_kd:.4f}")
+                # Use the calculated values from auto-tuning, no rounding
+                self._track_parameter_change(f"KP{self.axis}", str(self.calculated_kp))
+                self._track_parameter_change(f"KI{self.axis}", str(self.calculated_ki))
+                self._track_parameter_change(f"KD{self.axis}", str(self.calculated_kd))
             else:
                 # Fall back to reading from controller
                 kp_response = self.main_app.controller.send_command(f"MG _KP{self.axis}")

@@ -53,9 +53,18 @@ class MotorSetupDialog:
         self.initial_position = None
         self.rotation_count = 0
         self.motor_driven = False
+        self._movement_start_time = None
+        self._cumulative_motion = 0
+        self.min_move_counts = 10000  # require at least this much motion during setup
+        self._index_trigger_queued = False
         self.initial_hall_state = None
         self.hall_transition_detected = False
         self.hall_direction_verified = False
+        # Commutation validation parameters
+        self.min_cycles_required = 24      # require at least 24 transitions (~4 electrical revs)
+        self.min_duration_s = 3.0          # require at least 3.0s of sampling before acceptance
+        self.attempt_timeout_s = 3.5        # retry jog profile after this many seconds
+        self.max_comm_attempts = 3          # number of adaptive retries
         # Sampling buffers for commutation validation and graphing
         self.sample_times = []
         self.sample_positions = []
@@ -531,20 +540,37 @@ class MotorSetupDialog:
                         # Detect manual movement if motor hasn't been driven yet
                         if not self.motor_driven and last_position is not None:
                             position_change = abs(position - last_position)
-                            # If position changed significantly (more than noise), user is moving motor manually
-                            if position_change > 10 and not manual_movement_detected:
+                            # Accumulate motion to avoid noise-triggering
+                            if position_change > 0:
+                                self._cumulative_motion = (self._cumulative_motion or 0) + position_change
+                                if self._movement_start_time is None:
+                                    self._movement_start_time = time.time()
+                            # Require sustained/cumulative movement before considering motor 'driven'
+                            if (self._cumulative_motion is not None and self._cumulative_motion >= 800 and
+                                self._movement_start_time is not None and (time.time() - self._movement_start_time) >= 0.25):
                                 manual_movement_detected = True
                                 self.motor_driven = True  # Enable detection
                                 # Set initial position as baseline
                                 if self.initial_position is None:
                                     self.initial_position = last_position
+                                # Reset cumulative motion from this point for min-move enforcement
+                                self._cumulative_motion = 0
+                                self._movement_start_time = time.time()
                                 if self.main_app:
                                     self.main_app.append_test_log(f"Manual movement detected on Axis {self.axis}! Starting hall/index detection.")
                         
+                        # Accumulate motion after motor is driven to support min-move checks
+                        if last_position is not None and self.motor_driven:
+                            try:
+                                delta = abs(position - last_position)
+                                if delta > 0:
+                                    self._cumulative_motion = (self._cumulative_motion or 0) + delta
+                            except Exception:
+                                pass
                         last_position = position
                         
-                        # Check for hall sensor transition - this must happen BEFORE index pulse
-                        if not self.hall_transition_detected:
+                        # Check for hall sensor transition - only after motor is actually driven/moved and after small delay
+                        if not self.hall_transition_detected and self.motor_driven and (self._movement_start_time is not None and (time.time() - self._movement_start_time) >= 0.2):
                             try:
                                 # Check for hall sensor transition using _QH
                                 hall_response = self.main_app.controller.send_command(f"MG _QH{self.axis}")
@@ -605,6 +631,19 @@ class MotorSetupDialog:
                                             self.cycle_spans.append(span)
                                             if len(self.cycle_spans) > 20:
                                                 self.cycle_spans.pop(0)
+                                            # Periodic debug: log last few spans to verify data quality
+                                            if self.main_app and len(self.cycle_spans) % 6 == 0:
+                                                recent = self.cycle_spans[-6:]
+                                                try:
+                                                    from statistics import median, pstdev
+                                                    m_dbg = median(recent)
+                                                    s_dbg = pstdev(recent)
+                                                    cv_dbg = (s_dbg / m_dbg) if m_dbg else 1.0
+                                                except Exception:
+                                                    m_dbg, cv_dbg, recent = 0, 1.0, list(self.cycle_spans[-6:])
+                                                self.main_app.append_test_log(
+                                                    f"[COMM DBG] spans={recent} median={int(m_dbg)} CV={cv_dbg*100:.1f}%"
+                                                )
                                             # Accept only after enough cycles AND minimum duration
                                             elapsed = time.time() - self.attempt_start_time if self.attempt_start_time else 0
                                             if (len(self.cycle_spans) >= self.min_cycles_required and
@@ -617,17 +656,24 @@ class MotorSetupDialog:
                                                     self.estimated_modulo = int(round(m))
                                                     self.validation_result = {"bm": self.estimated_modulo, "cv": cv, "cycles": list(self.cycle_spans[-self.min_cycles_required:])}
                                                     try:
-                                                        self.main_app.controller.send_command(f"BM{self.axis}={self.estimated_modulo}")
-                                                        if self.main_app:
-                                                            self.main_app.append_test_log(f"[COMM] Attempt {self.comm_attempt}: BM{self.axis}={self.estimated_modulo} accepted (CV={cv*100:.1f}%, cycles={len(self.cycle_spans)})")
+                                                        # Apply validated BM immediately and only once
+                                                        if not hasattr(self, '_bm_set_from_validator'):
+                                                            self._bm_set_from_validator = False
+                                                        if not self._bm_set_from_validator:
+                                                            self.main_app.controller.send_command(f"BM{self.axis}={self.estimated_modulo}")
+                                                            self._bm_set_from_validator = True
+                                                            if self.main_app:
+                                                                self.main_app.append_test_log(
+                                                                    f"[COMM] Hall-cycle BM set: BM={self.estimated_modulo} (CV={cv*100:.1f}%, spans={self.cycle_spans[-self.min_cycles_required:]})"
+                                                                )
                                                     except:
                                                         pass
                         except:
                             pass
 
-                        # Attempt timeout and adaptive retry
+                        # Attempt timeout and adaptive retry (only while still seeking validation/index)
                         try:
-                            if (self.validation_result is None and self.attempt_start_time and
+                            if (not self.index_pulse_found and self.validation_result is None and self.attempt_start_time and
                                 time.time() - self.attempt_start_time > self.attempt_timeout_s):
                                 if self.comm_attempt < self.max_comm_attempts:
                                     # Stop, adapt, and retry
@@ -638,7 +684,7 @@ class MotorSetupDialog:
                                         pass
                                     # Reduce speed and flip direction
                                     self.jog_direction *= -1
-                                    base = max(300, int(self.jog_speed_base * (0.8 ** (self.comm_attempt))))
+                                    base = max(3000, int(self.jog_speed_base * (0.8 ** (self.comm_attempt))))
                                     self.current_jog_speed = base * self.jog_direction
                                     try:
                                         self.main_app.controller.send_command(f"JG{self.axis}={self.current_jog_speed}")
@@ -663,38 +709,30 @@ class MotorSetupDialog:
                         # Check for index pulse and hall transition
                         if not self.index_pulse_found:
                             try:
-                                # Check for index pulse using ZI command
+                                # Check for index pulse using ZI command (requires min movement)
                                 try:
                                     zi_response = self.main_app.controller.send_command(f"MG _ZI{self.axis}")
-                                    # Skip if command failed
                                     if zi_response and zi_response.strip() != "?":
                                         zi_value = zi_response.strip()
-                                        # If ZI returns a value (not 0), index pulse was detected
                                         try:
-                                            if float(zi_value.split(',')[0]) != 0:
-                                                # Index pulse detected via ZI
+                                            if float(zi_value.split(',')[0]) != 0 and (self._cumulative_motion or 0) >= self.min_move_counts and not self._index_trigger_queued:
+                                                self._index_trigger_queued = True
                                                 self.dialog.after(0, self.on_index_pulse_found)
                                         except:
                                             pass
                                 except:
                                     pass
                                 
-                                # Alternative: detect large position change (encoder resolution worth of movement)
-                                # Only check if motor has been driven and initial position is valid and non-zero
-                                # AND hall transition has been detected first
-                                # AND we have a valid baseline position from when movement started
+                                # Alternative: detect large position change after hall transition
                                 if (self.hall_transition_detected and self.motor_driven and 
                                     self.initial_position is not None and 
                                     position != 0 and position != self.initial_position):
                                     position_change = abs(position - self.initial_position)
-                                    # Use estimated modulo * 2 as threshold (two full electrical cycles)
-                                    movement_threshold = max(self.estimated_modulo * 2, 10000)
-                                    # If motor moved significantly (2+ full electrical cycles), consider index pulse found
-                                    # But only if the position is actually changing (not stuck at initial)
-                                    if position_change >= movement_threshold and not self.index_pulse_found:
-                                        # After reasonable movement, trigger index detection
+                                    movement_threshold = max(self.estimated_modulo * 2, self.min_move_counts)
+                                    if position_change >= movement_threshold and not self.index_pulse_found and not self._index_trigger_queued:
                                         if self.main_app:
                                             self.main_app.append_test_log(f"Significant movement detected ({position_change} counts from {self.initial_position} to {position}), triggering index pulse detection")
+                                        self._index_trigger_queued = True
                                         self.dialog.after(100, self.on_index_pulse_found)
                             except:
                                 pass
@@ -734,14 +772,7 @@ class MotorSetupDialog:
                     if self.main_app:
                         self.main_app.append_test_log(f"Warning: BA{self.axis} command rejected")
                 
-                # BM - set brushless modulo (only if not already set or different)
-                bm_response = self.main_app.controller.send_command(f"BM{self.axis}={self.estimated_modulo}")
-                if bm_response and bm_response.strip() == "?":
-                    if self.main_app:
-                        self.main_app.append_test_log(f"Warning: BM{self.axis}={self.estimated_modulo} command rejected")
-                else:
-                    if self.main_app:
-                        self.main_app.append_test_log(f"BM{self.axis}={self.estimated_modulo} set successfully")
+                # Defer BM setting until validated (hall-cycle estimator) or index refinement
                 
                 # BI - initialize with hall sensors
                 bi_response = self.main_app.controller.send_command(f"BI{self.axis}=-1")
@@ -761,10 +792,29 @@ class MotorSetupDialog:
             # Enable servo (required for movement)
             self.main_app.controller.send_command(f"SH{self.axis}")
             time.sleep(0.2)
+
+            # Loosen limits and allow motion: disable off-on-error, raise error limit, expand software limits, set moderate torque
+            try:
+                self.main_app.controller.send_command(f"OE{self.axis}=0")
+            except Exception:
+                pass
+            try:
+                self.main_app.controller.send_command(f"ER{self.axis}=200000")
+            except Exception:
+                pass
+            try:
+                self.main_app.controller.send_command(f"FL{self.axis}=2147483647")
+                self.main_app.controller.send_command(f"BL{self.axis}=-2147483648")
+            except Exception:
+                pass
+            try:
+                self.main_app.controller.send_command(f"TL{self.axis}=6")
+            except Exception:
+                pass
             
             # Set slow jog speed for precise commutation angle detection
-            # Use estimated BM/4 to ensure at least one hall transition
-            jog_speed = max(500, int(self.estimated_modulo / 4))
+            # Use conservative speed to allow clean hall transitions
+            jog_speed = max(8000, int(self.estimated_modulo / 4))
             self.jog_speed_base = jog_speed
             self.current_jog_speed = jog_speed
             self.jog_direction = 1
@@ -778,9 +828,21 @@ class MotorSetupDialog:
             # Initialize multi-pass attempt tracking and buffers
             self.comm_attempt = 1
             self.attempt_start_time = time.time()
+            # Reset movement tracking for min-move enforcement
+            self._cumulative_motion = 0
+            self._movement_start_time = time.time()
             self.sample_times, self.sample_positions, self.sample_halls = [], [], []
             self.cycle_boundaries, self.cycle_spans = [], []
             self.validation_result = None
+            # Ensure retry/validation parameters are initialized
+            if not hasattr(self, 'max_comm_attempts'):
+                self.max_comm_attempts = 3
+            if not hasattr(self, 'attempt_timeout_s'):
+                self.attempt_timeout_s = 3.5
+            if not hasattr(self, 'min_cycles_required'):
+                self.min_cycles_required = 6
+            if not hasattr(self, 'min_duration_s'):
+                self.min_duration_s = 1.5
             
             # Start position tracking now that motor is being driven
             if not self.position_update_running:
@@ -834,6 +896,11 @@ class MotorSetupDialog:
             # Silently ignore - this prevents spam in logs
             return
         
+        # Enforce minimum movement before accepting index
+        if (self._cumulative_motion or 0) < getattr(self, 'min_move_counts', 20000):
+            # Not enough movement yet; keep searching
+            return
+        
         # Don't allow if hall transition hasn't been detected yet
         if not self.hall_transition_detected:
             # Silently ignore - this prevents spam in logs
@@ -849,6 +916,8 @@ class MotorSetupDialog:
                 self.main_app.controller.send_command(f"MO{self.axis}")
             except:
                 pass
+        # Stop position update loop to prevent further retries/logs
+        self.position_update_running = False
         
         # Update status item
         if hasattr(self, 'index_status_item'):
@@ -877,6 +946,20 @@ class MotorSetupDialog:
                     # Use estimated modulo if controller doesn't provide it
                     self.final_modulo = float(self.estimated_modulo)
                 
+                # If hall-cycle validator produced a BM, prefer it
+                try:
+                    if getattr(self, 'validation_result', None) and 'bm' in self.validation_result:
+                        bm_validated = int(self.validation_result['bm'])
+                        try:
+                            self.main_app.controller.send_command(f"BM{self.axis}={bm_validated}")
+                            self.final_modulo = float(bm_validated)
+                            if self.main_app:
+                                self.main_app.append_test_log(f"[COMM] BM set from hall-cycle validator: BM={bm_validated}")
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
                 # Add final modulo status item
                 if self.final_modulo:
                     # Format modulo as integer if it's close to whole number, otherwise with decimals
@@ -892,6 +975,9 @@ class MotorSetupDialog:
                     
                     # Track the brushless modulo change
                     self._track_parameter_change(f"BM{self.axis}", str(self.final_modulo))
+
+                    # Launch an index-based BM improvement in background (computes counts per rev)
+                    threading.Thread(target=self._improve_bm_via_index, daemon=True).start()
                     
                     # Track other motor parameters
                     try:
@@ -938,6 +1024,85 @@ class MotorSetupDialog:
         except Exception as e:
             if self.main_app:
                 self.main_app.append_test_log(f"Error calculating modulo: {e}")
+
+    def _improve_bm_via_index(self):
+        """Refine BM by polling _ZI while jogging (no FI dependency)."""
+        try:
+            ctrl = self.main_app.controller if self.main_app else None
+            if not ctrl:
+                return
+            ax = self.axis
+            # Prepare axis
+            try:
+                ctrl.send_command(f"OE{ax}=0")
+            except Exception:
+                pass
+            try:
+                ctrl.send_command(f"ER{ax}=200000")
+            except Exception:
+                pass
+            ctrl.send_command(f"ST{ax}")
+            ctrl.send_command(f"DP{ax}=0")
+            try:
+                ctrl.send_command(f"ZI{ax}=0")
+            except Exception:
+                pass
+            ctrl.send_command(f"SH{ax}")
+            time.sleep(0.1)
+            ctrl.send_command(f"JG{ax}=8000")
+            ctrl.send_command(f"BG{ax}")
+            # Wait first index
+            t0 = time.time()
+            p1 = None
+            while time.time() - t0 < 6.0:
+                try:
+                    zi = ctrl.send_command(f"MG _ZI{ax}")
+                    if zi and float(str(zi).strip().split(',')[0]) != 0.0:
+                        p1 = float(str(ctrl.send_command(f"TP{ax}")).strip().split(',')[0])
+                        ctrl.send_command(f"ZI{ax}=0")
+                        break
+                except Exception:
+                    pass
+                time.sleep(0.03)
+            if p1 is None:
+                ctrl.send_command(f"ST{ax}")
+                return
+            # Continue jog and wait second index
+            t1 = time.time()
+            p2 = None
+            while time.time() - t1 < 6.0:
+                try:
+                    zi = ctrl.send_command(f"MG _ZI{ax}")
+                    if zi and float(str(zi).strip().split(',')[0]) != 0.0:
+                        p2 = float(str(ctrl.send_command(f"TP{ax}")).strip().split(',')[0])
+                        ctrl.send_command(f"ZI{ax}=0")
+                        break
+                except Exception:
+                    pass
+                time.sleep(0.03)
+            ctrl.send_command(f"ST{ax}")
+            if p2 is None:
+                return
+            rev_counts = abs(p2 - p1)
+            if rev_counts <= 0:
+                return
+            # Estimate pole_pairs from current estimate to avoid hardcoding
+            est_bm = self.final_modulo or self.estimated_modulo or 5000
+            pole_pairs_guess = max(1, int(round(rev_counts / float(est_bm))))
+            bm_new = int(round(rev_counts / float(pole_pairs_guess)))
+            # Apply if meaningfully different
+            if abs(bm_new - int(round(est_bm))) >= 1:
+                try:
+                    ctrl.send_command(f"BM{ax}={bm_new}")
+                    self.final_modulo = float(bm_new)
+                    self._track_parameter_change(f"BM{ax}", str(bm_new))
+                    if self.main_app:
+                        self.main_app.append_test_log(f"[COMM] Index-based BM refined: rev={int(rev_counts)} counts, poles≈{pole_pairs_guess}, BM={bm_new}")
+                except:
+                    pass
+        except Exception as e:
+            if self.main_app:
+                self.main_app.append_test_log(f"[COMM] BM improvement error: {e}")
 
     def show_commutation_graph_safe(self):
         """Show a diagnostic graph of commutation sampling."""

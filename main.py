@@ -4811,7 +4811,10 @@ Repeat these steps for axes B, C, and D as needed.
                     
                     # Set all axes to servo mode (MT 1 = servo quadrature)
                     self.append_test_log("Setting all axes to servo mode...")
-                    self.controller.send_command("MT 1,1,1,1")
+                    try:
+                        self.controller.send_command("MT 1,1,1,1")
+                    except Exception as e:
+                        self.append_test_log(f"Warning: MT 1,1,1,1 failed: {e}")
                     
                     # Check brushless assignment
                     self.append_test_log("Checking brushless assignment...")
@@ -4826,7 +4829,10 @@ Repeat these steps for axes B, C, and D as needed.
                     self.append_test_log("Assigning brushless amps...")
                     # Use per-axis commands to avoid validator issues
                     for ax in ["A", "B", "C", "D"]:
-                        self.controller.send_command(f"BA {ax}")
+                        try:
+                            self.controller.send_command(f"BA {ax}")
+                        except Exception as e:
+                            self.append_test_log(f"Note: BA {ax} failed/unsupported: {e}")
                     
                     # Initialize sine amps (BX) is not supported on DMC-41x3; skip this step
                     self.append_test_log("Skipping sine amp initialization (BX unsupported on DMC-41x3)")

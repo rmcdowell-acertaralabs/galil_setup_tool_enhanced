@@ -290,26 +290,44 @@ class SaveConfigurationDialog:
             new = current
             
             # Format values consistently
-            def format_value(val):
+            def format_value(val, base_param: str):
+                # Normalize unknowns
                 if val == '?' or val == '':
-                    return val
+                    return 'N/A'
+                # Special formatting for IP-style integers
+                if base_param in ('IA', 'SM', 'MU'):
+                    try:
+                        # If already dotted, return as-is
+                        if isinstance(val, str) and val.count('.') == 3:
+                            return val
+                        int_val = int(float(val))
+                        # Convert signed to unsigned 32-bit
+                        if int_val < 0:
+                            int_val = (int_val + (1 << 32)) & 0xFFFFFFFF
+                        octets = [str((int_val >> shift) & 0xFF) for shift in (24, 16, 8, 0)]
+                        return '.'.join(octets)
+                    except Exception:
+                        return str(val)
+                # Generic numeric formatting
                 try:
                     float_val = float(val)
-                    # Check if it's a whole number
                     if float_val == int(float_val):
                         return str(int(float_val))
-                    # Format with up to 4 decimal places, remove trailing zeros
                     formatted = f"{float_val:.4f}".rstrip('0').rstrip('.')
                     return formatted
                 except (ValueError, TypeError):
                     return str(val)
             
-            saved = format_value(saved)
-            new = format_value(new)
-            default = format_value(default)
+            base = full_param.rstrip('D')  # derive base for special handling
+            saved = format_value(saved, base)
+            new = format_value(new, base)
+            default = format_value(default, base)
             
             desc = self.get_parameter_description(param)
-            changed = (saved != new) and (saved != '?' and new != '?')
+            # Treat unknowns uniformly and do not flag changes when either is unknown
+            known_saved = saved not in ('?', 'N/A')
+            known_new = new not in ('?', 'N/A')
+            changed = (saved != new) and known_saved and known_new
             tags = ("changed",) if changed else ("unchanged",)
             
             self.params_tree.insert("", "end",
@@ -346,23 +364,31 @@ class SaveConfigurationDialog:
             new = current
             
             # Format values consistently (remove unnecessary decimals)
-            def format_value(val):
+            def format_value(val, base_param: str):
+                # Normalize unknowns
                 if val == '?' or val == '':
-                    return val
+                    return 'N/A'
+                # BI sentinel handling
+                if base_param == 'BI':
+                    try:
+                        ival = int(float(val))
+                        if ival == -1:
+                            return '-1'
+                    except Exception:
+                        pass
+                # Generic numeric formatting
                 try:
                     float_val = float(val)
-                    # Check if it's a whole number
                     if float_val == int(float_val):
                         return str(int(float_val))
-                    # Format with up to 4 decimal places, remove trailing zeros
                     formatted = f"{float_val:.4f}".rstrip('0').rstrip('.')
                     return formatted
                 except (ValueError, TypeError):
                     return str(val)
             
-            saved = format_value(saved)
-            new = format_value(new)
-            default = format_value(default)
+            saved = format_value(saved, param)
+            new = format_value(new, param)
+            default = format_value(default, param)
             
             # Check if this parameter was modified (even if saved == new, it might have been set)
             param_was_modified = False
@@ -372,8 +398,11 @@ class SaveConfigurationDialog:
                         param_was_modified = True
             
             desc = self.get_parameter_description(param)
-            # Parameter is changed if saved != new OR if it was explicitly modified during setup
-            changed = ((saved != new) and (saved != '?' and new != '?')) or param_was_modified
+            # Parameter is changed if saved != new (both known) OR if explicitly modified
+            known_saved = saved not in ('?', 'N/A')
+            known_new = new not in ('?', 'N/A')
+            changed_core = (saved != new) and known_saved and known_new
+            changed = changed_core or param_was_modified
             tags = ("changed",) if changed else ("unchanged",)
             
             self.params_tree.insert(axis_node, "end",
