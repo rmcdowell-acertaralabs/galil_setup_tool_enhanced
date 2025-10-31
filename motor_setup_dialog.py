@@ -779,12 +779,29 @@ class MotorSetupDialog:
                 if bi_response and bi_response.strip() == "?":
                     if self.main_app:
                         self.main_app.append_test_log(f"Warning: BI{self.axis}=-1 command rejected")
+                else:
+                    # Verify initialization was successful by checking hall state
+                    time.sleep(0.1)
+                    hall_check = self.main_app.controller.send_command(f"MG _QH{self.axis}")
+                    if hall_check and hall_check.strip() not in ("?", "0", ""):
+                        try:
+                            hall_val = int(float(hall_check.split(',')[0].strip()))
+                            if 1 <= hall_val <= 6:
+                                if self.main_app:
+                                    self.main_app.append_test_log(f"✓ Hall sensor initialized, state: {hall_val}")
+                            else:
+                                if self.main_app:
+                                    self.main_app.append_test_log(f"Warning: Hall sensor state invalid: {hall_val}")
+                        except:
+                            pass
                 
                 # BC - enable brushless calibration
                 bc_response = self.main_app.controller.send_command(f"BC{self.axis}")
                 if bc_response and bc_response.strip() == "?":
                     if self.main_app:
                         self.main_app.append_test_log(f"Warning: BC{self.axis} command rejected")
+                # Small delay to ensure calibration enables
+                time.sleep(0.1)
             except Exception as e:
                 if self.main_app:
                     self.main_app.append_test_log(f"Warning: Brushless initialization error: {e}")
