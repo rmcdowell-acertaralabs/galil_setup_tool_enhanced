@@ -857,21 +857,61 @@ class FakeGclib:
             if self.use_tcp and self.socket_client:
                 # TCP client mode - send to server
                 try:
+                    # Fix 5A: Ensure socket has timeout to prevent hanging
+                    if self.socket_client.gettimeout() is None:
+                        self.socket_client.settimeout(1.0)  # 1 second timeout for response
+                    
                     # Send command with CR/LF
                     cmd_bytes = (command + "\r\n").encode("ascii")
                     self.socket_client.sendall(cmd_bytes)
                     
-                    # Receive response (CR/LF terminated)
+                    # Fix 5A: Read response in larger chunks with timeout
+                    # Read until we get CR/LF terminator (handles fragmented responses)
                     response = b""
-                    while b"\r" not in response and b"\n" not in response:
-                        chunk = self.socket_client.recv(1)
-                        if not chunk:
+                    max_reads = 100  # Safety limit to prevent infinite loop
+                    read_count = 0
+                    
+                    while b"\r\n" not in response and b"\n" not in response:
+                        read_count += 1
+                        if read_count > max_reads:
+                            # Safety: prevent infinite loop
                             break
-                        response += chunk
+                        
+                        try:
+                            # Read larger chunks (4096 bytes) for efficiency
+                            chunk = self.socket_client.recv(4096)
+                            if not chunk:
+                                # Connection closed
+                                break
+                            response += chunk
+                            
+                            # Check if we have complete response (CR/LF terminator)
+                            if b"\r\n" in response or b"\n" in response:
+                                break
+                        except socket.timeout:
+                            # Timeout waiting for response
+                            # If we have some data, return it; otherwise raise error
+                            if response:
+                                break
+                            raise RuntimeError(f"Timeout waiting for response to command: {command}")
+                    
+                    # Extract first complete response line (up to CR/LF)
+                    if b"\r\n" in response:
+                        response = response.split(b"\r\n")[0]
+                    elif b"\n" in response:
+                        response = response.split(b"\n")[0]
                     
                     # Decode and strip
                     response_str = response.decode("ascii", errors="ignore").strip()
                     return response_str
+                    
+                except socket.timeout as e:
+                    # Timeout error
+                    self.connected = False
+                    if self.socket_client:
+                        self.socket_client.close()
+                        self.socket_client = None
+                    raise RuntimeError(f"Connection timeout: {e}")
                 except (socket.error, ConnectionResetError, BrokenPipeError) as e:
                     # Connection lost
                     self.connected = False

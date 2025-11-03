@@ -26,6 +26,13 @@ class EncoderSetupDialog:
         self.initial_position = 0
         self.reverse_direction = False
         
+        # Fix 3A: Track pending update callback to cancel stale updates
+        self._pending_update_id = None
+        
+        # Fix 2A: Track previous state of other update loops
+        self._previous_main_loop_running = False
+        self._encoder_panel_updater_was_running = False
+        
         # Create dialog
         self.dialog = tk.Toplevel(parent)
         self.dialog.title("Step by Step")
@@ -82,16 +89,30 @@ class EncoderSetupDialog:
         display_frame.pack(fill='x')
         
         # Large position display (digital-style)
-        self.position_display = tk.Label(display_frame,
-                                         text="0",
-                                         font=("Courier", 24, "bold"),
+        # Use Canvas for smooth text updates (avoids Label flickering)
+        canvas_width = 200
+        canvas_height = 50
+        self.position_display = tk.Canvas(display_frame,
+                                         width=canvas_width,
+                                         height=canvas_height,
                                          bg='black',
-                                         fg='#00ff00',
-                                         width=12,
-                                         anchor='e',
+                                         highlightthickness=3,
                                          relief='sunken',
-                                         bd=3)
+                                         bd=0)
         self.position_display.pack(side='left', padx=(0, 10))
+        
+        # Create background rectangle
+        self.position_display.create_rectangle(0, 0, canvas_width, canvas_height,
+                                               fill='black', outline='black')
+        
+        # Create text item for position (right-aligned)
+        self.position_text_item = self.position_display.create_text(
+            canvas_width - 10, canvas_height // 2,
+            text="0",
+            font=("Courier", 24, "bold"),
+            fill='#00ff00',
+            anchor='e'
+        )
         
         # Reset button
         reset_btn = tk.Button(display_frame, text="Reset",
@@ -139,6 +160,30 @@ class EncoderSetupDialog:
             self.position_display.config(text="No Controller")
             return
         
+        # Fix 2A: Disable other update loops when dialog opens
+        # Store previous state so we can restore it when dialog closes
+        try:
+            # Check if main encoder update loop is running
+            if hasattr(self.main_app, 'test_encoder_update_running'):
+                self._previous_main_loop_running = self.main_app.test_encoder_update_running
+                if self._previous_main_loop_running:
+                    # Stop main loop
+                    self.main_app.test_encoder_update_running = False
+                    if self.main_app:
+                        self.main_app.append_test_log(f"Paused main encoder update loop for dialog")
+            
+            # Check if EncoderPanelUpdater is running
+            if hasattr(self.main_app, '_enc_updater') and self.main_app._enc_updater:
+                self._encoder_panel_updater_was_running = (self.main_app._enc_updater._after_id is not None)
+                if self._encoder_panel_updater_was_running:
+                    # Pause EncoderPanelUpdater
+                    self.main_app._enc_updater.pause()
+                    if self.main_app:
+                        self.main_app.append_test_log(f"Paused EncoderPanelUpdater for dialog")
+        except Exception as e:
+            if self.main_app:
+                self.main_app.append_test_log(f"Warning: Could not pause other update loops: {e}")
+        
         # Disable motor/servo for this axis to allow manual movement during encoder setup
         try:
             if self.main_app and self.main_app.controller:
@@ -153,67 +198,86 @@ class EncoderSetupDialog:
                 self.main_app.append_test_log(f"Warning: Could not disable motor: {e}")
         
         self.update_running = True
-        self._pending_update_flag = False
         self.update_thread = threading.Thread(target=self.update_position_loop, daemon=True)
         self.update_thread.start()
         self.initial_position = self.current_position
     
     def update_position_loop(self):
         """Update encoder position in real-time"""
-        last_display_position = None
-        update_threshold = 2  # Only update if position changes by at least 2 counts
+        last_display_string = None  # Track displayed string to prevent unnecessary updates
         
         while self.update_running:
             try:
                 if self.main_app and self.main_app.controller:
-                    # Read encoder position
+                    # Read encoder position (now thread-safe with lock in FakeGclib)
                     response = self.main_app.controller.send_command(f"TP{self.axis}")
-                    if response and not response.strip().startswith('?'):
-                        # Parse position (handle comma-separated values)
-                        try:
-                            pos_str = response.split(',')[0].strip()
-                            position = int(float(pos_str))
+                    
+                    # Simple validation - reject empty or error responses
+                    if not response or not response.strip() or response.strip().startswith('?'):
+                        time.sleep(0.1)
+                        continue
+                    
+                    # Parse position
+                    try:
+                        pos_str = response.split(',')[0].strip()
+                        position = int(float(pos_str))
+                        
+                        # Apply reverse if checked
+                        display_position = -position if self.reverse_var.get() else position
+                        display_string = str(display_position)
+                        
+                        # Only update if string value actually changed
+                        if display_string != last_display_string:
+                            # Fix 3A: Cancel any pending update before queueing new one
+                            if hasattr(self, '_pending_update_id') and self._pending_update_id is not None:
+                                try:
+                                    self.dialog.after_cancel(self._pending_update_id)
+                                except:
+                                    pass  # Callback may have already executed
+                                self._pending_update_id = None
                             
-                            # Apply reverse if checked to get display position
-                            display_position = -position if self.reverse_var.get() else position
+                            # Update Canvas text item (must be in main thread)
+                            if hasattr(self, 'position_text_item'):
+                                # Queue new update and store its ID
+                                self._pending_update_id = self.dialog.after_idle(
+                                    lambda s=display_string: self._update_canvas_text(s))
                             
-                            # Only update if display position changed significantly (threshold prevents blinking)
-                            if last_display_position is None or abs(display_position - last_display_position) >= update_threshold:
-                                # Update display (must be in main thread)
-                                if self.dialog.winfo_exists() and not self._pending_update_flag:
-                                    self._pending_update_flag = True
-                                    self.dialog.after_idle(lambda p=display_position, s=self: self.update_display_and_reset_flag(p, s))
-                                
-                                self.current_position = position
-                                last_display_position = display_position
-                        except (ValueError, IndexError):
-                            pass
-            except Exception as e:
-                # Silently handle errors to avoid log spam
+                            self.current_position = position
+                            last_display_string = display_string
+                    except (ValueError, IndexError):
+                        # Invalid response - skip this update
+                        pass
+            except Exception:
+                # Error reading - skip this update
                 pass
             
             time.sleep(0.1)  # Update 10 times per second
     
-    def update_display_and_reset_flag(self, position, self_ref):
-        """Update display and reset pending flag"""
-        if hasattr(self_ref, '_pending_update_flag'):
-            self_ref._pending_update_flag = False
-        self_ref.update_display(position)
-    
-    def update_display(self, position):
-        """Update the position display (called from main thread)"""
+    def _update_canvas_text(self, text):
+        """Update canvas text item (called from main thread via after_idle)"""
+        # Fix 3A: Clear pending update ID when callback executes
+        if hasattr(self, '_pending_update_id'):
+            self._pending_update_id = None
+        
         if not hasattr(self, 'position_display') or not self.position_display.winfo_exists():
+            return
+        if not hasattr(self, 'position_text_item'):
             return
         
         try:
-            # Only update if the value has changed to prevent blinking
-            current_text = self.position_display.cget('text')
-            new_text = str(position)
-            if current_text != new_text:
-                self.position_display.config(text=new_text)
+            # Only update if text actually changed (prevents unnecessary redraws)
+            current_text = self.position_display.itemcget(self.position_text_item, 'text')
+            if current_text != text:
+                self.position_display.itemconfig(self.position_text_item, text=text)
         except tk.TclError:
-            # Widget was destroyed, stop trying to update
+            # Widget or item was destroyed
             pass
+    
+    def update_display(self, position):
+        """Update the position display - compatibility method"""
+        # This method is kept for compatibility but _update_canvas_text is called from update loop
+        if hasattr(self, 'position_text_item'):
+            self._update_canvas_text(str(position))
     
     def reset_position(self):
         """Reset the encoder position to zero"""
@@ -295,6 +359,41 @@ class EncoderSetupDialog:
         self.update_running = False
         if self.update_thread and self.update_thread.is_alive():
             time.sleep(0.2)  # Give thread time to stop
+        
+        # Fix 3A: Cancel any pending update callback when dialog closes
+        if hasattr(self, '_pending_update_id') and self._pending_update_id is not None:
+            try:
+                self.dialog.after_cancel(self._pending_update_id)
+            except:
+                pass  # Callback may have already executed
+            self._pending_update_id = None
+        
+        # Fix 2A: Restore other update loops when dialog closes
+        try:
+            # Restore main encoder update loop if it was running
+            if self._previous_main_loop_running:
+                if hasattr(self.main_app, 'test_encoder_update_running'):
+                    self.main_app.test_encoder_update_running = True
+                    # Restart the main loop if needed
+                    if hasattr(self.main_app, 'test_encoder_update_thread'):
+                        if not self.main_app.test_encoder_update_thread or not self.main_app.test_encoder_update_thread.is_alive():
+                            # Restart the thread
+                            if hasattr(self.main_app, 'test_encoder_update_loop'):
+                                self.main_app.test_encoder_update_thread = threading.Thread(
+                                    target=self.main_app.test_encoder_update_loop, daemon=True)
+                                self.main_app.test_encoder_update_thread.start()
+                    if self.main_app:
+                        self.main_app.append_test_log(f"Resumed main encoder update loop")
+            
+            # Restore EncoderPanelUpdater if it was running
+            if self._encoder_panel_updater_was_running:
+                if hasattr(self.main_app, '_enc_updater') and self.main_app._enc_updater:
+                    self.main_app._enc_updater.resume()
+                    if self.main_app:
+                        self.main_app.append_test_log(f"Resumed EncoderPanelUpdater")
+        except Exception as e:
+            if self.main_app:
+                self.main_app.append_test_log(f"Warning: Could not restore other update loops: {e}")
         
         # Motor remains off after encoder setup - it will be enabled during motor setup
         # This allows safe manual movement during encoder testing
