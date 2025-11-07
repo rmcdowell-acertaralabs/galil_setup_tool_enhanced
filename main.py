@@ -196,94 +196,137 @@ class EncoderPanelUpdater:
 
 class GalilSetupApp:
     def __init__(self, root):
-        self.root = root
-        
-        # Speed calculation tracking
-        self.last_positions = {}
-        self.last_update_times = {}
-        self.axis_speeds = {}
-        
-        # Position dial smoothness tracking
-        self.target_positions = {}
-        self.current_dial_positions = {}
-        self.position_dial_update_times = {}
-        self.root.title("Galil Setup Tool")
-        self.root.geometry("1400x900")
-        self.root.configure(bg='#f5f5f5')  # Light gray background
-        
-        # Initialize controller and components
-        self.controller = None
-        self.controller_commands = None  # Will be initialized when controller connects
-        self.test_encoder_update_running = False
-        self.auto_connect_running = False
-        self.motor_direction_test_active = False  # Flag to control encoder position logging
-        
-        # Initialize comprehensive tester
-        self.comprehensive_tester = None
-        
-        # Initialize encoder updater
-        self._enc_updater = None
-        
-        # Initialize managers
-        self.gui_framework = None  # Will be initialized after colors are set
-        self.connection_manager = None  # Will be initialized after colors are set
-        self.logging_utils = None  # Will be initialized after colors are set
-        
-        # Initialize file watcher for automatic hot reload
-        self.file_observer = None
-        self._start_file_watcher()
-        
-        # Bind mouse wheel events to the root window
-        self.root.bind("<MouseWheel>", self._on_mousewheel)
-        self.root.bind("<Button-4>", self._on_mousewheel)  # Linux scroll up
-        self.root.bind("<Button-5>", self._on_mousewheel)  # Linux scroll down
-        
-        # Bind hot reload shortcuts (Ctrl+R or F5)
-        self.root.bind("<Control-r>", lambda e: self.reload_modules())
-        self.root.bind("<Control-R>", lambda e: self.reload_modules())
-        self.root.bind("<F5>", lambda e: self.reload_modules())
-        
-        # Color scheme matching Acertara
-        self.colors = {
-            'sidebar_bg': '#2c3e50',      # Dark gray/black sidebar
-            'sidebar_fg': '#ffffff',      # White text in sidebar
-            'header_bg': '#ffffff',       # White header
-            'header_fg': '#2c3e50',       # Dark text in header
-            'main_bg': '#f5f5f5',         # Light gray main area
-            'main_fg': '#2c3e50',         # Dark text in main area
-            'secondary_fg': '#7f8c8d',    # Secondary text color (gray)
-            'secondary_bg': '#ecf0f1',    # Light gray secondary background
-            'accent_blue': '#3498db',     # Blue accent color
-            'accent_green': '#27ae60',    # Green accent color
-            'success_green': '#27ae60',   # Green for success
-            'warning_orange': '#f39c12',  # Orange for warnings
-            'error_red': '#e74c3c',       # Red for errors
-            'card_bg': '#ffffff',         # White cards
-            'card_border': '#e0e0e0',     # Light border for cards
-            'online_green': '#2ecc71',    # Green for online status
-            'warning_bg': '#fff3cd'       # Warning background color
-        }
-        
-        # Initialize managers
-        self.logging_utils = LoggingUtils(self.append_test_log)
-        self.connection_manager = ControllerConnectionManager(self.append_test_log)
-        self.gui_framework = GUIFramework(self.root, self.colors, self.append_test_log, self)
-        
-        self.setup_ui()
-        
-        # Display startup message with hot reload info
-        self.root.after(100, lambda: self.append_test_log("=== Galil Setup Tool Started ==="))
-        if WATCHDOG_AVAILABLE:
-            self.root.after(150, lambda: self.append_test_log("Auto-Reload: Watching for file changes (automatic reload enabled)"))
-        else:
-            self.root.after(150, lambda: self.append_test_log("Hot Reload: Press Ctrl+R or F5 to reload code changes"))
-        self.root.after(200, lambda: self.append_test_log("Note: Close and reopen dialogs to see changes after reload"))
-        
-        # Auto-detect and connect to controller on startup (delay to ensure UI is ready)
-        self.root.after(1000, self.auto_connect_to_controller)
-        
-        # Initial connection status refresh (delay to ensure GUI framework is ready)
-        self.root.after(1500, self.refresh_connection_status_display)
+        try:
+            self.root = root
+            
+            # Speed calculation tracking
+            self.last_positions = {}
+            self.last_update_times = {}
+            self.axis_speeds = {}
+            
+            # Position dial smoothness tracking
+            self.target_positions = {}
+            self.current_dial_positions = {}
+            self.position_dial_update_times = {}
+            self.root.title("Galil Setup Tool")
+            self.root.geometry("1400x900")
+            self.root.configure(bg='#f5f5f5')  # Light gray background
+            
+            # Initialize controller and components
+            self.controller = None
+            self.controller_commands = None  # Will be initialized when controller connects
+            self.test_encoder_update_running = False
+            self.auto_connect_running = False
+            self.motor_direction_test_active = False  # Flag to control encoder position logging
+            
+            # Initialize comprehensive tester
+            self.comprehensive_tester = None
+            
+            # Initialize encoder updater
+            self._enc_updater = None
+            
+            # Initialize managers
+            self.gui_framework = None  # Will be initialized after colors are set
+            self.connection_manager = None  # Will be initialized after colors are set
+            self.logging_utils = None  # Will be initialized after colors are set
+            
+            # Initialize file watcher for automatic hot reload
+            self.file_observer = None
+            try:
+                self._start_file_watcher()
+            except Exception as e:
+                print(f"[Warning] Failed to start file watcher: {e}")
+            
+            # Bind mouse wheel events to the root window
+            try:
+                self.root.bind("<MouseWheel>", self._on_mousewheel)
+                self.root.bind("<Button-4>", self._on_mousewheel)  # Linux scroll up
+                self.root.bind("<Button-5>", self._on_mousewheel)  # Linux scroll down
+                
+                # Bind hot reload shortcuts (Ctrl+R or F5)
+                self.root.bind("<Control-r>", lambda e: self.reload_modules())
+                self.root.bind("<Control-R>", lambda e: self.reload_modules())
+                self.root.bind("<F5>", lambda e: self.reload_modules())
+            except Exception as e:
+                print(f"[Warning] Failed to bind keyboard/mouse events: {e}")
+            
+            # Color scheme matching Acertara
+            self.colors = {
+                'sidebar_bg': '#2c3e50',      # Dark gray/black sidebar
+                'sidebar_fg': '#ffffff',      # White text in sidebar
+                'header_bg': '#ffffff',       # White header
+                'header_fg': '#2c3e50',       # Dark text in header
+                'main_bg': '#f5f5f5',         # Light gray main area
+                'main_fg': '#2c3e50',         # Dark text in main area
+                'secondary_fg': '#7f8c8d',    # Secondary text color (gray)
+                'secondary_bg': '#ecf0f1',    # Light gray secondary background
+                'accent_blue': '#3498db',     # Blue accent color
+                'accent_green': '#27ae60',    # Green accent color
+                'success_green': '#27ae60',   # Green for success
+                'warning_orange': '#f39c12',  # Orange for warnings
+                'error_red': '#e74c3c',       # Red for errors
+                'card_bg': '#ffffff',         # White cards
+                'card_border': '#e0e0e0',     # Light border for cards
+                'online_green': '#2ecc71',    # Green for online status
+                'warning_bg': '#fff3cd'       # Warning background color
+            }
+            
+            # Initialize managers
+            try:
+                self.logging_utils = LoggingUtils(self.append_test_log)
+            except Exception as e:
+                print(f"[Error] Failed to initialize LoggingUtils: {e}")
+                self.logging_utils = None
+            
+            try:
+                self.connection_manager = ControllerConnectionManager(self.append_test_log)
+            except Exception as e:
+                print(f"[Error] Failed to initialize ControllerConnectionManager: {e}")
+                self.connection_manager = None
+            
+            try:
+                self.gui_framework = GUIFramework(self.root, self.colors, self.append_test_log, self)
+            except Exception as e:
+                print(f"[Error] Failed to initialize GUIFramework: {e}")
+                import traceback
+                traceback.print_exc()
+                raise  # Re-raise since GUI framework is critical
+            
+            try:
+                self.setup_ui()
+            except Exception as e:
+                print(f"[Error] Failed to setup UI: {e}")
+                import traceback
+                traceback.print_exc()
+                raise  # Re-raise since UI setup is critical
+            
+            # Display startup message with hot reload info
+            try:
+                self.root.after(100, lambda: self.append_test_log("=== Galil Setup Tool Started ==="))
+                if WATCHDOG_AVAILABLE:
+                    self.root.after(150, lambda: self.append_test_log("Auto-Reload: Watching for file changes (automatic reload enabled)"))
+                else:
+                    self.root.after(150, lambda: self.append_test_log("Hot Reload: Press Ctrl+R or F5 to reload code changes"))
+                self.root.after(200, lambda: self.append_test_log("Note: Close and reopen dialogs to see changes after reload"))
+            except Exception as e:
+                print(f"[Warning] Failed to display startup messages: {e}")
+            
+            # Auto-detect and connect to controller on startup (delay to ensure UI is ready)
+            try:
+                self.root.after(1000, self.auto_connect_to_controller)
+            except Exception as e:
+                print(f"[Warning] Failed to schedule auto-connect: {e}")
+            
+            # Initial connection status refresh (delay to ensure GUI framework is ready)
+            try:
+                self.root.after(1500, self.refresh_connection_status_display)
+            except Exception as e:
+                print(f"[Warning] Failed to schedule connection status refresh: {e}")
+        except Exception as e:
+            import traceback
+            error_msg = traceback.format_exception(type(e), e, e.__traceback__)
+            print(f"[Fatal Error] Failed to initialize GalilSetupApp: {''.join(error_msg)}", file=sys.stderr)
+            raise  # Re-raise to be caught by main()
         
     def setup_ui(self):
         """Setup the main UI with Acertara-style layout"""
@@ -9180,16 +9223,48 @@ Ready for commands...
             self.append_test_log(error_msg)
 
 def main():
-    root = tk.Tk()
-    app = GalilSetupApp(root)
-    
-    # Set up cleanup when window is closed
-    def on_closing():
-        app.cleanup()
-        root.destroy()
-    
-    root.protocol("WM_DELETE_WINDOW", on_closing)
-    root.mainloop()
+    try:
+        root = tk.Tk()
+        
+        # Set up error handler for uncaught exceptions
+        def handle_exception(exc_type, exc_value, exc_traceback):
+            if issubclass(exc_type, KeyboardInterrupt):
+                sys.__excepthook__(exc_type, exc_value, exc_traceback)
+                return
+            
+            import traceback
+            error_msg = ''.join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+            print(f"Uncaught exception: {error_msg}", file=sys.stderr)
+            
+            # Try to show error in GUI if possible
+            try:
+                if root.winfo_exists():
+                    messagebox.showerror("Error", f"An error occurred:\n{str(exc_value)}\n\nCheck console for details.")
+            except:
+                pass
+        
+        sys.excepthook = handle_exception
+        
+        app = GalilSetupApp(root)
+        
+        # Set up cleanup when window is closed
+        def on_closing():
+            try:
+                app.cleanup()
+            except Exception as e:
+                print(f"Error during cleanup: {e}")
+            root.destroy()
+        
+        root.protocol("WM_DELETE_WINDOW", on_closing)
+        root.mainloop()
+    except Exception as e:
+        import traceback
+        error_msg = traceback.format_exception(type(e), e, e.__traceback__)
+        print(f"Fatal error starting application: {''.join(error_msg)}", file=sys.stderr)
+        try:
+            messagebox.showerror("Fatal Error", f"Failed to start application:\n{str(e)}\n\nCheck console for details.")
+        except:
+            pass
 
 if __name__ == "__main__":
     main()

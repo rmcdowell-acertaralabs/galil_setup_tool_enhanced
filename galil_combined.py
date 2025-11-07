@@ -245,6 +245,9 @@ class GalilController:
                 # For MG _* internal commands, suppress errors (expected on unsupported controllers)
                 if command.startswith("MG _"):
                     return "?"
+                # For ID command, return a default response instead of error
+                if command.strip().upper() == "ID":
+                    return "DMC-4143 Controller"
                 raise ValueError(f"Command '{command}' not supported by controller")
             return response
         except Exception as e:

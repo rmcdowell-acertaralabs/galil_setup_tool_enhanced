@@ -293,6 +293,8 @@ class DMC4143Emulator:
                 return self._cmd_tell_position(axis)
             elif cmd_name == "TE":  # Tell Error (following error)
                 return self._cmd_tell_error(axis)
+            elif cmd_name == "ID":  # Identify
+                return self._cmd_identify()
             elif cmd_name == "SP":  # Set Speed
                 return self._cmd_set_speed(axis, value)
             elif cmd_name == "AC":  # Acceleration
@@ -381,6 +383,20 @@ class DMC4143Emulator:
         # Handle MG (Message) command for queries
         if cmd.startswith("MG"):
             return self._cmd_message(cmd)
+        
+        # Handle ID (Identify) command
+        if cmd == "ID":
+            return self._cmd_identify()
+        
+        # Handle other single-letter commands
+        if cmd == "VE":  # Version
+            return "DMC-4143 Emulator v1.0"
+        elif cmd == "TC":  # Tell Error Code (no axis)
+            return self._cmd_tell_error_code(None)
+        elif cmd == "TE":  # Tell Error (no axis - returns error for all axes)
+            return "0"  # No error
+        elif cmd == "TH":  # Tell Network Info
+            return "DMC-4143 Emulator\nIP: 127.0.0.1\nPort: 2323"
         
         # Unknown command
         return "?"
@@ -608,6 +624,10 @@ class DMC4143Emulator:
             return ""
         return "?"
     
+    def _cmd_identify(self) -> str:
+        """ID - Identify (returns controller model and version)"""
+        return "DMC-4143 Emulator v1.0"
+    
     def _cmd_tell_error_code(self, value: Optional[int]) -> str:
         """TC - Tell Error Code"""
         if value is not None:
@@ -756,14 +776,24 @@ class DMC4143TCPServer:
     def _handle_client(self, client_socket, addr):
         """Handle a client connection"""
         try:
+            # Set socket timeout to prevent hanging
+            client_socket.settimeout(10.0)  # 10 second timeout for reading commands
+            
             while self.running:
                 # Receive command (CR/LF terminated)
                 data = b""
-                while b"\r" not in data and b"\n" not in data:
-                    chunk = client_socket.recv(1)
-                    if not chunk:
-                        break
-                    data += chunk
+                try:
+                    while b"\r" not in data and b"\n" not in data:
+                        chunk = client_socket.recv(1024)  # Read in larger chunks
+                        if not chunk:
+                            break
+                        data += chunk
+                        # Safety check: limit command size
+                        if len(data) > 4096:
+                            break
+                except socket.timeout:
+                    # Timeout reading command - continue to next iteration
+                    continue
                 
                 if not data:
                     break
@@ -777,10 +807,14 @@ class DMC4143TCPServer:
                 response = self.emulator.parse_command(command)
                 
                 # Send response (CR/LF terminated)
-                if response:
-                    client_socket.send((response + "\r\n").encode("ascii"))
-                else:
-                    client_socket.send(b"\r\n")
+                try:
+                    if response:
+                        client_socket.sendall((response + "\r\n").encode("ascii"))
+                    else:
+                        client_socket.sendall(b"\r\n")
+                except (socket.error, BrokenPipeError):
+                    # Client disconnected
+                    break
                 
         except Exception as e:
             print(f"[DMC4143 Emulator] Client {addr} error: {e}")
@@ -859,7 +893,7 @@ class FakeGclib:
                 try:
                     # Fix 5A: Ensure socket has timeout to prevent hanging
                     if self.socket_client.gettimeout() is None:
-                        self.socket_client.settimeout(1.0)  # 1 second timeout for response
+                        self.socket_client.settimeout(5.0)  # 5 second timeout for response (increased for reliability)
                     
                     # Send command with CR/LF
                     cmd_bytes = (command + "\r\n").encode("ascii")
